@@ -25,6 +25,7 @@ import httpx
 
 from headroom.pipeline import PipelineStage, summarize_routing_markers
 from headroom.proxy.auth_mode import classify_auth_mode
+from headroom.proxy.forwarded_headers import resolve_client_ip
 
 logger = logging.getLogger("headroom.proxy")
 
@@ -611,7 +612,12 @@ class AnthropicHandlerMixin:
                     auth = headers.get("authorization", "")
                     if auth.startswith("Bearer "):
                         api_key = auth[7:]
-                client_ip = request.client.host if request.client else "unknown"
+                # Phase F PR-F4: trust ``X-Forwarded-For`` for the rate-limit
+                # key only when the connecting peer is in
+                # ``HEADROOM_PROXY_TRUSTED_GATEWAY_CIDRS``; otherwise we use
+                # the direct peer IP and a malicious client cannot rotate
+                # rate-limit buckets by forging headers.
+                client_ip = resolve_client_ip(request) or "unknown"
                 rate_key = f"{api_key[:16]}:{client_ip}" if api_key else client_ip
                 allowed, wait_seconds = await self.rate_limiter.check_request(rate_key)
                 if not allowed:
