@@ -431,6 +431,13 @@ pub(crate) async fn forward_http(
     // c3/6 adds `enforcement` so the dashboard can split "policy
     // resolved as PAYG because mode is PAYG" from "policy resolved as
     // PAYG because the enforcement flag is off."
+    //
+    // F2.2 c2/3: extend the structured fields with the three new
+    // tuning fields so the bake dashboard has per-mode observability
+    // for the F2.2-followup tune. ``volatile_token_threshold`` /
+    // ``max_lossy_ratio`` are plumbed-but-unconsumed today, so the
+    // log lines are the only signal that the values are flowing
+    // correctly through the proxy → handlers → transforms path.
     tracing::debug!(
         event = "policy_selected",
         request_id = %request_id,
@@ -438,6 +445,9 @@ pub(crate) async fn forward_http(
         enforcement = state.config.auth_mode_policy_enforcement.as_str(),
         live_zone_only = policy.live_zone_only,
         cache_aligner_enabled = policy.cache_aligner_enabled,
+        volatile_token_threshold = policy.volatile_token_threshold,
+        max_lossy_ratio = policy.max_lossy_ratio,
+        toin_read_only = policy.toin_read_only,
         "compression policy resolved"
     );
 

@@ -652,6 +652,17 @@ class ContentRouter(Transform):
         # TOIN integration for cross-strategy learning
         self._toin: Any = None
 
+        # F2.2: per-request CompressionPolicy, set from
+        # ``kwargs["compression_policy"]`` at the start of ``apply()``
+        # and read by ``_record_to_toin`` to gate TOIN writes when
+        # ``policy.toin_read_only`` is true (Subscription mode).
+        # Defaults to ``None`` so direct ``compress()`` callers (e.g.
+        # tests, hand-written pipelines that don't go through the
+        # proxy) keep pre-F2.2 behaviour: TOIN writes are not gated.
+        # Same pattern the existing ``_runtime_target_ratio`` /
+        # ``_runtime_kompress_model`` fields below use.
+        self._runtime_compression_policy: Any = None
+
         self._cache = CompressionCache()
 
     def _record_to_toin(
@@ -685,6 +696,22 @@ class ContentRouter(Transform):
 
         # Skip if no actual compression happened
         if original_tokens <= compressed_tokens:
+            return
+
+        # F2.2 gate: when the active CompressionPolicy says
+        # ``toin_read_only=True`` (Subscription auth mode), don't
+        # mutate the TOIN learning pool from this request. Direct
+        # ``compress()`` callers don't go through ``apply()`` and
+        # have ``self._runtime_compression_policy is None`` — those
+        # keep their pre-F2.2 write-enabled behaviour.
+        policy = self._runtime_compression_policy
+        if policy is not None and policy.toin_read_only:
+            logger.debug(
+                "ContentRouter: skipping TOIN record_compression for %s "
+                "— policy.toin_read_only=True (auth_mode resolved as "
+                "Subscription, F2.2 gate)",
+                strategy.value,
+            )
             return
 
         try:
@@ -1509,6 +1536,12 @@ class ContentRouter(Transform):
         # Store runtime options on self for access by _route_and_compress_block
         self._runtime_target_ratio: float | None = kwargs.get("target_ratio")
         self._runtime_kompress_model: str | None = kwargs.get("kompress_model")
+        # F2.2: capture the per-request CompressionPolicy so
+        # ``_record_to_toin`` can gate TOIN writes on
+        # ``policy.toin_read_only``. ``None`` when the caller didn't
+        # pass a policy — ``_record_to_toin`` treats that as "no gate"
+        # to preserve pre-F2.2 behaviour for non-proxy callers.
+        self._runtime_compression_policy = kwargs.get("compression_policy")
 
         tokens_before = sum(tokenizer.count_text(str(m.get("content", ""))) for m in messages)
         context = kwargs.get("context", "")
