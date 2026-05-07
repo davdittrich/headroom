@@ -106,7 +106,7 @@ class SubscriptionClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(timeout=self._timeout, trust_env=True, verify=os.environ.get("HEADROOM_SSL_VERIFY", "true").lower() not in ("false", "0", "no", "off")) as client:
                 resp = await client.get(_USAGE_URL, headers=headers)
 
             if resp.status_code == 401:

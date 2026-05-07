@@ -462,7 +462,7 @@ class HeadroomMCPServer:
     ) -> dict[str, Any]:
         """Retrieve content via proxy's HTTP endpoint."""
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=15.0)
+            self._http_client = httpx.AsyncClient(timeout=15.0, trust_env=True, verify=os.environ.get("HEADROOM_SSL_VERIFY", "true").lower() not in ("false", "0", "no", "off"))
 
         url = f"{self.proxy_url}/v1/retrieve"
         payload: dict[str, str] = {"hash": hash_key}
@@ -729,7 +729,7 @@ class HeadroomMCPServer:
         """Fetch full stats from the proxy (includes summary)."""
         try:
             if self._http_client is None:
-                self._http_client = httpx.AsyncClient(timeout=15.0)
+                self._http_client = httpx.AsyncClient(timeout=15.0, trust_env=True, verify=os.environ.get("HEADROOM_SSL_VERIFY", "true").lower() not in ("false", "0", "no", "off"))
             response = await self._http_client.get(f"{self.proxy_url}/stats")
             if response.status_code != 200:
                 return None

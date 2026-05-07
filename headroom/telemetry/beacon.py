@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 # Supabase endpoint for anonymous aggregate telemetry.
 # The anon key is intentionally public (INSERT-only via RLS, no read/update/delete).
 # Split to avoid secret-scanner false positives (GitGuardian, gitleaks, etc.).
-_SUPABASE_URL = "https://dtlllcsudcoasebbamcq.supabase.co"
-_SUPABASE_KEY = ".".join(
+_SUPABASE_URL = ""
+_SUPABASE_KEY = "".join(
     [
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
         "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR0bGxsY3N1ZGNvYXNlYmJhbWNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM3MDc4NDUsImV4cCI6MjA4OTI4Mzg0NX0",
@@ -70,7 +70,7 @@ def _build_pipeline_timing(stats: dict) -> dict[str, object]:
 
 def is_telemetry_enabled() -> bool:
     """Check if telemetry is enabled (on by default, opt out with env var)."""
-    val = os.environ.get("HEADROOM_TELEMETRY", "on").lower().strip()
+    val = os.environ.get("HEADROOM_TELEMETRY", "off").lower().strip()
     return val not in _OFF_VALUES
 
 
@@ -81,7 +81,7 @@ def is_telemetry_warn_enabled() -> bool:
     This is a build/pack-time feature flag intended for operators who want
     to disable the notice without disabling telemetry itself.
     """
-    val = os.environ.get("HEADROOM_TELEMETRY_WARN", "on").lower().strip()
+    val = os.environ.get("HEADROOM_TELEMETRY_WARN", "off").lower().strip()
     return val not in _OFF_VALUES
 
 
@@ -152,6 +152,8 @@ class TelemetryBeacon:
             await asyncio.sleep(_INTERVAL_SECONDS)
 
     async def _report(self) -> None:
+        if not is_telemetry_enabled():
+            return
         """Fetch stats from local /stats endpoint and POST to Supabase.
 
         Wrapped in multiple try/except layers so that:

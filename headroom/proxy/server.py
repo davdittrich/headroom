@@ -549,6 +549,12 @@ class HeadroomProxy(
 
     def __init__(self, config: ProxyConfig):
         self.config = config
+        if not config.ssl_verify:
+            os.environ["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+            os.environ["PYTHONHTTPSVERIFY"] = "0"
+            os.environ.pop("CURL_CA_BUNDLE", None)
+            os.environ.pop("SSL_CERT_FILE", None)
+            os.environ.pop("REQUESTS_CA_BUNDLE", None)
         self.config.mode = normalize_proxy_mode(self.config.mode)
         pipeline_extensions = list(config.pipeline_extensions or [])
         probe_recorder = probe_recorder_from_env()
@@ -1150,7 +1156,8 @@ class HeadroomProxy(
                 max_connections=self.config.max_connections,
                 max_keepalive_connections=self.config.max_keepalive_connections,
             ),
-            "verify": _ca_bundle if _ca_bundle is not None else True,
+            "trust_env": True,
+            "verify": (_ca_bundle if _ca_bundle is not None else True) if self.config.ssl_verify is True else self.config.ssl_verify,
         }
         self.http_client = httpx.AsyncClient(http2=self.config.http2, **_client_kwargs)
         # Reuse the primary client when HTTP/2 is already off; otherwise keep a
@@ -1535,6 +1542,7 @@ class HeadroomProxy(
         for attempt in range(self.config.retry_max_attempts):
             try:
                 if stream:
+                    logger.info(f"Outbound request to {url} (attempt {attempt+1})")
                     # For streaming, we return early - retry happens at higher level
                     return await self.http_client.post(  # type: ignore[union-attr]
                         url, content=outbound_bytes, headers=outbound_headers
@@ -1543,6 +1551,7 @@ class HeadroomProxy(
                     response = await self.http_client.post(  # type: ignore[union-attr]
                         url, content=outbound_bytes, headers=outbound_headers
                     )
+                    logger.info(f"Upstream response: {response.status_code}")
 
                     # Don't retry client errors (4xx)
                     if 400 <= response.status_code < 500:
@@ -3467,6 +3476,7 @@ def _proxy_config_payload(config: ProxyConfig) -> dict[str, Any]:
 
 
 def _proxy_config_from_env() -> ProxyConfig:
+    os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1")
     raw_config = os.environ.get(_MULTI_WORKER_CONFIG_ENV)
     if raw_config:
         try:
@@ -3491,6 +3501,7 @@ def _proxy_config_from_env() -> ProxyConfig:
         max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", 100),
         http2=_get_env_bool("HEADROOM_HTTP2", True),
         mode=normalize_proxy_mode(_get_env_str("HEADROOM_MODE", PROXY_MODE_TOKEN)),
+        ssl_verify=_get_env_verify("HEADROOM_SSL_VERIFY", True),
     )
 
 
@@ -3985,6 +3996,7 @@ if __name__ == "__main__":
             else None
         ),
         accuracy_guard=os.environ.get("HEADROOM_ACCURACY_GUARD") or None,
+        ssl_verify=_get_env_verify("HEADROOM_SSL_VERIFY", True),
     )
 
     # Get worker and concurrency settings
@@ -3992,3 +4004,13 @@ if __name__ == "__main__":
     limit_concurrency = _get_env_int("HEADROOM_LIMIT_CONCURRENCY", args.limit_concurrency)
 
     run_server(config, workers=workers, limit_concurrency=limit_concurrency)
+
+def _get_env_verify(name: str, default: str | bool) -> str | bool:
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    if val.lower() in ("true", "1", "yes", "on"):
+        return True
+    if val.lower() in ("false", "0", "no", "off"):
+        return False
+    return val

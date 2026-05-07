@@ -68,6 +68,7 @@ import threading
 import time
 import warnings
 from collections.abc import Callable
+from .beacon import is_telemetry_enabled
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -1561,6 +1562,10 @@ def _create_default_toin_backend() -> Any:
 
 
 def get_toin(config: TOINConfig | None = None) -> ToolIntelligenceNetwork:
+    # Fully deactivate if telemetry is off
+    if not is_telemetry_enabled():
+        config = config or TOINConfig()
+        config.enabled = False
     """Get the global TOIN instance.
 
     Thread-safe singleton pattern. Always acquires lock to avoid subtle
