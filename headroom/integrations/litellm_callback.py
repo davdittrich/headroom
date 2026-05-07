@@ -148,7 +148,7 @@ class HeadroomCallback:
                 raise ImportError(
                     "httpx is required for Headroom Cloud mode: pip install httpx"
                 ) from e
-            self._client = httpx.AsyncClient(timeout=30.0)
+            self._client = httpx.AsyncClient(timeout=30.0, trust_env=True, verify=os.environ.get("HEADROOM_SSL_VERIFY", "true").lower() not in ("false", "0", "no", "off"))
 
         client = self._client
         assert client is not None

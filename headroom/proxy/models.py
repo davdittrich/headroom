@@ -92,6 +92,7 @@ class ProxyConfig:
     # Server
     host: str = "127.0.0.1"
     port: int = 8787
+    ssl_verify: str | bool = True
     anthropic_api_url: str | None = None  # Custom Anthropic API URL override
     openai_api_url: str | None = None  # Custom OpenAI API URL override
     gemini_api_url: str | None = None  # Custom Gemini API URL override
@@ -184,12 +185,12 @@ class ProxyConfig:
 
     # Timeouts
     request_timeout_seconds: int = 300
-    connect_timeout_seconds: int = 10
+    connect_timeout_seconds: int = 30
 
     # Connection pool
     max_connections: int = 500
     max_keepalive_connections: int = 100
-    http2: bool = True
+    http2: bool = False
 
     # Memory System
     memory_enabled: bool = False

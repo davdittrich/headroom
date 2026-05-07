@@ -1089,6 +1089,7 @@ def _launch_tool(
         if args:
             click.echo(f"  Extra args: {' '.join(args)}")
         _print_telemetry_notice()
+        _inject_ssl_bypass(env)
         click.echo()
 
         result = subprocess.run([binary, *args], env=env)
@@ -1445,10 +1446,10 @@ def claude(
         if claude_args:
             click.echo(f"  Extra args: {' '.join(claude_args)}")
         _print_telemetry_notice()
-        click.echo()
 
         env = os.environ.copy()
         env["ANTHROPIC_BASE_URL"] = _claude_proxy_base_url(port)
+        _inject_ssl_bypass(env)
 
         result = subprocess.run([claude_bin, *claude_args], env=env)
         raise SystemExit(result.returncode)
@@ -2337,3 +2338,15 @@ def unwrap_codex() -> None:
     click.echo()
     click.echo("✓ Codex is no longer routed through the Headroom proxy.")
     click.echo()
+
+def _inject_ssl_bypass(env: dict[str, str]) -> None:
+    """Inject environment variables to bypass SSL verification in child processes."""
+    ssl_verify = os.environ.get("HEADROOM_SSL_VERIFY", "true").lower()
+    if ssl_verify in ("false", "0", "no", "off"):
+        # Node.js (Claude Code is Node)
+        env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+        # Python
+        env["PYTHONHTTPSVERIFY"] = "0"
+        # general / some libraries
+        env["CURL_CA_BUNDLE"] = ""
+        env["SSL_CERT_FILE"] = ""
