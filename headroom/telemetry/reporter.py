@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+from headroom.telemetry.beacon import is_telemetry_enabled
 import json
 import logging
 from dataclasses import asdict, dataclass, field
@@ -98,7 +99,7 @@ class UsageReporter:
     def __init__(
         self,
         license_key: str,
-        cloud_url: str = "https://app.headroomlabs.ai",
+        cloud_url: str = "",
         report_interval: int = 300,
         cache_path: Path | None = None,
     ):
@@ -119,6 +120,8 @@ class UsageReporter:
         self._last_requests_by_model: dict[str, int] = {}
 
     async def validate_license(self) -> LicenseInfo:
+        if not is_telemetry_enabled():
+            return self._load_cache_or_default()
         """Validate the license key against the cloud API.
 
         On failure, falls back to cached license info if within grace period.
@@ -254,6 +257,8 @@ class UsageReporter:
                 logger.warning("Usage report failed, will retry next interval", exc_info=True)
 
     async def _report_usage(self) -> None:
+        if not is_telemetry_enabled():
+            return
         """Collect aggregate stats from the proxy and send to cloud."""
         if self._proxy is None:
             return

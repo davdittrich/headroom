@@ -721,6 +721,9 @@ def proxy(
             sys.exit(1)
         os.environ["HEADROOM_INTERCEPT_ENABLED"] = "1"
 
+    # SSL Verification override
+    from headroom.proxy.server import _get_env_verify
+    effective_ssl_verify = _get_env_verify("HEADROOM_SSL_VERIFY", True)
     provider_api_overrides = resolve_api_overrides(
         anthropic_api_url=anthropic_api_url,
         openai_api_url=openai_api_url,
@@ -864,6 +867,7 @@ def proxy(
         bedrock_region=bedrock_region or region,
         bedrock_profile=bedrock_profile,
         anyllm_provider=effective_anyllm_provider,
+        ssl_verify=effective_ssl_verify,
         # License / Usage Reporting (managed/enterprise)
         license_key=license_key,
         # Stateless mode: disable all filesystem writes

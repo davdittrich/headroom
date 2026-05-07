@@ -29,7 +29,7 @@ class TelemetryConfig:
     """Configuration for telemetry collection."""
 
     # Enable/disable telemetry
-    enabled: bool = True
+    enabled: bool = False
 
     # Storage
     storage_path: str | None = None  # Path to store telemetry data (None = in-memory only)

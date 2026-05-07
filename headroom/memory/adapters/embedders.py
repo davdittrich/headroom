@@ -766,6 +766,8 @@ class OllamaEmbedder:
             import httpx
 
             self._client = httpx.AsyncClient(
+                trust_env=True,
+                verify=os.environ.get("HEADROOM_SSL_VERIFY", "true").lower() not in ("false", "0", "no", "off"),
                 base_url=self._base_url,
                 timeout=self.REQUEST_TIMEOUT,
             )
