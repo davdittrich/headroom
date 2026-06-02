@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://chopratejas.github.io/headroom/spec/011-deployment/">
+        <link rel="canonical" href="https://chopratejas.github.io/headroom/rtk-architecture/">
       
       
       
@@ -18,19 +18,19 @@
         
       
       
-      <link rel="icon" href="../../assets/images/favicon.png">
+      <link rel="icon" href="../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>011. Deployment - Headroom</title>
+        <title>RTK architecture — why wrap-CLI only - Headroom</title>
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -49,9 +49,9 @@
       
     
     
-      <link rel="stylesheet" href="../../stylesheets/extra.css">
+      <link rel="stylesheet" href="../stylesheets/extra.css">
     
-    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -76,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#011-deployment" class="md-skip">
+        <a href="#rtk-architecture-why-wrap-cli-only" class="md-skip">
           Skip to content
         </a>
       
@@ -92,7 +92,7 @@
 
 <header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="Headroom" class="md-header__button md-logo" aria-label="Headroom" data-md-component="logo">
+    <a href=".." title="Headroom" class="md-header__button md-logo" aria-label="Headroom" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12 18.54 7.37-5.74L21 14.07l-9 7-9-7 1.62-1.26zM12 16 3 9l9-7 9 7zm0-11.47L6.26 9 12 13.47 17.74 9z"/></svg>
@@ -112,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              011. Deployment
+              RTK architecture — why wrap-CLI only
             
           </span>
         </div>
@@ -224,7 +224,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../../index.md" class="md-tabs__link">
+      <a href="../index.md" class="md-tabs__link">
         
   
   
@@ -245,7 +245,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../quickstart.md" class="md-tabs__link">
+        <a href="../quickstart.md" class="md-tabs__link">
           
   
   
@@ -267,7 +267,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../proxy.md" class="md-tabs__link">
+        <a href="../proxy.md" class="md-tabs__link">
           
   
   
@@ -289,7 +289,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../integration-guide.md" class="md-tabs__link">
+        <a href="../integration-guide.md" class="md-tabs__link">
           
   
   
@@ -311,7 +311,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../ARCHITECTURE.md" class="md-tabs__link">
+        <a href="../ARCHITECTURE.md" class="md-tabs__link">
           
   
   
@@ -333,7 +333,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../benchmarks.md" class="md-tabs__link">
+        <a href="../benchmarks.md" class="md-tabs__link">
           
   
   
@@ -355,7 +355,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../cli.md" class="md-tabs__link">
+        <a href="../cli.md" class="md-tabs__link">
           
   
   
@@ -377,7 +377,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../macos-deployment.md" class="md-tabs__link">
+        <a href="../macos-deployment.md" class="md-tabs__link">
           
   
   
@@ -419,7 +419,7 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="Headroom" class="md-nav__button md-logo" aria-label="Headroom" data-md-component="logo">
+    <a href=".." title="Headroom" class="md-nav__button md-logo" aria-label="Headroom" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12 18.54 7.37-5.74L21 14.07l-9 7-9-7 1.62-1.26zM12 16 3 9l9-7 9 7zm0-11.47L6.26 9 12 13.47 17.74 9z"/></svg>
@@ -449,7 +449,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../index.md" class="md-nav__link">
+      <a href="../index.md" class="md-nav__link">
         
   
   
@@ -542,7 +542,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../quickstart.md" class="md-nav__link">
+      <a href="../quickstart.md" class="md-nav__link">
         
   
   
@@ -570,7 +570,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started.md" class="md-nav__link">
+      <a href="../getting-started.md" class="md-nav__link">
         
   
   
@@ -598,7 +598,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../docker-install.md" class="md-nav__link">
+      <a href="../docker-install.md" class="md-nav__link">
         
   
   
@@ -626,7 +626,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../persistent-installs.md" class="md-nav__link">
+      <a href="../persistent-installs.md" class="md-nav__link">
         
   
   
@@ -654,7 +654,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../configuration.md" class="md-nav__link">
+      <a href="../configuration.md" class="md-nav__link">
         
   
   
@@ -759,7 +759,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../proxy.md" class="md-nav__link">
+      <a href="../proxy.md" class="md-nav__link">
         
   
   
@@ -787,7 +787,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../compression.md" class="md-nav__link">
+      <a href="../compression.md" class="md-nav__link">
         
   
   
@@ -815,7 +815,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../ccr.md" class="md-nav__link">
+      <a href="../ccr.md" class="md-nav__link">
         
   
   
@@ -843,7 +843,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../image-compression.md" class="md-nav__link">
+      <a href="../image-compression.md" class="md-nav__link">
         
   
   
@@ -871,7 +871,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../memory.md" class="md-nav__link">
+      <a href="../memory.md" class="md-nav__link">
         
   
   
@@ -899,7 +899,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../shared-context.md" class="md-nav__link">
+      <a href="../shared-context.md" class="md-nav__link">
         
   
   
@@ -927,7 +927,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../learn.md" class="md-nav__link">
+      <a href="../learn.md" class="md-nav__link">
         
   
   
@@ -1028,7 +1028,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../integration-guide.md" class="md-nav__link">
+      <a href="../integration-guide.md" class="md-nav__link">
         
   
   
@@ -1056,7 +1056,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../langchain.md" class="md-nav__link">
+      <a href="../langchain.md" class="md-nav__link">
         
   
   
@@ -1084,7 +1084,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../agno.md" class="md-nav__link">
+      <a href="../agno.md" class="md-nav__link">
         
   
   
@@ -1112,7 +1112,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../strands.md" class="md-nav__link">
+      <a href="../strands.md" class="md-nav__link">
         
   
   
@@ -1140,7 +1140,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../mcp.md" class="md-nav__link">
+      <a href="../mcp.md" class="md-nav__link">
         
   
   
@@ -1239,7 +1239,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../ARCHITECTURE.md" class="md-nav__link">
+      <a href="../ARCHITECTURE.md" class="md-nav__link">
         
   
   
@@ -1267,7 +1267,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../transforms.md" class="md-nav__link">
+      <a href="../transforms.md" class="md-nav__link">
         
   
   
@@ -1295,7 +1295,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../text-compression.md" class="md-nav__link">
+      <a href="../text-compression.md" class="md-nav__link">
         
   
   
@@ -1323,7 +1323,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../llmlingua.md" class="md-nav__link">
+      <a href="../llmlingua.md" class="md-nav__link">
         
   
   
@@ -1420,7 +1420,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../benchmarks.md" class="md-nav__link">
+      <a href="../benchmarks.md" class="md-nav__link">
         
   
   
@@ -1448,7 +1448,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../LATENCY_BENCHMARKS.md" class="md-nav__link">
+      <a href="../LATENCY_BENCHMARKS.md" class="md-nav__link">
         
   
   
@@ -1476,7 +1476,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../LIMITATIONS.md" class="md-nav__link">
+      <a href="../LIMITATIONS.md" class="md-nav__link">
         
   
   
@@ -1579,7 +1579,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../cli.md" class="md-nav__link">
+      <a href="../cli.md" class="md-nav__link">
         
   
   
@@ -1607,7 +1607,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../api.md" class="md-nav__link">
+      <a href="../api.md" class="md-nav__link">
         
   
   
@@ -1635,7 +1635,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../sdk.md" class="md-nav__link">
+      <a href="../sdk.md" class="md-nav__link">
         
   
   
@@ -1663,7 +1663,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../metrics.md" class="md-nav__link">
+      <a href="../metrics.md" class="md-nav__link">
         
   
   
@@ -1691,7 +1691,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../errors.md" class="md-nav__link">
+      <a href="../errors.md" class="md-nav__link">
         
   
   
@@ -1719,7 +1719,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../troubleshooting.md" class="md-nav__link">
+      <a href="../troubleshooting.md" class="md-nav__link">
         
   
   
@@ -1812,7 +1812,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../macos-deployment.md" class="md-nav__link">
+      <a href="../macos-deployment.md" class="md-nav__link">
         
   
   
@@ -1867,22 +1867,44 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#deployment-profiles" class="md-nav__link">
+  <a href="#tldr" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Deployment Profiles
+        TL;DR
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Deployment Profiles">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#background" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Background
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#proxy-side-rtk-was-considered-and-rejected" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proxy-side RTK was considered and rejected
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Proxy-side RTK was considered and rejected">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#docker-profile" class="md-nav__link">
+  <a href="#1-cache-hot-zone-risk" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Docker Profile
+        1. Cache hot zone risk
       
     </span>
   </a>
@@ -1890,10 +1912,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#native-profile" class="md-nav__link">
+  <a href="#2-parallel-implementation-with-log_compressorrs" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Native Profile
+        2. Parallel implementation with log_compressor.rs
       
     </span>
   </a>
@@ -1901,10 +1923,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#embedded-profile" class="md-nav__link">
+  <a href="#3-command-rewrite-vs-output-rewrite-different-value-propositions" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Embedded Profile
+        3. Command-rewrite vs output-rewrite — different value propositions
       
     </span>
   </a>
@@ -1917,99 +1939,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cloud-presets" class="md-nav__link">
+  <a href="#what-the-proxy-does-provide" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Cloud Presets
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Cloud Presets">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#aws-ec2ecs" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        AWS (EC2/ECS)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#google-cloud-cloud-run" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Google Cloud (Cloud Run)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#azure-container-apps" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Azure (Container Apps)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#runtime-configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Runtime Configuration
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Runtime Configuration">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#environment-variables" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Environment Variables
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#config-file" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Config File
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#resource-requirements" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Resource Requirements
+        What the proxy does provide
       
     </span>
   </a>
@@ -2017,10 +1950,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#version-history" class="md-nav__link">
+  <a href="#what-the-wrap-cli-does" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Version History
+        What the wrap CLI does
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#re-litigation-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Re-litigation policy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
       
     </span>
   </a>
@@ -2047,210 +2002,106 @@
   
 
 
-<h1 id="011-deployment">011. Deployment<a class="headerlink" href="#011-deployment" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> done</p>
-<h2 id="deployment-profiles">Deployment Profiles<a class="headerlink" href="#deployment-profiles" title="Permanent link">&para;</a></h2>
-<h3 id="docker-profile">Docker Profile<a class="headerlink" href="#docker-profile" title="Permanent link">&para;</a></h3>
-<p><strong>Image:</strong> <code>headroom-ai/headroom:latest</code></p>
-<p><strong>Dockerfile:</strong>
-<div class="language-dockerfile highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">FROM</span><span class="w"> </span><span class="s">python:3.12-slim</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">RUN</span><span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>headroom-ai
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">EXPOSE</span><span class="w"> </span><span class="s">8787</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="k">ENTRYPOINT</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;headroom&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;proxy&quot;</span><span class="p">]</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">CMD</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;--host&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;0.0.0.0&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;--port&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;8787&quot;</span><span class="p">]</span>
-</span></code></pre></div></p>
-<p><strong>docker-compose.yml:</strong>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;3.8&#39;</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nt">services</span><span class="p">:</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">headroom</span><span class="p">:</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">headroom-ai/headroom:latest</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">ports</span><span class="p">:</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;8787:8787&quot;</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">environment</span><span class="p">:</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">HEADROOM_MODE=token</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">volumes</span><span class="p">:</span>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">headroom-data:/root/.headroom</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="nt">volumes</span><span class="p">:</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span><span class="nt">headroom-data</span><span class="p">:</span>
-</span></code></pre></div></p>
-<p><strong>Run:</strong>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>docker-compose<span class="w"> </span>up<span class="w"> </span>-d
-</span></code></pre></div></p>
-<hr />
-<h3 id="native-profile">Native Profile<a class="headerlink" href="#native-profile" title="Permanent link">&para;</a></h3>
-<p><strong>Installation:</strong>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>pip<span class="w"> </span>install<span class="w"> </span>headroom-ai
-</span></code></pre></div></p>
-<p><strong>Run:</strong>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>headroom<span class="w"> </span>proxy<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8787</span>
-</span></code></pre></div></p>
-<hr />
-<h3 id="embedded-profile">Embedded Profile<a class="headerlink" href="#embedded-profile" title="Permanent link">&para;</a></h3>
-<p><strong>Usage:</strong>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom</span><span class="w"> </span><span class="kn">import</span> <span class="n">HeadroomClient</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">client</span> <span class="o">=</span> <span class="n">HeadroomClient</span><span class="p">(</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">api_key</span><span class="o">=</span><span class="s2">&quot;your-api-key&quot;</span><span class="p">,</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">base_url</span><span class="o">=</span><span class="s2">&quot;http://localhost:8787&quot;</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">)</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">compress</span><span class="p">(</span><span class="n">messages</span><span class="p">)</span>
-</span></code></pre></div></p>
-<hr />
-<h2 id="cloud-presets">Cloud Presets<a class="headerlink" href="#cloud-presets" title="Permanent link">&para;</a></h2>
-<h3 id="aws-ec2ecs">AWS (EC2/ECS)<a class="headerlink" href="#aws-ec2ecs" title="Permanent link">&para;</a></h3>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># ~/.headroom/config.yaml</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nt">deployment</span><span class="p">:</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span><span class="nt">profile</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aws</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span><span class="nt">instance_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">t3.medium</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="nt">compression</span><span class="p">:</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">  </span><span class="nt">max_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8192</span>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="nt">cache</span><span class="p">:</span>
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">  </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">redis</span>
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">  </span><span class="nt">redis_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">redis://localhost:6379</span>
-</span></code></pre></div>
-<h3 id="google-cloud-cloud-run">Google Cloud (Cloud Run)<a class="headerlink" href="#google-cloud-cloud-run" title="Permanent link">&para;</a></h3>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">deployment</span><span class="p">:</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">profile</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gcp</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">region</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">us-central1</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">memory</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">512Mi</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="nt">cpu</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
-</span></code></pre></div>
-<h3 id="azure-container-apps">Azure (Container Apps)<a class="headerlink" href="#azure-container-apps" title="Permanent link">&para;</a></h3>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nt">deployment</span><span class="p">:</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="nt">profile</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">azure</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span><span class="nt">resource_group</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">headroom-rg</span>
-</span></code></pre></div>
-<hr />
-<h2 id="runtime-configuration">Runtime Configuration<a class="headerlink" href="#runtime-configuration" title="Permanent link">&para;</a></h2>
-<h3 id="environment-variables">Environment Variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Variable</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>HEADROOM_MODE</code></td>
-<td><code>token</code></td>
-<td>Proxy mode (<code>token</code> or <code>cache</code>)</td>
-</tr>
-<tr>
-<td><code>HEADROOM_PORT</code></td>
-<td><code>8787</code></td>
-<td>Proxy port</td>
-</tr>
-<tr>
-<td><code>HEADROOM_HOST</code></td>
-<td><code>127.0.0.1</code></td>
-<td>Proxy host</td>
-</tr>
-<tr>
-<td><code>ANTHROPIC_API_KEY</code></td>
-<td>-</td>
-<td>Anthropic API key</td>
-</tr>
-<tr>
-<td><code>OPENAI_API_KEY</code></td>
-<td>-</td>
-<td>OpenAI API key</td>
-</tr>
-<tr>
-<td><code>HEADROOM_TELEMETRY</code></td>
-<td>enabled</td>
-<td>Set to <code>off</code> to disable telemetry</td>
-</tr>
-</tbody>
-</table>
-<h3 id="config-file">Config File<a class="headerlink" href="#config-file" title="Permanent link">&para;</a></h3>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># ~/.headroom/config.yaml</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="nt">proxy</span><span class="p">:</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span><span class="nt">host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0.0.0</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8787</span>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="nt">compression</span><span class="p">:</span>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">  </span><span class="nt">max_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4096</span>
-</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">  </span><span class="nt">overlap_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">512</span>
-</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">  </span><span class="nt">content_sensitivity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span>
-</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">  </span><span class="nt">preserve_system_messages</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="w">  </span><span class="nt">priority_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1024</span>
-</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>
-</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="nt">cache</span><span class="p">:</span>
-</span><span id="__span-9-15"><a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-9-16"><a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a><span class="w">  </span><span class="nt">ttl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3600</span>
-</span><span id="__span-9-17"><a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a><span class="w">  </span><span class="nt">max_size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10000</span>
-</span><span id="__span-9-18"><a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a>
-</span><span id="__span-9-19"><a id="__codelineno-9-19" name="__codelineno-9-19" href="#__codelineno-9-19"></a><span class="nt">telemetry</span><span class="p">:</span>
-</span><span id="__span-9-20"><a id="__codelineno-9-20" name="__codelineno-9-20" href="#__codelineno-9-20"></a><span class="w">  </span><span class="nt">metrics</span><span class="p">:</span>
-</span><span id="__span-9-21"><a id="__codelineno-9-21" name="__codelineno-9-21" href="#__codelineno-9-21"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-9-22"><a id="__codelineno-9-22" name="__codelineno-9-22" href="#__codelineno-9-22"></a><span class="w">  </span><span class="nt">tracing</span><span class="p">:</span>
-</span><span id="__span-9-23"><a id="__codelineno-9-23" name="__codelineno-9-23" href="#__codelineno-9-23"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
-</span><span id="__span-9-24"><a id="__codelineno-9-24" name="__codelineno-9-24" href="#__codelineno-9-24"></a>
-</span><span id="__span-9-25"><a id="__codelineno-9-25" name="__codelineno-9-25" href="#__codelineno-9-25"></a><span class="nt">learn</span><span class="p">:</span>
-</span><span id="__span-9-26"><a id="__codelineno-9-26" name="__codelineno-9-26" href="#__codelineno-9-26"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
-</span></code></pre></div>
-<hr />
-<h2 id="resource-requirements">Resource Requirements<a class="headerlink" href="#resource-requirements" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Deployment</th>
-<th>CPU</th>
-<th>Memory</th>
-<th>Storage</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Minimal</td>
-<td>0.5 core</td>
-<td>512MB</td>
-<td>1GB</td>
-</tr>
-<tr>
-<td>Default</td>
-<td>1 core</td>
-<td>1GB</td>
-<td>5GB</td>
-</tr>
-<tr>
-<td>Enterprise</td>
-<td>2 cores</td>
-<td>2GB</td>
-<td>20GB</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2 id="version-history">Version History<a class="headerlink" href="#version-history" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Version</th>
-<th>Date</th>
-<th>Changes</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>1.0.0-draft</td>
-<td>2026-04-16</td>
-<td>Initial deployment document</td>
-</tr>
-</tbody>
-</table>
+<h1 id="rtk-architecture-why-wrap-cli-only">RTK architecture — why wrap-CLI only<a class="headerlink" href="#rtk-architecture-why-wrap-cli-only" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> decided. Locked at Phase G PR-G3 (2026-05).
+<strong>Owner:</strong> Headroom realignment.</p>
+<h2 id="tldr">TL;DR<a class="headerlink" href="#tldr" title="Permanent link">&para;</a></h2>
+<p><strong>RTK is a wrap-CLI hook, not a proxy-side compressor.</strong> The Headroom
+proxy does NOT invoke RTK on tool-result content. Future contributors
+who consider moving RTK into the proxy hot path: read this doc first.</p>
+<h2 id="background">Background<a class="headerlink" href="#background" title="Permanent link">&para;</a></h2>
+<p>RTK (Realtime Token Kompress) rewrites shell <strong>commands</strong> at exec
+time so that a <code>git diff</code> or <code>grep</code> invocation emits a more
+compressed output before the agent ever ingests it. RTK runs in the
+wrap-CLI tail — <code>headroom wrap claude</code>, <code>headroom wrap codex</code>, etc.
+— where it installs a <code>~/.rtk/bin/rtk</code> shim ahead of the agent CLI
+and intercepts shelled-out subprocesses.</p>
+<p>It surfaces value in two places:
+1. <strong>Tokens saved per invocation</strong> — measured by <code>rtk gain --format json</code>.
+2. <strong>Tokens saved per session</strong> — aggregated at wrap-session end.</p>
+<p>Both signals feed <code>wrap_rtk_invocations_total</code> and
+<code>wrap_rtk_tokens_saved_per_session</code> (registered by the Rust proxy's
+observability surface so a single <code>/metrics</code> scrape exposes the full
+picture).</p>
+<h2 id="proxy-side-rtk-was-considered-and-rejected">Proxy-side RTK was considered and rejected<a class="headerlink" href="#proxy-side-rtk-was-considered-and-rejected" title="Permanent link">&para;</a></h2>
+<p>At Phase G scoping, three reviewers floated the idea of invoking
+RTK on the <strong>proxy</strong> side: when a <code>tool_result</code> block flows
+upstream, dispatch it through RTK to shrink the content before it
+hits the model.</p>
+<p><strong>Decision: rejected.</strong> Three load-bearing reasons.</p>
+<h3 id="1-cache-hot-zone-risk">1. Cache hot zone risk<a class="headerlink" href="#1-cache-hot-zone-risk" title="Permanent link">&para;</a></h3>
+<p>The proxy's Phase B cache-safety contract pins <code>tool_result</code>
+content as part of the cache hot zone. Compression there bursts
+the prompt cache because the rewritten bytes diverge from the
+canonical wire bytes the upstream cached. Phase B PR-B2 → PR-B7
+spent ~3000 LOC carving the live-zone-only surface specifically
+to prevent this class of cache-invalidation. Inserting RTK
+proxy-side would re-introduce it.</p>
+<h3 id="2-parallel-implementation-with-log_compressorrs">2. Parallel implementation with <code>log_compressor.rs</code><a class="headerlink" href="#2-parallel-implementation-with-log_compressorrs" title="Permanent link">&para;</a></h3>
+<p>The Rust proxy already has a <code>crates/headroom-core/src/transforms/log_compressor.rs</code>
+that compresses <strong>tool output text</strong> in the live zone. It uses the
+same heuristics RTK uses (whitespace de-dup, line de-dup,
+file-listing collapse) but invoked at the proxy's per-block
+dispatcher rather than at the shell exec boundary. Adding RTK
+proxy-side would mean two implementations of the same compression
+in the same hot path; "no silent fallbacks, no parallel impls" is
+explicit project policy.</p>
+<h3 id="3-command-rewrite-vs-output-rewrite-different-value-propositions">3. Command-rewrite vs output-rewrite — different value propositions<a class="headerlink" href="#3-command-rewrite-vs-output-rewrite-different-value-propositions" title="Permanent link">&para;</a></h3>
+<p>RTK rewrites <strong>commands</strong> before they execute. The
+<code>git log --oneline</code> you typed becomes <code>git log --oneline -n 50</code>
+because RTK has learned that the first 50 commits are usually
+enough context. That's a fundamentally different mechanism from
+compressing the <strong>output</strong> of an unmodified command. A proxy-side
+invocation would skip the command-rewrite half — the half that
+generates the largest savings on heavy shell workloads — and only
+catch the output side, which is already covered by
+<code>log_compressor</code> and <code>code_compressor</code>.</p>
+<h2 id="what-the-proxy-does-provide">What the proxy does provide<a class="headerlink" href="#what-the-proxy-does-provide" title="Permanent link">&para;</a></h2>
+<p>Per Phase G PR-G3, the proxy exposes RTK-derived metrics via its
+registry:</p>
+<ul>
+<li><code>wrap_rtk_invocations_total{tool}</code> — driven by the wrap-CLI
+  polling <code>rtk gain --format json</code> and incrementing the registered
+  counter by the delta since last poll.</li>
+<li><code>wrap_rtk_tokens_saved_per_session</code> — emitted at wrap-session
+  close.</li>
+</ul>
+<p>This keeps the operator dashboard single-pane-of-glass without
+re-implementing RTK inside the proxy.</p>
+<h2 id="what-the-wrap-cli-does">What the wrap CLI does<a class="headerlink" href="#what-the-wrap-cli-does" title="Permanent link">&para;</a></h2>
+<p>Every <code>headroom wrap &lt;agent&gt;</code> subcommand:</p>
+<ol>
+<li>Ensures the RTK binary is installed via <code>_ensure_rtk_binary()</code>.</li>
+<li>Injects the <code>&lt;!-- headroom:rtk-instructions --&gt;</code> block into the
+   agent's instruction file (e.g. <code>AGENTS.md</code>, <code>.cursorrules</code>).</li>
+<li>Spawns the proxy and the agent CLI side-by-side.</li>
+<li>Polls <code>rtk gain --format json</code> on a 5-second memoization window
+   and feeds the delta into the proxy's metric registry.</li>
+</ol>
+<p>See <code>headroom/cli/wrap/</code> for the per-agent shims.</p>
+<h2 id="re-litigation-policy">Re-litigation policy<a class="headerlink" href="#re-litigation-policy" title="Permanent link">&para;</a></h2>
+<p>A change to this architecture should:</p>
+<ol>
+<li>Quote the live-zone-only contract from
+   <code>REALIGNMENT/04-phase-B-live-zone.md</code> and explain why the
+   cache-burst risk is acceptable.</li>
+<li>Show measurements (not estimates) that proxy-side RTK adds value
+   beyond <code>log_compressor.rs</code> on real production traffic.</li>
+<li>Have an exit ramp: a CLI flag to disable proxy-side RTK without
+   reverting the wrap-CLI integration.</li>
+</ol>
+<p>Without all three, treat the proposal as a regression and link this
+doc.</p>
+<h2 id="references">References<a class="headerlink" href="#references" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>REALIGNMENT/09-phase-G-rtk-observability.md</code> — Phase G plan.</li>
+<li><code>REALIGNMENT/04-phase-B-live-zone.md</code> — cache hot-zone contract.</li>
+<li><code>headroom/cli/wrap/</code> — wrap-CLI implementation.</li>
+<li><code>crates/headroom-core/src/transforms/log_compressor.rs</code> — the
+  proxy-side log compressor RTK would parallel.</li>
+<li>2026-05-01 user direction message archived in
+  <code>project_compression_realignment_2026_05</code> memory note.</li>
+</ul>
 
 
 
@@ -2343,10 +2194,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.highlight", "search.suggest", "search.share", "toc.follow", "header.autohide"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.highlight", "search.suggest", "search.share", "toc.follow", "header.autohide"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   </body>

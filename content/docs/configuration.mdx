@@ -5,6 +5,20 @@ description: All configuration options for the Headroom Python and TypeScript SD
 
 Headroom can be configured via the SDK constructor, proxy command line, environment variables, or per-request overrides.
 
+## CLI Context Tool
+
+`headroom wrap ...` uses RTK for local shell-output filtering by default.
+Set `HEADROOM_CONTEXT_TOOL=lean-ctx` to have wrap commands install or reuse
+`lean-ctx` and run `lean-ctx init --agent <tool>` instead of RTK setup.
+
+```bash
+export HEADROOM_CONTEXT_TOOL=lean-ctx
+headroom wrap claude
+headroom wrap codex --prepare-only
+```
+
+Supported values are `rtk` and `lean-ctx`; unset defaults to `rtk`.
+
 ## Modes
 
 | Mode | Behavior | Use Case |
@@ -221,6 +235,7 @@ normalized = weights.normalized()
 headroom proxy \
   --port 8787 \              # Port to listen on
   --host 0.0.0.0 \           # Host to bind to
+  --mode token \             # token compression mode; use cache for prefix-cache stability
   --budget 10.00 \           # Daily budget limit in USD
   --log-file headroom.jsonl  # Log file path
 ```
@@ -234,18 +249,28 @@ headroom proxy --no-optimize
 # Disable semantic caching
 headroom proxy --no-cache
 
-# Enable LLMLingua ML compression
-headroom proxy --llmlingua
-headroom proxy --llmlingua --llmlingua-device cuda --llmlingua-rate 0.4
+# Preserve provider prefix-cache stability instead of maximizing token removal
+headroom proxy --mode cache
+
+# Enable memory and live learning
+headroom proxy --memory
+headroom proxy --learn --min-evidence 3
 ```
 
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `HEADROOM_LOG_LEVEL` | Logging level | `INFO` |
-| `HEADROOM_STORE_URL` | Database URL | temp directory |
-| `HEADROOM_DEFAULT_MODE` | Default mode | `optimize` |
+| `HEADROOM_HOST` | Proxy bind host | `127.0.0.1` |
+| `HEADROOM_PORT` | Proxy bind port | `8787` |
+| `HEADROOM_MODE` | Proxy optimization mode: `token` or `cache` | `token` |
+| `HEADROOM_WORKERS` | Uvicorn worker count | `1` |
+| `HEADROOM_LIMIT_CONCURRENCY` | Maximum concurrent connections before 503 | `1000` |
+| `HEADROOM_MAX_CONNECTIONS` | Maximum upstream HTTP connections | `500` |
+| `HEADROOM_MAX_KEEPALIVE` | Maximum upstream keep-alive connections | `100` |
+| `HEADROOM_BUDGET` | Daily budget limit in USD | -- |
+| `HEADROOM_TELEMETRY` | Set to `off` to disable anonymous telemetry | enabled |
+| `HEADROOM_STATELESS` | Set to `true` to disable filesystem writes | `false` |
 | `HEADROOM_MODEL_LIMITS` | Custom model config (JSON string or file path) | -- |
 | `HEADROOM_BASE_URL` | Base URL of the Headroom proxy (TypeScript SDK) | `http://localhost:8787` |
 | `HEADROOM_API_KEY` | API key for Headroom Cloud authentication | -- |
@@ -254,7 +279,7 @@ headroom proxy --llmlingua --llmlingua-device cuda --llmlingua-rate 0.4
 | `HEADROOM_SAVINGS_PATH` | Override persistent savings file location. Always wins when set. | derived from `${HEADROOM_WORKSPACE_DIR}` |
 | `HEADROOM_TOIN_PATH` | Override TOIN telemetry file location. Always wins when set. | derived from `${HEADROOM_WORKSPACE_DIR}` |
 | `HEADROOM_SUBSCRIPTION_STATE_PATH` | Override subscription tracker state file. Always wins when set. | derived from `${HEADROOM_WORKSPACE_DIR}` |
-| `HEADROOM_TELEMETRY` | Set to `off` to disable anonymous telemetry | `on` |
+| `HEADROOM_TELEMETRY` | Set to `on` to enable anonymous telemetry | `off` |
 | `HEADROOM_MEMORY_INJECTION_MODE` | Memory-context routing mode: `live_zone_tail` (default) or `disabled`. The legacy `system_prompt` mode was retired by PR-A2; supplying it raises. | `live_zone_tail` |
 | `HEADROOM_PROXY_PYTHON_FORWARDER_MODE` | Python forwarder serialization mode. `byte_faithful` (default) forwards original request bytes verbatim when no transform mutated the body and re-serializes canonically only when needed — keeps Anthropic prompt-cache hit-rate intact. `legacy_json_kwarg` is an explicit operator opt-in for emergency rollback to the historical `httpx ... json=body` behavior. NOT a fallback — only flip on explicit operator decision. | `byte_faithful` |
 | `HEADROOM_STRIP_INTERNAL_HEADERS` | Python proxy: whether to strip internal `x-headroom-*` request headers (e.g. `x-headroom-bypass`, `x-headroom-mode`, `x-headroom-user-id`, `x-headroom-stack`, `x-headroom-base-url`) before every upstream forwarder call (PR-A5, fixes P5-49). `enabled` (default) stops fingerprinting / leakage. `disabled` is an explicit operator opt-in for diagnostic shadow tracing — NOT a fallback. Inbound reads of these headers (bypass gating, memory user-id resolution) are unaffected because they read `request.headers` directly. | `enabled` |

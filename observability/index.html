@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://chopratejas.github.io/headroom/spec/011-deployment/">
+        <link rel="canonical" href="https://chopratejas.github.io/headroom/observability/">
       
       
       
@@ -18,19 +18,19 @@
         
       
       
-      <link rel="icon" href="../../assets/images/favicon.png">
+      <link rel="icon" href="../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>011. Deployment - Headroom</title>
+        <title>Observability — proxy metrics - Headroom</title>
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -49,9 +49,9 @@
       
     
     
-      <link rel="stylesheet" href="../../stylesheets/extra.css">
+      <link rel="stylesheet" href="../stylesheets/extra.css">
     
-    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -76,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#011-deployment" class="md-skip">
+        <a href="#observability-proxy-metrics" class="md-skip">
           Skip to content
         </a>
       
@@ -92,7 +92,7 @@
 
 <header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="Headroom" class="md-header__button md-logo" aria-label="Headroom" data-md-component="logo">
+    <a href=".." title="Headroom" class="md-header__button md-logo" aria-label="Headroom" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12 18.54 7.37-5.74L21 14.07l-9 7-9-7 1.62-1.26zM12 16 3 9l9-7 9 7zm0-11.47L6.26 9 12 13.47 17.74 9z"/></svg>
@@ -112,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              011. Deployment
+              Observability — proxy metrics
             
           </span>
         </div>
@@ -224,7 +224,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../../index.md" class="md-tabs__link">
+      <a href="../index.md" class="md-tabs__link">
         
   
   
@@ -245,7 +245,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../quickstart.md" class="md-tabs__link">
+        <a href="../quickstart.md" class="md-tabs__link">
           
   
   
@@ -267,7 +267,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../proxy.md" class="md-tabs__link">
+        <a href="../proxy.md" class="md-tabs__link">
           
   
   
@@ -289,7 +289,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../integration-guide.md" class="md-tabs__link">
+        <a href="../integration-guide.md" class="md-tabs__link">
           
   
   
@@ -311,7 +311,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../ARCHITECTURE.md" class="md-tabs__link">
+        <a href="../ARCHITECTURE.md" class="md-tabs__link">
           
   
   
@@ -333,7 +333,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../benchmarks.md" class="md-tabs__link">
+        <a href="../benchmarks.md" class="md-tabs__link">
           
   
   
@@ -355,7 +355,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../cli.md" class="md-tabs__link">
+        <a href="../cli.md" class="md-tabs__link">
           
   
   
@@ -377,7 +377,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../macos-deployment.md" class="md-tabs__link">
+        <a href="../macos-deployment.md" class="md-tabs__link">
           
   
   
@@ -419,7 +419,7 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="Headroom" class="md-nav__button md-logo" aria-label="Headroom" data-md-component="logo">
+    <a href=".." title="Headroom" class="md-nav__button md-logo" aria-label="Headroom" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12 18.54 7.37-5.74L21 14.07l-9 7-9-7 1.62-1.26zM12 16 3 9l9-7 9 7zm0-11.47L6.26 9 12 13.47 17.74 9z"/></svg>
@@ -449,7 +449,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../index.md" class="md-nav__link">
+      <a href="../index.md" class="md-nav__link">
         
   
   
@@ -542,7 +542,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../quickstart.md" class="md-nav__link">
+      <a href="../quickstart.md" class="md-nav__link">
         
   
   
@@ -570,7 +570,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started.md" class="md-nav__link">
+      <a href="../getting-started.md" class="md-nav__link">
         
   
   
@@ -598,7 +598,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../docker-install.md" class="md-nav__link">
+      <a href="../docker-install.md" class="md-nav__link">
         
   
   
@@ -626,7 +626,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../persistent-installs.md" class="md-nav__link">
+      <a href="../persistent-installs.md" class="md-nav__link">
         
   
   
@@ -654,7 +654,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../configuration.md" class="md-nav__link">
+      <a href="../configuration.md" class="md-nav__link">
         
   
   
@@ -759,7 +759,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../proxy.md" class="md-nav__link">
+      <a href="../proxy.md" class="md-nav__link">
         
   
   
@@ -787,7 +787,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../compression.md" class="md-nav__link">
+      <a href="../compression.md" class="md-nav__link">
         
   
   
@@ -815,7 +815,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../ccr.md" class="md-nav__link">
+      <a href="../ccr.md" class="md-nav__link">
         
   
   
@@ -843,7 +843,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../image-compression.md" class="md-nav__link">
+      <a href="../image-compression.md" class="md-nav__link">
         
   
   
@@ -871,7 +871,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../memory.md" class="md-nav__link">
+      <a href="../memory.md" class="md-nav__link">
         
   
   
@@ -899,7 +899,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../shared-context.md" class="md-nav__link">
+      <a href="../shared-context.md" class="md-nav__link">
         
   
   
@@ -927,7 +927,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../learn.md" class="md-nav__link">
+      <a href="../learn.md" class="md-nav__link">
         
   
   
@@ -1028,7 +1028,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../integration-guide.md" class="md-nav__link">
+      <a href="../integration-guide.md" class="md-nav__link">
         
   
   
@@ -1056,7 +1056,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../langchain.md" class="md-nav__link">
+      <a href="../langchain.md" class="md-nav__link">
         
   
   
@@ -1084,7 +1084,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../agno.md" class="md-nav__link">
+      <a href="../agno.md" class="md-nav__link">
         
   
   
@@ -1112,7 +1112,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../strands.md" class="md-nav__link">
+      <a href="../strands.md" class="md-nav__link">
         
   
   
@@ -1140,7 +1140,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../mcp.md" class="md-nav__link">
+      <a href="../mcp.md" class="md-nav__link">
         
   
   
@@ -1239,7 +1239,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../ARCHITECTURE.md" class="md-nav__link">
+      <a href="../ARCHITECTURE.md" class="md-nav__link">
         
   
   
@@ -1267,7 +1267,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../transforms.md" class="md-nav__link">
+      <a href="../transforms.md" class="md-nav__link">
         
   
   
@@ -1295,7 +1295,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../text-compression.md" class="md-nav__link">
+      <a href="../text-compression.md" class="md-nav__link">
         
   
   
@@ -1323,7 +1323,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../llmlingua.md" class="md-nav__link">
+      <a href="../llmlingua.md" class="md-nav__link">
         
   
   
@@ -1420,7 +1420,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../benchmarks.md" class="md-nav__link">
+      <a href="../benchmarks.md" class="md-nav__link">
         
   
   
@@ -1448,7 +1448,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../LATENCY_BENCHMARKS.md" class="md-nav__link">
+      <a href="../LATENCY_BENCHMARKS.md" class="md-nav__link">
         
   
   
@@ -1476,7 +1476,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../LIMITATIONS.md" class="md-nav__link">
+      <a href="../LIMITATIONS.md" class="md-nav__link">
         
   
   
@@ -1579,7 +1579,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../cli.md" class="md-nav__link">
+      <a href="../cli.md" class="md-nav__link">
         
   
   
@@ -1607,7 +1607,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../api.md" class="md-nav__link">
+      <a href="../api.md" class="md-nav__link">
         
   
   
@@ -1635,7 +1635,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../sdk.md" class="md-nav__link">
+      <a href="../sdk.md" class="md-nav__link">
         
   
   
@@ -1663,7 +1663,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../metrics.md" class="md-nav__link">
+      <a href="../metrics.md" class="md-nav__link">
         
   
   
@@ -1691,7 +1691,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../errors.md" class="md-nav__link">
+      <a href="../errors.md" class="md-nav__link">
         
   
   
@@ -1719,7 +1719,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../troubleshooting.md" class="md-nav__link">
+      <a href="../troubleshooting.md" class="md-nav__link">
         
   
   
@@ -1812,7 +1812,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../macos-deployment.md" class="md-nav__link">
+      <a href="../macos-deployment.md" class="md-nav__link">
         
   
   
@@ -1867,22 +1867,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#deployment-profiles" class="md-nav__link">
+  <a href="#metric-catalogue" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Deployment Profiles
+        Metric catalogue
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Deployment Profiles">
+    <nav class="md-nav" aria-label="Metric catalogue">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#docker-profile" class="md-nav__link">
+  <a href="#bedrock-route-phase-d-pr-d3" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Docker Profile
+        Bedrock route (Phase D PR-D3)
       
     </span>
   </a>
@@ -1890,10 +1890,22 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#native-profile" class="md-nav__link">
+  <a href="#proxy-wide-phase-g-pr-g3" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Native Profile
+        Proxy-wide (Phase G PR-G3)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Proxy-wide (Phase G PR-G3)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cache-compression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache + compression
       
     </span>
   </a>
@@ -1901,10 +1913,98 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#embedded-profile" class="md-nav__link">
+  <a href="#cache-safety-alarm" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Embedded Profile
+        Cache-safety alarm
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#upstream-rate-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upstream rate limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openai-responses-telemetry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OpenAI Responses telemetry
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wrap-cli-rtk-python-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wrap CLI / RTK (Python-side)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#image-log-redaction-python-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Image log redaction (Python-side)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-to-query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to query
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="How to query">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-h-canary-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase H canary gate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#other-common-queries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Other common queries
       
     </span>
   </a>
@@ -1917,22 +2017,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cloud-presets" class="md-nav__link">
+  <a href="#wiring" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Cloud Presets
+        Wiring
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Cloud Presets">
+    <nav class="md-nav" aria-label="Wiring">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#aws-ec2ecs" class="md-nav__link">
+  <a href="#h3-force-zero" class="md-nav__link">
     <span class="md-ellipsis">
       
-        AWS (EC2/ECS)
+        H3 force-zero
       
     </span>
   </a>
@@ -1940,10 +2040,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#google-cloud-cloud-run" class="md-nav__link">
+  <a href="#h4-prometheus-crate-version-pin" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Google Cloud (Cloud Run)
+        H4 prometheus crate version pin
       
     </span>
   </a>
@@ -1951,10 +2051,32 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#azure-container-apps" class="md-nav__link">
+  <a href="#c2-alarm-wiring" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Azure (Container Apps)
+        C2 alarm wiring
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#h1-per-strategy-ratio-wiring" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        H1 per-strategy ratio wiring
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#h2-aborted-stream-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        H2 aborted-stream gate
       
     </span>
   </a>
@@ -1967,49 +2089,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#runtime-configuration" class="md-nav__link">
+  <a href="#cardinality-discipline" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Runtime Configuration
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Runtime Configuration">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#environment-variables" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Environment Variables
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#config-file" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Config File
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#resource-requirements" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Resource Requirements
+        Cardinality discipline
       
     </span>
   </a>
@@ -2017,10 +2100,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#version-history" class="md-nav__link">
+  <a href="#see-also" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Version History
+        See also
       
     </span>
   </a>
@@ -2047,210 +2130,379 @@
   
 
 
-<h1 id="011-deployment">011. Deployment<a class="headerlink" href="#011-deployment" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> done</p>
-<h2 id="deployment-profiles">Deployment Profiles<a class="headerlink" href="#deployment-profiles" title="Permanent link">&para;</a></h2>
-<h3 id="docker-profile">Docker Profile<a class="headerlink" href="#docker-profile" title="Permanent link">&para;</a></h3>
-<p><strong>Image:</strong> <code>headroom-ai/headroom:latest</code></p>
-<p><strong>Dockerfile:</strong>
-<div class="language-dockerfile highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">FROM</span><span class="w"> </span><span class="s">python:3.12-slim</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">RUN</span><span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>headroom-ai
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">EXPOSE</span><span class="w"> </span><span class="s">8787</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="k">ENTRYPOINT</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;headroom&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;proxy&quot;</span><span class="p">]</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">CMD</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;--host&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;0.0.0.0&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;--port&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;8787&quot;</span><span class="p">]</span>
-</span></code></pre></div></p>
-<p><strong>docker-compose.yml:</strong>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;3.8&#39;</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nt">services</span><span class="p">:</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">headroom</span><span class="p">:</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">headroom-ai/headroom:latest</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">ports</span><span class="p">:</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;8787:8787&quot;</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">environment</span><span class="p">:</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">HEADROOM_MODE=token</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">volumes</span><span class="p">:</span>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">headroom-data:/root/.headroom</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="nt">volumes</span><span class="p">:</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span><span class="nt">headroom-data</span><span class="p">:</span>
-</span></code></pre></div></p>
-<p><strong>Run:</strong>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>docker-compose<span class="w"> </span>up<span class="w"> </span>-d
-</span></code></pre></div></p>
-<hr />
-<h3 id="native-profile">Native Profile<a class="headerlink" href="#native-profile" title="Permanent link">&para;</a></h3>
-<p><strong>Installation:</strong>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>pip<span class="w"> </span>install<span class="w"> </span>headroom-ai
-</span></code></pre></div></p>
-<p><strong>Run:</strong>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>headroom<span class="w"> </span>proxy<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8787</span>
-</span></code></pre></div></p>
-<hr />
-<h3 id="embedded-profile">Embedded Profile<a class="headerlink" href="#embedded-profile" title="Permanent link">&para;</a></h3>
-<p><strong>Usage:</strong>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">headroom</span><span class="w"> </span><span class="kn">import</span> <span class="n">HeadroomClient</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">client</span> <span class="o">=</span> <span class="n">HeadroomClient</span><span class="p">(</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">api_key</span><span class="o">=</span><span class="s2">&quot;your-api-key&quot;</span><span class="p">,</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">base_url</span><span class="o">=</span><span class="s2">&quot;http://localhost:8787&quot;</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">)</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">client</span><span class="o">.</span><span class="n">compress</span><span class="p">(</span><span class="n">messages</span><span class="p">)</span>
-</span></code></pre></div></p>
-<hr />
-<h2 id="cloud-presets">Cloud Presets<a class="headerlink" href="#cloud-presets" title="Permanent link">&para;</a></h2>
-<h3 id="aws-ec2ecs">AWS (EC2/ECS)<a class="headerlink" href="#aws-ec2ecs" title="Permanent link">&para;</a></h3>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># ~/.headroom/config.yaml</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nt">deployment</span><span class="p">:</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span><span class="nt">profile</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">aws</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span><span class="nt">instance_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">t3.medium</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="nt">compression</span><span class="p">:</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">  </span><span class="nt">max_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8192</span>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="nt">cache</span><span class="p">:</span>
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">  </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">redis</span>
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">  </span><span class="nt">redis_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">redis://localhost:6379</span>
-</span></code></pre></div>
-<h3 id="google-cloud-cloud-run">Google Cloud (Cloud Run)<a class="headerlink" href="#google-cloud-cloud-run" title="Permanent link">&para;</a></h3>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">deployment</span><span class="p">:</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">profile</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gcp</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">region</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">us-central1</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">memory</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">512Mi</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="nt">cpu</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
-</span></code></pre></div>
-<h3 id="azure-container-apps">Azure (Container Apps)<a class="headerlink" href="#azure-container-apps" title="Permanent link">&para;</a></h3>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nt">deployment</span><span class="p">:</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="nt">profile</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">azure</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span><span class="nt">resource_group</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">headroom-rg</span>
-</span></code></pre></div>
-<hr />
-<h2 id="runtime-configuration">Runtime Configuration<a class="headerlink" href="#runtime-configuration" title="Permanent link">&para;</a></h2>
-<h3 id="environment-variables">Environment Variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h3>
+<h1 id="observability-proxy-metrics">Observability — proxy metrics<a class="headerlink" href="#observability-proxy-metrics" title="Permanent link">&para;</a></h1>
+<p>The Headroom Rust proxy exposes Prometheus-format metrics on the
+<code>/metrics</code> endpoint of every running proxy instance. The metric
+catalogue below covers Phase D (Bedrock route instrumentation) and
+Phase G PR-G3 (per-invocation RTK + proxy-wide observability).</p>
+<p>All metric names + label keys are constants in
+<code>crates/headroom-proxy/src/observability/metric_names.rs</code>, so any
+rename catches one file in code review.</p>
+<h2 id="metric-catalogue">Metric catalogue<a class="headerlink" href="#metric-catalogue" title="Permanent link">&para;</a></h2>
+<h3 id="bedrock-route-phase-d-pr-d3">Bedrock route (Phase D PR-D3)<a class="headerlink" href="#bedrock-route-phase-d-pr-d3" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
-<th>Variable</th>
-<th>Default</th>
-<th>Description</th>
+<th>Name</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Purpose</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>HEADROOM_MODE</code></td>
-<td><code>token</code></td>
-<td>Proxy mode (<code>token</code> or <code>cache</code>)</td>
+<td><code>bedrock_invoke_count_total</code></td>
+<td>Counter</td>
+<td><code>model</code>, <code>region</code>, <code>auth_mode</code></td>
+<td>One increment per Bedrock <code>/invoke</code> or <code>/converse</code> request.</td>
 </tr>
 <tr>
-<td><code>HEADROOM_PORT</code></td>
-<td><code>8787</code></td>
-<td>Proxy port</td>
+<td><code>bedrock_invoke_latency_seconds</code></td>
+<td>Histogram</td>
+<td><code>model</code>, <code>region</code></td>
+<td>Latency from proxy entry to upstream completion. Buckets target 50ms–60s.</td>
 </tr>
 <tr>
-<td><code>HEADROOM_HOST</code></td>
-<td><code>127.0.0.1</code></td>
-<td>Proxy host</td>
-</tr>
-<tr>
-<td><code>ANTHROPIC_API_KEY</code></td>
-<td>-</td>
-<td>Anthropic API key</td>
-</tr>
-<tr>
-<td><code>OPENAI_API_KEY</code></td>
-<td>-</td>
-<td>OpenAI API key</td>
-</tr>
-<tr>
-<td><code>HEADROOM_TELEMETRY</code></td>
-<td>enabled</td>
-<td>Set to <code>off</code> to disable telemetry</td>
+<td><code>bedrock_eventstream_message_count_total</code></td>
+<td>Counter</td>
+<td><code>model</code>, <code>region</code>, <code>event_type</code></td>
+<td>One increment per parsed binary EventStream message.</td>
 </tr>
 </tbody>
 </table>
-<h3 id="config-file">Config File<a class="headerlink" href="#config-file" title="Permanent link">&para;</a></h3>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># ~/.headroom/config.yaml</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="nt">proxy</span><span class="p">:</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span><span class="nt">host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0.0.0</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8787</span>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="nt">compression</span><span class="p">:</span>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">  </span><span class="nt">max_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4096</span>
-</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">  </span><span class="nt">overlap_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">512</span>
-</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">  </span><span class="nt">content_sensitivity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span>
-</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">  </span><span class="nt">preserve_system_messages</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="w">  </span><span class="nt">priority_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1024</span>
-</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>
-</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="nt">cache</span><span class="p">:</span>
-</span><span id="__span-9-15"><a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-9-16"><a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a><span class="w">  </span><span class="nt">ttl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3600</span>
-</span><span id="__span-9-17"><a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a><span class="w">  </span><span class="nt">max_size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10000</span>
-</span><span id="__span-9-18"><a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a>
-</span><span id="__span-9-19"><a id="__codelineno-9-19" name="__codelineno-9-19" href="#__codelineno-9-19"></a><span class="nt">telemetry</span><span class="p">:</span>
-</span><span id="__span-9-20"><a id="__codelineno-9-20" name="__codelineno-9-20" href="#__codelineno-9-20"></a><span class="w">  </span><span class="nt">metrics</span><span class="p">:</span>
-</span><span id="__span-9-21"><a id="__codelineno-9-21" name="__codelineno-9-21" href="#__codelineno-9-21"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-9-22"><a id="__codelineno-9-22" name="__codelineno-9-22" href="#__codelineno-9-22"></a><span class="w">  </span><span class="nt">tracing</span><span class="p">:</span>
-</span><span id="__span-9-23"><a id="__codelineno-9-23" name="__codelineno-9-23" href="#__codelineno-9-23"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
-</span><span id="__span-9-24"><a id="__codelineno-9-24" name="__codelineno-9-24" href="#__codelineno-9-24"></a>
-</span><span id="__span-9-25"><a id="__codelineno-9-25" name="__codelineno-9-25" href="#__codelineno-9-25"></a><span class="nt">learn</span><span class="p">:</span>
-</span><span id="__span-9-26"><a id="__codelineno-9-26" name="__codelineno-9-26" href="#__codelineno-9-26"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<h3 id="proxy-wide-phase-g-pr-g3">Proxy-wide (Phase G PR-G3)<a class="headerlink" href="#proxy-wide-phase-g-pr-g3" title="Permanent link">&para;</a></h3>
+<h4 id="cache-compression">Cache + compression<a class="headerlink" href="#cache-compression" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>proxy_cache_hit_rate_per_session</code></td>
+<td>Histogram</td>
+<td><code>provider</code></td>
+<td>Per-session cache hit rate. <strong>Phase H canary gate.</strong></td>
+</tr>
+<tr>
+<td><code>proxy_compression_ratio_by_strategy</code></td>
+<td>Histogram</td>
+<td><code>strategy</code>, <code>content_type</code></td>
+<td><code>compressed_tokens / original_tokens</code> per shrunk block.</td>
+</tr>
+<tr>
+<td><code>proxy_compression_rejected_by_token_check_total</code></td>
+<td>Counter</td>
+<td><code>strategy</code></td>
+<td>Compressor ran but failed the shrink check.</td>
+</tr>
+</tbody>
+</table>
+<h4 id="cache-safety-alarm">Cache-safety alarm<a class="headerlink" href="#cache-safety-alarm" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>proxy_passthrough_bytes_modified_total</code></td>
+<td>Counter</td>
+<td><code>path</code></td>
+<td>Bytes mutated on a passthrough path. <strong>Must stay 0 outside the compression hot path</strong> — any non-zero rate fires the cache-safety alarm.</td>
+</tr>
+</tbody>
+</table>
+<p>The alarm metric is wired in <code>crates/headroom-proxy/src/proxy.rs</code>:
+when the dispatcher returns <code>Outcome::NoCompression</code> or
+<code>Outcome::Passthrough</code>, the post-dispatcher byte length is compared
+to the original buffered length and any delta increments the
+counter (by the byte delta) under the request's path label. The
+PR-E4 prompt_cache_key injector runs AFTER the alarm check, so its
+intentional byte mutations do not trip the alarm.</p>
+<h4 id="upstream-rate-limits">Upstream rate limits<a class="headerlink" href="#upstream-rate-limits" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>proxy_rate_limit_remaining_requests</code></td>
+<td>Gauge</td>
+<td><code>provider</code></td>
+<td>Last-seen remaining requests in the current window.</td>
+</tr>
+<tr>
+<td><code>proxy_rate_limit_remaining_tokens</code></td>
+<td>Gauge</td>
+<td><code>provider</code></td>
+<td>Last-seen remaining tokens in the current window.</td>
+</tr>
+<tr>
+<td><code>proxy_rate_limit_remaining_input_tokens</code></td>
+<td>Gauge</td>
+<td><code>provider</code></td>
+<td>Anthropic-only input-token bucket.</td>
+</tr>
+<tr>
+<td><code>proxy_rate_limit_remaining_output_tokens</code></td>
+<td>Gauge</td>
+<td><code>provider</code></td>
+<td>Anthropic-only output-token bucket.</td>
+</tr>
+</tbody>
+</table>
+<h4 id="openai-responses-telemetry">OpenAI Responses telemetry<a class="headerlink" href="#openai-responses-telemetry" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>proxy_service_tier_count_total</code></td>
+<td>Counter</td>
+<td><code>tier</code></td>
+<td>Service-tier distribution observed at the proxy.</td>
+</tr>
+<tr>
+<td><code>proxy_response_status_count_total</code></td>
+<td>Counter</td>
+<td><code>status</code></td>
+<td>Terminal status distribution (<code>completed</code>, <code>incomplete</code>, <code>failed</code>, <code>cancelled</code>, <code>in_progress</code>).</td>
+</tr>
+</tbody>
+</table>
+<h4 id="wrap-cli-rtk-python-side">Wrap CLI / RTK (Python-side)<a class="headerlink" href="#wrap-cli-rtk-python-side" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>wrap_rtk_invocations_total</code></td>
+<td>Counter</td>
+<td><code>tool</code></td>
+<td>RTK invocations observed via the wrap-CLI tail. Surfaced via the Python proxy's <code>/metrics</code> exporter; the wrap CLI bumps <code>headroom.cli.wrap_rtk_metrics.record_rtk_invocation(...)</code>.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>C4 remediation:</strong> This counter is Python-side because RTK is
+wrapped by <code>headroom wrap</code> (Python CLI) and the wrap-side tail
+is the natural emit site. The Rust proxy previously held a dead
+counter for this metric; that has been removed.</p>
+</blockquote>
+<h4 id="image-log-redaction-python-side">Image log redaction (Python-side)<a class="headerlink" href="#image-log-redaction-python-side" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>proxy_image_generation_call_log_redacted_total</code></td>
+<td>Counter</td>
+<td><em>none</em></td>
+<td>Base64-encoded image payloads redacted from request logs. Driven from <code>headroom.proxy.request_logger.redactions_total()</code>.</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>C3 remediation:</strong> Image redaction is purely a Python-proxy
+operation (the request logger walks JSON and replaces over-
+threshold image payloads with placeholders). The counter lives
+Python-side so we have one source of truth instead of two. The
+Rust proxy previously held a dead counter for this metric; that
+has been removed.</p>
+</blockquote>
+<h2 id="how-to-query">How to query<a class="headerlink" href="#how-to-query" title="Permanent link">&para;</a></h2>
+<p>The proxy renders Prometheus text-format on <code>GET /metrics</code>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://127.0.0.1:8787/metrics
 </span></code></pre></div>
-<hr />
-<h2 id="resource-requirements">Resource Requirements<a class="headerlink" href="#resource-requirements" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Deployment</th>
-<th>CPU</th>
-<th>Memory</th>
-<th>Storage</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Minimal</td>
-<td>0.5 core</td>
-<td>512MB</td>
-<td>1GB</td>
-</tr>
-<tr>
-<td>Default</td>
-<td>1 core</td>
-<td>1GB</td>
-<td>5GB</td>
-</tr>
-<tr>
-<td>Enterprise</td>
-<td>2 cores</td>
-<td>2GB</td>
-<td>20GB</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2 id="version-history">Version History<a class="headerlink" href="#version-history" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Version</th>
-<th>Date</th>
-<th>Changes</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>1.0.0-draft</td>
-<td>2026-04-16</td>
-<td>Initial deployment document</td>
-</tr>
-</tbody>
-</table>
+<h3 id="phase-h-canary-gate">Phase H canary gate<a class="headerlink" href="#phase-h-canary-gate" title="Permanent link">&para;</a></h3>
+<p>The canary script that decides "ship Rust, retire Python" uses
+<strong>all four</strong> of these queries against <code>proxy_cache_hit_rate_per_session</code>
+to confirm parity vs the Python baseline. A single percentile is
+not enough — a regression that only shows up at the tail (a small
+class of long sessions losing cache hits) would slip through a
+median-only check.</p>
+<div class="language-promql highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># p50, p95, p99 of cache hit rate over the last 5 minutes, per provider.</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.50</span><span class="p">,</span><span class="w"> </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">provider</span><span class="p">,</span><span class="w"> </span><span class="nv">le</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">proxy_cache_hit_rate_per_session_bucket</span><span class="p">{</span><span class="nl">provider</span><span class="o">!=</span><span class="p">&quot;</span><span class="s">__init__</span><span class="p">&quot;}[</span><span class="s">5m</span><span class="p">]</span><span class="o">)))</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.95</span><span class="p">,</span><span class="w"> </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">provider</span><span class="p">,</span><span class="w"> </span><span class="nv">le</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">proxy_cache_hit_rate_per_session_bucket</span><span class="p">{</span><span class="nl">provider</span><span class="o">!=</span><span class="p">&quot;</span><span class="s">__init__</span><span class="p">&quot;}[</span><span class="s">5m</span><span class="p">]</span><span class="o">)))</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.99</span><span class="p">,</span><span class="w"> </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">provider</span><span class="p">,</span><span class="w"> </span><span class="nv">le</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">proxy_cache_hit_rate_per_session_bucket</span><span class="p">{</span><span class="nl">provider</span><span class="o">!=</span><span class="p">&quot;</span><span class="s">__init__</span><span class="p">&quot;}[</span><span class="s">5m</span><span class="p">]</span><span class="o">)))</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="c1"># Mean cache hit rate over the last 5 minutes, per provider. The</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="c1"># `sum / count` form is the cleanest &quot;average without a quantile&quot;</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="c1"># query and is what the Python baseline reports.</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">provider</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">proxy_cache_hit_rate_per_session_sum</span><span class="p">{</span><span class="nl">provider</span><span class="o">!=</span><span class="p">&quot;</span><span class="s">__init__</span><span class="p">&quot;}[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">  </span><span class="o">/</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">provider</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">proxy_cache_hit_rate_per_session_count</span><span class="p">{</span><span class="nl">provider</span><span class="o">!=</span><span class="p">&quot;</span><span class="s">__init__</span><span class="p">&quot;}[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
+</span></code></pre></div>
+<p>The canary fails if ANY of <code>p50</code>, <code>p95</code>, <code>p99</code>, or <code>mean</code> regresses
+below the Python baseline for any provider over the canary window.</p>
+<h3 id="other-common-queries">Other common queries<a class="headerlink" href="#other-common-queries" title="Permanent link">&para;</a></h3>
+<div class="language-promql highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Cache-safety alarm. Should always be 0 (post-`__init__` row).</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">sum</span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">proxy_passthrough_bytes_modified_total</span><span class="p">{</span><span class="nl">path</span><span class="o">!=</span><span class="p">&quot;</span><span class="s">__init__</span><span class="p">&quot;}[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Per-strategy compression value at p50 (post-H1 fix: each strategy</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="c1"># reports its own before/after; pre-fix this was the same aggregate</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="c1"># ratio repeated per strategy).</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.50</span><span class="p">,</span><span class="w"> </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">strategy</span><span class="p">,</span><span class="w"> </span><span class="nv">le</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">proxy_compression_ratio_by_strategy_bucket</span><span class="p">{</span><span class="nl">strategy</span><span class="o">!=</span><span class="p">&quot;</span><span class="s">__init__</span><span class="p">&quot;}[</span><span class="s">1h</span><span class="p">]</span><span class="o">)))</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="c1"># Per-strategy compression value at p95 and p99 (catch outlier</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="c1"># strategies that fail to shrink at the tail).</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.95</span><span class="p">,</span><span class="w"> </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">strategy</span><span class="p">,</span><span class="w"> </span><span class="nv">le</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">proxy_compression_ratio_by_strategy_bucket</span><span class="p">{</span><span class="nl">strategy</span><span class="o">!=</span><span class="p">&quot;</span><span class="s">__init__</span><span class="p">&quot;}[</span><span class="s">1h</span><span class="p">]</span><span class="o">)))</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="kr">histogram_quantile</span><span class="o">(</span><span class="mf">0.99</span><span class="p">,</span><span class="w"> </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">strategy</span><span class="p">,</span><span class="w"> </span><span class="nv">le</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">proxy_compression_ratio_by_strategy_bucket</span><span class="p">{</span><span class="nl">strategy</span><span class="o">!=</span><span class="p">&quot;</span><span class="s">__init__</span><span class="p">&quot;}[</span><span class="s">1h</span><span class="p">]</span><span class="o">)))</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="c1"># Strategies that ran but failed the token-check (compressor ran</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="c1"># but its output was not strictly smaller, so the original was</span>
+</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="c1"># kept). High rate here means the compressor needs tuning.</span>
+</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">strategy</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">proxy_compression_rejected_by_token_check_total</span><span class="p">{</span><span class="nl">strategy</span><span class="o">!=</span><span class="p">&quot;</span><span class="s">__init__</span><span class="p">&quot;}[</span><span class="s">1h</span><span class="p">]</span><span class="o">))</span>
+</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>
+</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="c1"># Upstream rate-limit headroom (smaller = closer to throttle).</span>
+</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="nv">proxy_rate_limit_remaining_tokens</span><span class="p">{</span><span class="nl">provider</span><span class="o">=</span><span class="p">&quot;</span><span class="s">anthropic</span><span class="p">&quot;}</span>
+</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>
+</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="c1"># RTK invocation rate (Python-side).</span>
+</span><span id="__span-2-23"><a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">tool</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">wrap_rtk_invocations_total</span><span class="p">{</span><span class="nl">tool</span><span class="o">!=</span><span class="p">&quot;</span><span class="s">__init__</span><span class="p">&quot;}[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
+</span><span id="__span-2-24"><a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a>
+</span><span id="__span-2-25"><a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a><span class="c1"># Image-redaction rate (Python-side).</span>
+</span><span id="__span-2-26"><a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a><span class="kr">rate</span><span class="o">(</span><span class="nv">proxy_image_generation_call_log_redacted_total</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">)</span>
+</span></code></pre></div>
+<p>All queries above include a <code>{... != "__init__"}</code> filter so the
+sentinel zero-rows the boot-touch contract emits do not skew the
+result. See "Wiring → H3 force-zero" below.</p>
+<h2 id="wiring">Wiring<a class="headerlink" href="#wiring" title="Permanent link">&para;</a></h2>
+<p>Every metric registration is <code>OnceLock</code>-backed and lazy: the first
+call to a <code>*_counter()</code> / <code>*_gauge()</code> / <code>*_histogram()</code> helper
+registers the family with the shared registry. <code>handle_metrics</code>
+force-touches every Phase G PR-G3 family before scraping.</p>
+<h3 id="h3-force-zero">H3 force-zero<a class="headerlink" href="#h3-force-zero" title="Permanent link">&para;</a></h3>
+<p>The <code>prometheus</code> crate v0.13 skips empty MetricVecs from <code>gather()</code>
+entirely — neither HELP/TYPE lines nor rows appear until the
+family has been incremented at least once with a label tuple.
+Operators expect to see the catalogue from boot, so
+<code>handle_metrics</code> increments each counter / gauge MetricVec by 0
+under a sentinel <code>__init__</code> label tuple before the first scrape.
+HELP/TYPE then surface from boot and dashboards/alarms see a
+predictable scrape shape.</p>
+<p>Counters with the <code>__init__</code> label increment by 0, so the
+alarm-able "must stay 0" semantic of
+<code>proxy_passthrough_bytes_modified_total</code> is preserved (the family
+becomes visible, the rate stays 0). PromQL queries should filter
+<code>{... != "__init__"}</code> so the sentinel rows are excluded from
+aggregations (the catalogue above does this).</p>
+<p>Histograms are NOT force-zeroed: a synthetic <code>observe(0.0)</code> would
+contribute a real sample to the per-label distribution and pollute
+percentile readings. The two histogram families
+(<code>proxy_cache_hit_rate_per_session</code> and
+<code>proxy_compression_ratio_by_strategy</code>) only surface in the scrape
+after the first real session, by design.</p>
+<h3 id="h4-prometheus-crate-version-pin">H4 prometheus crate version pin<a class="headerlink" href="#h4-prometheus-crate-version-pin" title="Permanent link">&para;</a></h3>
+<p>The H3 contract above relies on the <code>prometheus</code> crate's v0.13
+<code>gather()</code> semantics — empty MetricVec families are omitted from
+the scrape. <strong>This is implementation-defined behaviour.</strong> If
+<code>crates/headroom-proxy/Cargo.toml</code> ever bumps the <code>prometheus</code>
+dependency, retest the alarm contract:</p>
+<ol>
+<li>Start a fresh proxy.</li>
+<li><code>curl /metrics</code> and confirm every counter / gauge family has
+   HELP/TYPE + an <code>__init__</code> row.</li>
+<li>Confirm histograms (<code>*_cache_hit_rate_per_session</code>,
+   <code>*_compression_ratio_by_strategy</code>) DO NOT appear (no
+   <code>observe()</code> calls yet).</li>
+<li>Drive one cache-hit session, scrape again, confirm histograms
+   now appear.</li>
+<li>Confirm <code>passthrough_bytes_modified_total</code> stays at 0 across
+   passthrough requests.</li>
+</ol>
+<p>The crate version is pinned exactly (<code>= "0.13.4"</code>, no caret) in
+<code>Cargo.toml</code> precisely so a silent semver bump cannot break the
+contract without a code-review trigger.</p>
+<h3 id="c2-alarm-wiring">C2 alarm wiring<a class="headerlink" href="#c2-alarm-wiring" title="Permanent link">&para;</a></h3>
+<p><code>proxy_passthrough_bytes_modified_total</code> fires from <code>proxy.rs</code> when
+a dispatcher arm that promised byte-equal passthrough
+(<code>Outcome::NoCompression</code> or <code>Outcome::Passthrough</code>) produces a
+final body of a different byte length. The check runs BEFORE the
+PR-E4 prompt_cache_key injector so the injector's intentional byte
+mutations do not trip the alarm.</p>
+<h3 id="h1-per-strategy-ratio-wiring">H1 per-strategy ratio wiring<a class="headerlink" href="#h1-per-strategy-ratio-wiring" title="Permanent link">&para;</a></h3>
+<p><code>proxy_compression_ratio_by_strategy</code> samples one observation per
+strategy using the strategy's OWN before/after token counts
+(plumbed through <code>Outcome::Compressed.per_strategy_tokens</code> from
+the manifest in <code>live_zone_anthropic</code> / <code>live_zone_openai</code> /
+<code>live_zone_responses</code>). Pre-H1 the same aggregate ratio was
+emitted per strategy when multiple strategies ran on one body,
+making Phase H per-strategy dashboards read garbage.</p>
+<h3 id="h2-aborted-stream-gate">H2 aborted-stream gate<a class="headerlink" href="#h2-aborted-stream-gate" title="Permanent link">&para;</a></h3>
+<p>The <code>proxy_cache_hit_rate_per_session</code> histogram observes ONLY
+when the SSE stream completed:</p>
+<ul>
+<li>Anthropic: <code>state.status == StreamStatus::MessageStop</code> after the
+  channel closes.</li>
+<li>OpenAI Chat: <code>state.usage.is_some()</code> (the final usage chunk only
+  arrives at stream completion).</li>
+<li>OpenAI Responses: <code>state.terminal_status().is_some()</code>.</li>
+</ul>
+<p>A client disconnect mid-stream closes the channel without setting
+the terminal flag — under H2 we log + skip rather than observe a
+garbage half-stream sample.</p>
+<h2 id="cardinality-discipline">Cardinality discipline<a class="headerlink" href="#cardinality-discipline" title="Permanent link">&para;</a></h2>
+<p>Every label vocabulary is bounded by code, not customer input:</p>
+<ul>
+<li><code>model</code> / <code>region</code>: read from path params + <code>Config::bedrock_region</code>.</li>
+<li><code>auth_mode</code>: 3-variant enum (<code>payg</code>, <code>oauth</code>, <code>subscription</code>).</li>
+<li><code>provider</code>: 3 values (<code>anthropic</code>, <code>openai_chat</code>, <code>openai_responses</code>).</li>
+<li><code>strategy</code>: <code>&amp;'static str</code> from the compressor's <code>BlockAction::Compressed</code>.</li>
+<li><code>content_type</code>: <code>&amp;'static str</code> from <code>headroom_core::transforms::ContentType</code>.</li>
+<li><code>tier</code>: validated through
+  <code>crate::observability::metric_names::service_tier::validate(raw: &amp;str)</code>.
+  Returns one of <code>{auto, default, flex, on_demand, priority, scale}</code>
+  or the sentinel <code>"other"</code> for anything else. <strong>The raw inbound
+  value is never used as a label.</strong> A malicious client posting
+  <code>{"service_tier":"&lt;random&gt;"}</code> per request gets bucketed to
+  <code>"other"</code> and a <code>tracing::warn!</code> is emitted so wire-format drift
+  surfaces loudly in logs.</li>
+<li><code>status</code>: 5-variant enum.</li>
+<li><code>tool</code> (Python-side <code>wrap_rtk_invocations_total</code>): bounded by the
+  set of tools the wrap CLI rewrites, captured by
+  <code>headroom.cli.wrap_rtk_metrics</code>.</li>
+</ul>
+<p>There is no code path where a malicious client can drive label
+cardinality unbounded.</p>
+<h2 id="see-also">See also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>docs/rtk-architecture.md</code> — why RTK lives wrap-side, not proxy-side.</li>
+<li><code>crates/headroom-proxy/src/observability/</code> — implementation.</li>
+<li><code>REALIGNMENT/09-phase-G-rtk-observability.md</code> — spec.</li>
+<li><code>REALIGNMENT/10-phase-H-python-retirement.md</code> — H1 acceptance gate.</li>
+</ul>
 
 
 
@@ -2343,10 +2595,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.highlight", "search.suggest", "search.share", "toc.follow", "header.autohide"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "navigation.indexes", "search.highlight", "search.suggest", "search.share", "toc.follow", "header.autohide"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   </body>
