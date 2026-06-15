@@ -13,6 +13,7 @@ without changing the calling code.
 
 from __future__ import annotations
 
+from .agy import AgyRegistrar
 from .base import MCPRegistrar, RegisterResult, RegisterStatus, ServerSpec
 from .claude import ClaudeRegistrar
 from .codex import CodexRegistrar
@@ -27,6 +28,7 @@ from .install import (
 
 __all__ = [
     "DEFAULT_PROXY_URL",
+    "AgyRegistrar",
     "ClaudeRegistrar",
     "CodexRegistrar",
     "MCPRegistrar",
