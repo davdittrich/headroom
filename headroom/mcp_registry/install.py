@@ -107,6 +107,25 @@ def build_tokensave_spec(binary: str = "tokensave") -> ServerSpec:
     )
 
 
+def build_codegraph_spec(cbm_bin: str) -> ServerSpec:
+    """Construct the canonical codebase-memory-mcp server spec for agy.
+
+    ``command`` is the resolved cbm binary path; no extra args are needed
+    (the binary exposes a stdio MCP server when invoked bare, matching how
+    ``_register_cbm_mcp_server`` invokes it via ``claude mcp add <name> -- <bin>``).
+
+    The server name ``"codebase-memory-mcp"`` matches the constant
+    ``_CBM_MCP_SERVER_NAME`` in ``headroom.cli.wrap``; kept here as a literal
+    to avoid a circular import (wrap.py imports from mcp_registry at call time).
+    """
+    return ServerSpec(
+        name="codebase-memory-mcp",
+        command=cbm_bin,
+        args=(),
+        env={},
+    )
+
+
 def install_everywhere(
     proxy_url: str = DEFAULT_PROXY_URL,
     *,
