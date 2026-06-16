@@ -243,6 +243,8 @@ dev = [
     "sqlite-vec>=0.1.6",
     "sentence-transformers>=2.2.0,<6.0",
     "numpy>=1.24.0",
+    "cryptography>=42.0.0",       # agy TLS-MITM CA/leaf minting (tests: test_agy_ca/dispatch/terminator)
+    "hypercorn>=0.16",            # agy in-process HTTPS dispatch server (tests: test_agy_dispatch)
 ]
 # All optional dependencies (everything you need)
 all = [
