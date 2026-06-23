@@ -6756,7 +6756,9 @@ def _start_agy_servers(
     """
     from headroom.proxy.agy_dispatch import AgyDispatchServer
     from headroom.proxy.agy_retrieve import AgyRetrieveServer
-    from headroom.proxy.agy_terminator import AgyCONNECTTerminator
+    from headroom.proxy.agy_terminator import DEFAULT_ALLOWLIST, AgyCONNECTTerminator
+
+    allowlist = DEFAULT_ALLOWLIST
 
     ready_event: threading.Event = threading.Event()
     error_holder: list[Exception] = []
@@ -6773,6 +6775,7 @@ def _start_agy_servers(
                 ca_cert=ca_cert,
                 base_dir=base_dir,
                 port=0,
+                allowlist=allowlist,
             )
             await dispatch.start()
             _, dispatch_port = dispatch.address
@@ -6783,6 +6786,7 @@ def _start_agy_servers(
                 base_dir=base_dir,
                 port=0,
                 dispatch_port=dispatch_port,
+                allowlist=allowlist,
             )
             await terminator.start()
 
@@ -6974,6 +6978,9 @@ def agy(
 
     from headroom.providers.agy import build_agy_env
     from headroom.proxy.agy_ca import build_combined_bundle, ensure_root_ca
+    from headroom.proxy.agy_terminator import DEFAULT_ALLOWLIST
+
+    allowlist = DEFAULT_ALLOWLIST
 
     ca_key, ca_cert, _key_path, _cert_path = ensure_root_ca()
     bundle_path = build_combined_bundle()
@@ -7043,9 +7050,7 @@ def agy(
         click.echo("  ╚═══════════════════════════════════════════════╝")
         click.echo()
         click.echo("  ┌─ TLS INTERCEPTION DISCLOSURE ──────────────────")
-        from headroom.proxy.agy_terminator import DEFAULT_ALLOWLIST
-
-        for _intercepted_host in sorted(DEFAULT_ALLOWLIST):
+        for _intercepted_host in sorted(allowlist):
             click.echo(f"  │  Headroom terminates TLS for: {_intercepted_host}")
         click.echo("  │  A process-local CA mints leaf certificates for those hosts.")
         click.echo("  │  This CA is NEVER added to the OS trust store.")
