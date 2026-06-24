@@ -35,7 +35,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
-from headroom._subprocess import pid_alive, run
+from headroom._subprocess import Popen, pid_alive, run
 
 # Fix Windows cp1252 encoding — box-drawing characters require UTF-8
 if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
@@ -784,14 +784,12 @@ def _smoke_verify_mcp_handshake(
     full_env = {**os.environ, **env}
     proc: subprocess.Popen[str] | None = None
     try:
-        proc = subprocess.Popen(
+        proc = Popen(
             [command, *args],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            encoding="utf-8",
-            errors="replace",
             env=full_env,
         )
         try:
