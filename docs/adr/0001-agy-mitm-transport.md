@@ -293,7 +293,15 @@ Resolution (two parts):
 **tokensave is the primary MCP**, with serena as the backup only when tokensave is
 unavailable (a new `--no-tokensave` flag mirrors `--no-serena`). tokensave is registered
 via `AgyRegistrar` with a verify-then-remove `initialize` handshake and a ledger record so
-`unwrap agy` removes it cleanly; user-managed entries are preserved. Verified live: an
-interactive `wrap agy` leaves `mcpServers = {lean-ctx, tokensave}` (serena dropped, tokensave
-handshake-verified). Like all agy MCP wiring this is **interactive-only** — agy 1.0.16 still
-hangs on any MCP in `--print` mode (re-verified), so print mode registers no MCP.
+`unwrap agy` removes it cleanly; user-managed entries are preserved. Verified live:
+`wrap agy` leaves `mcpServers = {lean-ctx, tokensave}` (serena dropped, tokensave
+handshake-verified).
+
+**MCP parity in all modes.** An earlier build of agy (~1.0.5) hung indefinitely in
+`--print` mode whenever any MCP server was configured, so print mode used to register no MCP.
+That hang was **fixed in agy 1.0.16** (re-verified 2026-07-05: lean-ctx + tokensave + serena
+all answer in ~4s in print mode). agy therefore now wires MCP tooling **identically in print
+and interactive mode** — tokensave-primary/serena-backup, lean-ctx context tool, the headroom
+retrieve MCP, and `--code-graph` — giving agy first-class MCP parity in every mode, like any
+other client. Live-verified: `wrap agy -p` wires tokensave + lean-ctx + retrieve
+(handshake-verified) and completes in ~10s.
