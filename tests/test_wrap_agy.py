@@ -993,6 +993,54 @@ class TestUnwrapAgySerena:
         assert survived.command == "/opt/my-serena/bin/serena"
 
 
+class TestUnwrapAgyTokensave:
+    """unwrap_agy removes only Headroom-installed tokensave; preserves user entries."""
+
+    def test_unwrap_removes_headroom_installed_tokensave(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headroom.mcp_registry import build_tokensave_spec
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.ledger import record_install
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        reg = AgyRegistrar(home_dir=tmp_path)
+        spec = build_tokensave_spec("tokensave")
+        reg.register_server(spec)
+        record_install("agy", spec)
+
+        runner = CliRunner()
+        result = runner.invoke(_get_main(), ["unwrap", "agy"])
+        assert result.exit_code == 0
+        assert AgyRegistrar(home_dir=tmp_path).get_server("tokensave") is None
+
+    def test_unwrap_preserves_user_managed_tokensave(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A user-managed tokensave entry (absent from ledger) must survive unwrap."""
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.base import ServerSpec
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        reg = AgyRegistrar(home_dir=tmp_path)
+        user_spec = ServerSpec(
+            name="tokensave",
+            command="/opt/my-tokensave/bin/tokensave",
+            args=("serve",),
+            env={},
+        )
+        reg.register_server(user_spec)
+
+        runner = CliRunner()
+        result = runner.invoke(_get_main(), ["unwrap", "agy"])
+        assert result.exit_code == 0
+        survived = AgyRegistrar(home_dir=tmp_path).get_server("tokensave")
+        assert survived is not None, "user-managed tokensave must not be removed"
+        assert survived.command == "/opt/my-tokensave/bin/tokensave"
+
+
 # ---------------------------------------------------------------------------
 # WU-0: agy print-mode MCP hang fix + lean-ctx context-tool wiring
 # ---------------------------------------------------------------------------

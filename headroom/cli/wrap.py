@@ -7420,6 +7420,16 @@ def unwrap_agy() -> None:
     elif cbm_status == "not_headroom_owned":
         click.echo("  codebase-memory-mcp: not Headroom-owned — left in place.")
 
+    # 6. Remove the tokensave code-graph MCP only if the ledger proves Headroom
+    #    installed it as the primary compressor (user-managed entries untouched).
+    tokensave_status = _remove_headroom_installed_tokensave_mcp(agy_reg)
+    if tokensave_status == "removed":
+        click.echo("  Removed Headroom-installed tokensave MCP server from agy.")
+    elif tokensave_status == "failed":
+        click.echo("  tokensave MCP server matched Headroom ledger but could not be removed.")
+    elif tokensave_status == "not_headroom_owned":
+        click.echo("  tokensave MCP server left as-is (not Headroom-installed).")
+
     click.echo()
     click.echo("✓ agy headroom configuration reverted.")
     click.echo()
