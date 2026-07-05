@@ -63,7 +63,7 @@ async def _send_421(send: Any) -> None:
     await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
-def make_host_guard(app: Any, allowlist: frozenset[str]) -> Any:
+def make_host_guard(app: Any, allowlist: frozenset[str], project: str | None = None) -> Any:
     """Wrap an ASGI *app* with a post-handshake Host/authority allowlist guard.
 
     Mandatory defense-in-depth for the no-SNI / placeholder path (where the
@@ -71,6 +71,14 @@ def make_host_guard(app: Any, allowlist: frozenset[str]) -> Any:
     pseudo-header into a ``host`` header, so reading ``host`` covers h2 and
     http/1.1 uniformly. Module-level (not a closure) so it is unit-testable
     with synthetic ASGI scopes.
+
+    When *project* is truthy, an ``x-headroom-project`` request header carrying
+    the launch-directory project label is injected (after the Host allowlist
+    check passes) so per-project savings attribute to the agy launch directory.
+    agy is a Go binary with no header knob, so this MUST happen at the MITM
+    boundary. Any client-forged ``x-headroom-project`` value is replaced (never
+    duplicated). ``project`` is computed once at launch and is already
+    RFC-3986 percent-encoded ASCII, safe for latin-1 encoding.
     """
 
     async def _host_guard_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
@@ -100,6 +108,14 @@ def make_host_guard(app: Any, allowlist: frozenset[str]) -> Any:
                 logger.warning("event=host_refused host=%s", host_str)
                 await _send_421(send)
                 return
+            if project:
+                # Replace any client-forged x-headroom-project value; never
+                # duplicate. Only touch http/websocket scopes.
+                scope["headers"] = [
+                    (name, value)
+                    for name, value in scope.get("headers", ())
+                    if name.lower() != b"x-headroom-project"
+                ] + [(b"x-headroom-project", project.encode("latin-1"))]
         await app(scope, receive, send)
 
     return _host_guard_app
@@ -194,12 +210,14 @@ class AgyDispatchServer:
         base_dir: Path | None = None,
         port: int = 0,
         allowlist: frozenset[str] | None = None,
+        project: str | None = None,
     ) -> None:
         self._ca_key_init = ca_key
         self._ca_cert_init = ca_cert
         self._base_dir = base_dir
         self._port = port
         self._allowlist: frozenset[str] = allowlist if allowlist is not None else DEFAULT_ALLOWLIST
+        self._project = project
 
         self._server: asyncio.Server | None = None
         self._lifespan_task: asyncio.Task[None] | None = None
@@ -237,7 +255,7 @@ class AgyDispatchServer:
         # Import and build the FastAPI app.
         from headroom.proxy.server import create_app
 
-        app = make_host_guard(create_app(), self._allowlist)
+        app = make_host_guard(create_app(), self._allowlist, self._project)
 
         # wrap_app accepts the ASGI callable directly; ignore the narrow stub type.
         app_wrapper = wrap_app(app, config.wsgi_max_body_size, mode="asgi")  # type: ignore[arg-type]

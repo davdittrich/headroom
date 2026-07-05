@@ -6736,6 +6736,7 @@ def _start_agy_servers(
     base_dir: Path | None = None,
     *,
     start_retrieve: bool = False,
+    project: str | None = None,
 ) -> _AgyServers:
     """Start AgyCONNECTTerminator + AgyDispatchServer on a dedicated thread.
 
@@ -6774,6 +6775,7 @@ def _start_agy_servers(
                 base_dir=base_dir,
                 port=0,
                 allowlist=allowlist,
+                project=project,
             )
             await dispatch.start()
             _, dispatch_port = dispatch.address
@@ -7022,7 +7024,10 @@ def agy(
         session_stats.snapshot_start()
         fail_open_handler = install_fail_open_handler()
 
-        servers = _start_agy_servers(ca_key, ca_cert, start_retrieve=not print_mode)
+        agy_project = _project_name_from_cwd()
+        servers = _start_agy_servers(
+            ca_key, ca_cert, start_retrieve=not print_mode, project=agy_project
+        )
         term_host, term_port = servers.terminator.address
         terminator_url = f"http://{term_host}:{term_port}"
 

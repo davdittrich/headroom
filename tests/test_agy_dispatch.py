@@ -1120,3 +1120,98 @@ async def test_host_guard_lifespan_scope_passes() -> None:
     """Non-http/websocket scopes (e.g. lifespan) are not guarded."""
     called, status = await _run_host_guard(_GUARD_ALLOW, {"type": "lifespan", "headers": []})
     assert called and status is None
+
+
+# ---------------------------------------------------------------------------
+# make_host_guard — project header injection (synthetic ASGI scopes, no TLS)
+# ---------------------------------------------------------------------------
+
+
+async def _run_host_guard_capture(
+    allowlist: frozenset[str],
+    scope: dict[str, Any],
+    project: str | None,
+) -> tuple[dict[str, Any] | None, int | None]:
+    """Drive make_host_guard(app, allowlist, project) over *scope*.
+
+    Returns (captured_scope, status). captured_scope is the scope the inner
+    app was invoked with (or None if the app was never called, e.g. refused).
+    """
+    captured: dict[str, Any] = {}
+    status: list[int | None] = [None]
+
+    async def inner(s: Any, r: Any, sd: Any) -> None:
+        captured["scope"] = s
+
+    async def _send(msg: dict[str, Any]) -> None:
+        if msg.get("type") == "http.response.start":
+            status[0] = msg["status"]
+
+    async def _receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    await make_host_guard(inner, allowlist, project)(scope, _receive, _send)
+    return captured.get("scope"), status[0]
+
+
+def _project_header_values(scope: dict[str, Any]) -> list[bytes]:
+    return [v for name, v in scope.get("headers", ()) if name.lower() == b"x-headroom-project"]
+
+
+@pytest.mark.asyncio
+async def test_host_guard_injects_project_header() -> None:
+    """(a) project set + allowlisted Host -> exactly one x-headroom-project header."""
+    scope, status = await _run_host_guard_capture(
+        _GUARD_ALLOW,
+        {"type": "http", "headers": [(b"host", b"daily-cloudcode-pa.googleapis.com")]},
+        "myproj",
+    )
+    assert status is None
+    assert scope is not None, "inner app must be called for allowlisted host"
+    assert _project_header_values(scope) == [b"myproj"]
+
+
+@pytest.mark.asyncio
+async def test_host_guard_replaces_forged_project_header() -> None:
+    """(b) client-forged x-headroom-project is replaced (not duplicated)."""
+    scope, status = await _run_host_guard_capture(
+        _GUARD_ALLOW,
+        {
+            "type": "http",
+            "headers": [
+                (b"host", b"daily-cloudcode-pa.googleapis.com"),
+                (b"x-headroom-project", b"attacker"),
+            ],
+        },
+        "myproj",
+    )
+    assert status is None
+    assert scope is not None
+    assert _project_header_values(scope) == [b"myproj"], "forged value must be replaced, not kept"
+
+
+@pytest.mark.asyncio
+async def test_host_guard_no_project_leaves_headers_untouched() -> None:
+    """(c) project=None -> no x-headroom-project header; scope headers unchanged."""
+    original_headers = [(b"host", b"daily-cloudcode-pa.googleapis.com")]
+    scope, status = await _run_host_guard_capture(
+        _GUARD_ALLOW,
+        {"type": "http", "headers": list(original_headers)},
+        None,
+    )
+    assert status is None
+    assert scope is not None
+    assert _project_header_values(scope) == []
+    assert scope["headers"] == original_headers
+
+
+@pytest.mark.asyncio
+async def test_host_guard_non_allowlisted_refused_with_project() -> None:
+    """(d) non-allowlisted Host still refused (421) and inner app NOT called."""
+    scope, status = await _run_host_guard_capture(
+        _GUARD_ALLOW,
+        {"type": "http", "headers": [(b"host", b"evil.example.com")]},
+        "myproj",
+    )
+    assert status == 421
+    assert scope is None, "inner app must NOT be called for non-allowlisted host"
