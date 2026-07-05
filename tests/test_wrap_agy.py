@@ -222,7 +222,9 @@ class TestWrapAgyDisclosureBanner:
         # real ~/.gemini. retrieve_port=None makes agy() skip registration.
         fake_servers.retrieve_port = None
 
-        def fake_start_agy_servers(ca_key, ca_cert, base_dir=None, *, start_retrieve=False):
+        def fake_start_agy_servers(
+            ca_key, ca_cert, base_dir=None, *, start_retrieve=False, project=None
+        ):
             return fake_servers
 
         monkeypatch.setattr(wrap_mod, "_start_agy_servers", fake_start_agy_servers)
@@ -306,7 +308,7 @@ class TestWrapAgyNoIntercept:
 
         server_started = []
 
-        def fake_start(ca_key, ca_cert, base_dir=None, *, start_retrieve=False):
+        def fake_start(ca_key, ca_cert, base_dir=None, *, start_retrieve=False, project=None):
             server_started.append(True)
             raise AssertionError("Servers must NOT start in --no-intercept mode")
 
@@ -374,7 +376,9 @@ class TestWrapAgySignalTeardown:
         monkeypatch.setattr(
             wrap_mod,
             "_start_agy_servers",
-            lambda ca_key, ca_cert, base_dir=None, *, start_retrieve=False: fake_servers,
+            lambda ca_key, ca_cert, base_dir=None, *, start_retrieve=False, project=None: (
+                fake_servers
+            ),
         )
 
         stop_calls: list[object] = []
@@ -662,7 +666,9 @@ def _stub_agy_mitm_run(
     fake_servers.retrieve_port = 54323
     fake_servers.retrieve = MagicMock()
 
-    def _fake_start_agy_servers(ca_key, ca_cert, base_dir=None, *, start_retrieve=False):
+    def _fake_start_agy_servers(
+        ca_key, ca_cert, base_dir=None, *, start_retrieve=False, project=None
+    ):
         _agy_start_calls.append(start_retrieve)
         # In print mode the real server starts no retrieve listener: model that
         # so the agy() guard (servers.retrieve_port is not None) holds.
@@ -681,6 +687,10 @@ def _stub_agy_mitm_run(
     # Default the MCP handshake smoke check to PASS so interactive registrations
     # survive; individual tests override this when they exercise the failure path.
     monkeypatch.setattr(wrap_mod, "_smoke_verify_mcp_handshake", lambda *a, **kw: True)
+    # Default tokensave to UNAVAILABLE so the primary/backup policy falls back to
+    # Serena deterministically (no network download of the real binary in tests).
+    # Tests exercising the tokensave-primary path override this stub.
+    monkeypatch.setattr(wrap_mod, "_ensure_tokensave_binary", lambda *a, **kw: None)
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     now = datetime.datetime.now(tz=datetime.timezone.utc)
@@ -764,6 +774,169 @@ class TestAgySerenaWired:
         result = runner.invoke(_get_main(), ["wrap", "agy", "--no-serena"], catch_exceptions=False)
         assert result.exit_code == 0
         assert AgyRegistrar(home_dir=tmp_path).get_server("serena") is None
+
+
+# ---------------------------------------------------------------------------
+# WU1: tokensave PRIMARY, Serena BACKUP — same policy as every other client.
+# Interactive only: print mode still registers NO MCP (agy hang guard).
+# ---------------------------------------------------------------------------
+
+
+class TestAgyTokensavePrimarySerenaBackup:
+    """wrap agy wires tokensave as the primary code-graph compressor; Serena is
+    only the backup (registered when tokensave is unavailable), and neither is
+    ever registered in print mode."""
+
+    def _spy_helpers(self, monkeypatch: pytest.MonkeyPatch, *, tokensave_ok: bool):
+        """Replace the compressor helpers with call-recording spies.
+
+        Returns a dict of lists recording each helper's invocations so a test
+        can assert exactly which branch of the primary/backup policy ran.
+        """
+        import headroom.cli.wrap as wrap_mod
+
+        calls: dict[str, list] = {
+            "setup_tokensave": [],
+            "disable_tokensave": [],
+            "setup_serena": [],
+            "disable_serena": [],
+        }
+
+        def _setup_tokensave(registrar, *, verbose=False):
+            calls["setup_tokensave"].append(verbose)
+            return tokensave_ok
+
+        def _disable_tokensave(registrar, *, verbose=False):
+            calls["disable_tokensave"].append(verbose)
+
+        def _setup_serena(registrar, *, context, verbose=False, force=False):
+            calls["setup_serena"].append(context)
+
+        def _disable_serena(registrar, *, verbose=False, reason="--no-serena"):
+            calls["disable_serena"].append(reason)
+
+        monkeypatch.setattr(wrap_mod, "_setup_tokensave_mcp_agy", _setup_tokensave)
+        monkeypatch.setattr(wrap_mod, "_disable_tokensave_mcp", _disable_tokensave)
+        monkeypatch.setattr(wrap_mod, "_setup_serena_mcp", _setup_serena)
+        monkeypatch.setattr(wrap_mod, "_disable_serena_mcp", _disable_serena)
+        return calls
+
+    def test_interactive_tokensave_available_drops_serena_backup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """tokensave available → tokensave set up (primary), Serena backup dropped."""
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        calls = self._spy_helpers(monkeypatch, tokensave_ok=True)
+
+        result = CliRunner().invoke(_get_main(), ["wrap", "agy"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert calls["setup_tokensave"], "tokensave must be set up as the primary compressor"
+        assert not calls["setup_serena"], "Serena backup must NOT be registered when tokensave wins"
+        assert calls["disable_serena"], "Serena backup must be actively dropped when tokensave wins"
+        assert not calls["disable_tokensave"]
+
+    def test_interactive_tokensave_unavailable_uses_serena_backup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """tokensave unavailable + not --no-serena → Serena registered as backup."""
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        calls = self._spy_helpers(monkeypatch, tokensave_ok=False)
+
+        result = CliRunner().invoke(_get_main(), ["wrap", "agy"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert calls["setup_tokensave"], "tokensave must be attempted first (primary)"
+        assert calls["setup_serena"] == ["ide-assistant"], "Serena backup must take over"
+        assert not calls["disable_serena"]
+
+    def test_interactive_no_tokensave_flag_disables_tokensave_and_uses_serena(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--no-tokensave → tokensave disabled (never set up), Serena set up."""
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        calls = self._spy_helpers(monkeypatch, tokensave_ok=True)
+
+        result = CliRunner().invoke(
+            _get_main(), ["wrap", "agy", "--no-tokensave"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        assert not calls["setup_tokensave"], "--no-tokensave must NOT set up tokensave"
+        assert calls["disable_tokensave"], "--no-tokensave must actively disable tokensave"
+        assert calls["setup_serena"] == ["ide-assistant"], (
+            "Serena is the backup under --no-tokensave"
+        )
+
+    def test_print_mode_registers_neither_tokensave_nor_serena(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Print mode hangs agy on ANY MCP: both compressors disabled, none set up."""
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        calls = self._spy_helpers(monkeypatch, tokensave_ok=True)
+
+        result = CliRunner().invoke(
+            _get_main(), ["wrap", "agy", "--", "--print", "hi"], catch_exceptions=False
+        )
+        assert result.exit_code == 0
+        assert not calls["setup_tokensave"], "print mode must NOT set up tokensave (agy hangs)"
+        assert not calls["setup_serena"], "print mode must NOT set up Serena (agy hangs)"
+        assert calls["disable_tokensave"], "print mode must actively disable tokensave"
+        assert calls["disable_serena"], "print mode must actively disable Serena"
+
+    def test_setup_tokensave_mcp_agy_removes_entry_on_failed_handshake(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Failed MCP handshake → the tokensave entry is unregistered and False returned."""
+        import headroom.cli.wrap as wrap_mod
+
+        monkeypatch.setattr(
+            wrap_mod, "_ensure_tokensave_binary", lambda *a, **kw: Path("/usr/bin/tokensave")
+        )
+        monkeypatch.setattr(wrap_mod, "_index_tokensave_project", lambda *a, **kw: None)
+        monkeypatch.setattr(wrap_mod, "_smoke_verify_mcp_handshake", lambda *a, **kw: False)
+
+        class _FakeRegistrar:
+            def __init__(self) -> None:
+                self.registered: list = []
+                self.unregistered: list = []
+
+            def register_server(self, spec, force=False):
+                self.registered.append((spec.name, force))
+                return MagicMock()
+
+            def unregister_server(self, name):
+                self.unregistered.append(name)
+                return True
+
+        reg = _FakeRegistrar()
+        ok = wrap_mod._setup_tokensave_mcp_agy(reg, verbose=False)
+
+        assert ok is False, "a failed handshake must make the helper return False"
+        assert reg.unregistered == ["tokensave"], (
+            "a tokensave entry that fails the handshake must be removed (agy left transport-only)"
+        )
+
+    def test_setup_tokensave_mcp_agy_returns_false_when_binary_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No tokensave binary → helper returns False without registering anything."""
+        import headroom.cli.wrap as wrap_mod
+
+        monkeypatch.setattr(wrap_mod, "_ensure_tokensave_binary", lambda *a, **kw: None)
+
+        class _FakeRegistrar:
+            def __init__(self) -> None:
+                self.registered: list = []
+
+            def register_server(self, spec, force=False):
+                self.registered.append(spec.name)
+                return MagicMock()
+
+            def unregister_server(self, name):
+                return True
+
+        reg = _FakeRegistrar()
+        ok = wrap_mod._setup_tokensave_mcp_agy(reg, verbose=False)
+        assert ok is False
+        assert reg.registered == [], "no entry may be registered when tokensave is unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -1073,9 +1246,11 @@ class TestAgyRetrieveMcpWiring:
         captured: list[bool] = []
         real_stub = wrap_mod._start_agy_servers
 
-        def _spy(ca_key, ca_cert, base_dir=None, *, start_retrieve=False):
+        def _spy(ca_key, ca_cert, base_dir=None, *, start_retrieve=False, project=None):
             captured.append(start_retrieve)
-            return real_stub(ca_key, ca_cert, base_dir, start_retrieve=start_retrieve)
+            return real_stub(
+                ca_key, ca_cert, base_dir, start_retrieve=start_retrieve, project=project
+            )
 
         monkeypatch.setattr(wrap_mod, "_start_agy_servers", _spy)
 
@@ -1096,9 +1271,11 @@ class TestAgyRetrieveMcpWiring:
         captured: list[bool] = []
         real_stub = wrap_mod._start_agy_servers
 
-        def _spy(ca_key, ca_cert, base_dir=None, *, start_retrieve=False):
+        def _spy(ca_key, ca_cert, base_dir=None, *, start_retrieve=False, project=None):
             captured.append(start_retrieve)
-            return real_stub(ca_key, ca_cert, base_dir, start_retrieve=start_retrieve)
+            return real_stub(
+                ca_key, ca_cert, base_dir, start_retrieve=start_retrieve, project=project
+            )
 
         monkeypatch.setattr(wrap_mod, "_start_agy_servers", _spy)
 

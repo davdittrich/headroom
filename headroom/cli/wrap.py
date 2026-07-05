@@ -865,6 +865,48 @@ def _setup_lean_ctx_mcp_agy(registrar: Any, *, verbose: bool = False) -> None:
         )
 
 
+def _setup_tokensave_mcp_agy(registrar: Any, *, verbose: bool = False) -> bool:
+    """Register the tokensave code-graph MCP with agy, verify-then-remove.
+
+    tokensave is agy's PRIMARY code-graph compressor (Serena is the backup).
+    Resolves the tokensave binary (fetching the release asset if missing),
+    warms the project graph, registers an explicit spec, then smoke-verifies
+    the MCP ``initialize`` handshake.  If the binary is unavailable or the
+    handshake fails, the entry is removed again — so a broken/hanging tool can
+    never persist — and ``False`` is returned so the caller falls back to
+    Serena.  Returns ``True`` only when tokensave is wired and verified.
+    """
+    from headroom.mcp_registry import build_tokensave_spec
+    from headroom.mcp_registry.ledger import record_install
+
+    bin_path = _ensure_tokensave_binary(verbose=verbose)
+    if bin_path is None:
+        click.echo(
+            "  Code graph: tokensave unavailable — falling back to Serena "
+            "(agy still works transport-only)."
+        )
+        return False
+
+    # Warm the graph so the first query is instant (non-fatal).
+    _index_tokensave_project(bin_path, verbose=verbose)
+
+    spec = build_tokensave_spec(str(bin_path))
+    registrar.register_server(spec, force=True)
+
+    if _smoke_verify_mcp_handshake(spec.command, list(spec.args), dict(spec.env or {})):
+        # Record in the ledger so `unwrap agy` can identify and remove this
+        # Headroom-installed entry (WU2), leaving user-managed entries untouched.
+        record_install(registrar.name, spec)
+        click.echo("  Code graph: tokensave MCP wired (handshake verified).")
+        return True
+
+    registrar.unregister_server("tokensave")
+    click.echo(
+        "  Code graph: tokensave MCP failed handshake — entry removed (agy left transport-only)."
+    )
+    return False
+
+
 def _setup_headroom_retrieve_mcp_agy(
     registrar: Any, retrieve_port: int, *, verbose: bool = False
 ) -> bool:
@@ -6890,6 +6932,9 @@ def _stop_agy_servers(servers: _AgyServers | None) -> None:
 )
 @click.option("--no-serena", is_flag=True, help="Skip Serena MCP server registration")
 @click.option(
+    "--no-tokensave", is_flag=True, help="Never register the tokensave code-graph compressor"
+)
+@click.option(
     "--code-graph",
     is_flag=True,
     default=False,
@@ -6900,6 +6945,7 @@ def agy(
     no_intercept: bool,
     backend: str | None,
     no_serena: bool,
+    no_tokensave: bool,
     code_graph: bool,
     agy_args: tuple,
 ) -> None:
@@ -7125,19 +7171,39 @@ def agy(
             )
 
         # ------------------------------------------------------------------
-        # Serena MCP — generic uvx stdio server with no proxy-URL/ephemeral-port
-        # dependency, so it persists cleanly in mcp_config.json (unlike the
-        # Headroom retrieve tool).  context="ide-assistant": Antigravity is an
-        # IDE agent and this is Serena's generic IDE profile.  force=True mirrors
-        # codex (wrap.py:3382) so a Headroom-owned entry is refreshed.
-        # In print mode Serena (an MCP server) would hang agy, so it is removed.
+        # Code-graph compressor — tokensave PRIMARY, Serena BACKUP.
+        # tokensave and Serena are uvx/binary stdio servers with no proxy-URL/
+        # ephemeral-port dependency, so they persist cleanly in mcp_config.json
+        # (unlike the Headroom retrieve tool).  context="ide-assistant":
+        # Antigravity is an IDE agent and this is Serena's generic IDE profile.
+        # tokensave becomes the primary compressor when available; Serena is
+        # only registered as the backup when tokensave is unavailable (unless
+        # --no-serena).  In print mode ANY MCP server hangs agy, so BOTH are
+        # actively removed for the run (the hang guard).
         # ------------------------------------------------------------------
         if print_mode:
+            _disable_tokensave_mcp(AgyRegistrar(), verbose=False)
             _disable_serena_mcp(AgyRegistrar(), verbose=False)
-        elif not no_serena:
-            _setup_serena_mcp(AgyRegistrar(), context="ide-assistant", verbose=False, force=True)
         else:
-            _disable_serena_mcp(AgyRegistrar(), verbose=False)
+            tokensave_ok = False
+            if no_tokensave:
+                _disable_tokensave_mcp(AgyRegistrar(), verbose=False)
+            else:
+                tokensave_ok = _setup_tokensave_mcp_agy(AgyRegistrar(), verbose=False)
+            if not tokensave_ok and not no_serena:
+                _setup_serena_mcp(
+                    AgyRegistrar(), context="ide-assistant", verbose=False, force=True
+                )
+            else:
+                _disable_serena_mcp(
+                    AgyRegistrar(),
+                    verbose=False,
+                    reason=(
+                        "--no-serena"
+                        if no_serena
+                        else "tokensave is now the primary code-graph compressor"
+                    ),
+                )
 
         # ------------------------------------------------------------------
         # Code graph MCP — OPT-IN, INTERACTIVE ONLY.
