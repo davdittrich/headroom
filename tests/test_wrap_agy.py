@@ -778,14 +778,14 @@ class TestAgySerenaWired:
 
 # ---------------------------------------------------------------------------
 # WU1: tokensave PRIMARY, Serena BACKUP — same policy as every other client.
-# Interactive only: print mode still registers NO MCP (agy hang guard).
+# Print mode now wires MCP identically to interactive (full parity; no hang).
 # ---------------------------------------------------------------------------
 
 
 class TestAgyTokensavePrimarySerenaBackup:
     """wrap agy wires tokensave as the primary code-graph compressor; Serena is
-    only the backup (registered when tokensave is unavailable), and neither is
-    ever registered in print mode."""
+    only the backup (registered when tokensave is unavailable). Print mode wires
+    the same as interactive (agy no longer hangs on MCP in --print mode)."""
 
     def _spy_helpers(self, monkeypatch: pytest.MonkeyPatch, *, tokensave_ok: bool):
         """Replace the compressor helpers with call-recording spies.
@@ -865,10 +865,11 @@ class TestAgyTokensavePrimarySerenaBackup:
             "Serena is the backup under --no-tokensave"
         )
 
-    def test_print_mode_registers_neither_tokensave_nor_serena(
+    def test_print_mode_wires_tokensave_like_interactive(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Print mode hangs agy on ANY MCP: both compressors disabled, none set up."""
+        """Print mode wires MCP like interactive: tokensave set up (primary),
+        Serena backup dropped — identical to the interactive tokensave path."""
         _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
         calls = self._spy_helpers(monkeypatch, tokensave_ok=True)
 
@@ -876,10 +877,10 @@ class TestAgyTokensavePrimarySerenaBackup:
             _get_main(), ["wrap", "agy", "--", "--print", "hi"], catch_exceptions=False
         )
         assert result.exit_code == 0
-        assert not calls["setup_tokensave"], "print mode must NOT set up tokensave (agy hangs)"
-        assert not calls["setup_serena"], "print mode must NOT set up Serena (agy hangs)"
-        assert calls["disable_tokensave"], "print mode must actively disable tokensave"
-        assert calls["disable_serena"], "print mode must actively disable Serena"
+        assert calls["setup_tokensave"], "print mode must set up tokensave as primary (parity)"
+        assert not calls["setup_serena"], "Serena backup must NOT be set up when tokensave wins"
+        assert calls["disable_serena"], "Serena backup must be actively dropped when tokensave wins"
+        assert not calls["disable_tokensave"], "tokensave must NOT be disabled when it is primary"
 
     def test_setup_tokensave_mcp_agy_removes_entry_on_failed_handshake(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1087,64 +1088,11 @@ class TestAgyPrintModeDetection:
 
 
 class TestAgyPrintModeSuppressesMcp:
-    """Print-mode wrap agy must activate NO MCP server (else agy hangs)."""
+    """Print-mode wrap agy skips a context tool only when its binary is absent.
 
-    def test_print_mode_does_not_register_serena(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from headroom.mcp_registry.agy import AgyRegistrar
-
-        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
-
-        runner = CliRunner()
-        result = runner.invoke(
-            _get_main(), ["wrap", "agy", "--", "--print", "hi"], catch_exceptions=False
-        )
-        assert result.exit_code == 0
-        reg = AgyRegistrar(home_dir=tmp_path)
-        assert reg.get_server("serena") is None, (
-            "print mode must not register a Serena MCP entry (it hangs agy)"
-        )
-
-    def test_print_mode_removes_prior_headroom_serena(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from headroom.mcp_registry.agy import AgyRegistrar
-        from headroom.mcp_registry.install import build_serena_spec
-        from headroom.mcp_registry.ledger import record_install
-
-        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
-
-        reg = AgyRegistrar(home_dir=tmp_path)
-        serena_spec = build_serena_spec("ide-assistant")
-        reg.register_server(serena_spec)
-        record_install("agy", serena_spec)
-
-        runner = CliRunner()
-        result = runner.invoke(
-            _get_main(), ["wrap", "agy", "--", "-p", "hi"], catch_exceptions=False
-        )
-        assert result.exit_code == 0
-        assert AgyRegistrar(home_dir=tmp_path).get_server("serena") is None, (
-            "print mode must remove a Headroom-installed Serena entry"
-        )
-
-    def test_print_mode_does_not_register_lean_ctx(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from headroom.mcp_registry.agy import AgyRegistrar
-
-        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
-        monkeypatch.setenv("HEADROOM_CONTEXT_TOOL", "lean-ctx")
-
-        runner = CliRunner()
-        result = runner.invoke(
-            _get_main(), ["wrap", "agy", "--", "--print", "hi"], catch_exceptions=False
-        )
-        assert result.exit_code == 0
-        assert AgyRegistrar(home_dir=tmp_path).get_server("lean-ctx") is None, (
-            "print mode must not register a lean-ctx MCP entry"
-        )
+    (Print mode otherwise wires MCP identically to interactive — see the
+    tokensave/retrieve/code-graph parity tests; agy no longer hangs on MCP.)
+    """
 
 
 class TestAgyLeanCtxMcpWiring:
@@ -1212,12 +1160,12 @@ class TestAgyLeanCtxMcpWiring:
 
 
 class TestAgyRetrieveMcpWiring:
-    """Headroom retrieve MCP: interactive-only, per-run loopback, reverted.
+    """Headroom retrieve MCP: per-run loopback, reverted on teardown.
 
     The retrieve listener is an ephemeral PLAIN-HTTP loopback server started in
-    interactive mode only; its port is registered as the headroom MCP's
-    HEADROOM_PROXY_URL, then REVERTED on teardown so no stale pointer survives.
-    Print mode starts no listener and registers no entry (any MCP hangs agy).
+    BOTH print and interactive mode (full parity); its port is registered as the
+    headroom MCP's HEADROOM_PROXY_URL, then REVERTED on teardown so no stale
+    pointer survives.
     """
 
     def test_interactive_registers_then_reverts_retrieve_entry(
@@ -1257,15 +1205,16 @@ class TestAgyRetrieveMcpWiring:
             "the per-run retrieve entry must be reverted on teardown"
         )
 
-    def test_print_mode_does_not_register_retrieve_entry(
+    def test_print_mode_registers_retrieve_entry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Print mode: no retrieve listener, no headroom MCP entry (would hang agy)."""
+        """Print mode wires the retrieve MCP like interactive: a headroom entry
+        is live mid-run pointing at the loopback port, then reverted on teardown."""
         from headroom.mcp_registry.agy import AgyRegistrar
 
         _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
 
-        # Capture mid-session too: even DURING the run no headroom entry exists.
+        # Capture mid-session: the headroom entry must exist DURING the run.
         seen: dict[str, object] = {}
 
         def _capture_run(cmd, *a, **kw):
@@ -1279,15 +1228,19 @@ class TestAgyRetrieveMcpWiring:
             _get_main(), ["wrap", "agy", "--", "--print", "hi"], catch_exceptions=False
         )
         assert result.exit_code == 0
-        assert seen["spec"] is None, (
-            "print mode must not register a headroom retrieve entry mid-run"
+        live_spec = seen["spec"]
+        assert live_spec is not None, "print mode must register a headroom retrieve entry mid-run"
+        # Entry points at the live loopback retrieve port (54323 from the stub).
+        assert live_spec.env.get("HEADROOM_PROXY_URL") == "http://127.0.0.1:54323"
+        # Reverted on teardown: no stale pointer survives.
+        assert AgyRegistrar(home_dir=tmp_path).get_server("headroom") is None, (
+            "the per-run retrieve entry must be reverted on teardown"
         )
-        assert AgyRegistrar(home_dir=tmp_path).get_server("headroom") is None
 
-    def test_print_mode_does_not_start_retrieve_listener(
+    def test_print_mode_starts_retrieve_listener(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Print mode: _start_agy_servers is called with start_retrieve=False."""
+        """Print mode: _start_agy_servers is called with start_retrieve=True (parity)."""
         import headroom.cli.wrap as wrap_mod
 
         _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
@@ -1307,7 +1260,7 @@ class TestAgyRetrieveMcpWiring:
             _get_main(), ["wrap", "agy", "--", "-p", "hi"], catch_exceptions=False
         )
         assert result.exit_code == 0
-        assert captured == [False], "print mode must not start the retrieve listener"
+        assert captured == [True], "print mode must start the retrieve listener (parity)"
 
     def test_interactive_starts_retrieve_listener(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1570,7 +1523,7 @@ def _stub_agy_with_cbm(
 
 
 class TestAgyCodeGraphFlag:
-    """--code-graph flag wiring: interactive registers cbm MCP; print-mode skips it."""
+    """--code-graph flag wiring: both interactive and print mode register cbm MCP."""
 
     def test_code_graph_interactive_registers_cbm_entry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1610,10 +1563,10 @@ class TestAgyCodeGraphFlag:
         # Smoke was called at least once (for cbm).
         assert len(smoke_calls) >= 1
 
-    def test_code_graph_print_mode_skips_registration(
+    def test_code_graph_print_mode_registers_cbm(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """--code-graph + print mode: cbm entry must NOT be registered."""
+        """--code-graph + print mode: cbm entry IS registered (parity with interactive)."""
         from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
         from headroom.mcp_registry.agy import AgyRegistrar
 
@@ -1626,9 +1579,11 @@ class TestAgyCodeGraphFlag:
             catch_exceptions=False,
         )
         assert result.exit_code == 0
-        assert AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME) is None, (
-            "--code-graph + print mode must NOT register cbm (agy hangs with MCP in print mode)"
+        spec = AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME)
+        assert spec is not None, (
+            "--code-graph + print mode must register cbm (parity: agy no longer hangs on MCP)"
         )
+        assert Path(spec.command) == Path("/usr/local/bin/cbm")
 
     def test_no_code_graph_flag_does_not_register_cbm(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1790,52 +1745,12 @@ class TestAgySessionCompressionSummary:
 
 
 class TestPrintModePurgesStaleHeadroomEntry:
-    """Print mode must unregister any stale 'headroom' retrieve entry before launch.
+    """Print-mode wrap agy must not remove user-managed MCP entries.
 
-    A SIGKILLed interactive session leaves the per-run headroom retrieve MCP
-    entry orphaned in mcp_config.json.  A subsequent ``wrap agy --print`` skips
-    retrieve setup but must still scrub that stale entry — otherwise agy hangs
-    in print mode because ANY registered MCP server causes it to block.
+    (Print mode now wires the headroom retrieve MCP like interactive; it no
+    longer scrubs a stale 'headroom' entry, since MCP no longer hangs agy in
+    --print mode. User-managed entries are still left untouched.)
     """
-
-    def test_print_mode_purges_stale_headroom_entry(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Print mode removes a pre-existing 'headroom' retrieve entry before agy runs."""
-        from headroom.mcp_registry.agy import AgyRegistrar
-        from headroom.mcp_registry.base import ServerSpec
-
-        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
-
-        # Arrange: pre-inject an orphaned headroom entry (simulating a SIGKILLed session).
-        reg = AgyRegistrar(home_dir=tmp_path)
-        stale_spec = ServerSpec(
-            name="headroom",
-            command="headroom",
-            args=("mcp", "serve"),
-            env={"HEADROOM_PROXY_URL": "http://127.0.0.1:9999"},
-        )
-        reg.register_server(stale_spec)
-        assert reg.get_server("headroom") is not None, "pre-condition: stale entry in config"
-
-        # Capture mid-run state to prove the entry is gone BEFORE agy executes.
-        seen: dict[str, object] = {}
-
-        def _capture_run(cmd, *a, **kw):
-            seen["spec"] = AgyRegistrar(home_dir=tmp_path).get_server("headroom")
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr("subprocess.run", _capture_run)
-
-        runner = CliRunner()
-        result = runner.invoke(
-            _get_main(), ["wrap", "agy", "--", "--print", "hi"], catch_exceptions=False
-        )
-        assert result.exit_code == 0
-        assert seen["spec"] is None, (
-            "stale 'headroom' entry must be removed before agy launches in print mode"
-        )
-        assert AgyRegistrar(home_dir=tmp_path).get_server("headroom") is None
 
     def test_print_mode_purge_does_not_remove_user_managed_entries(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
