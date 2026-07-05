@@ -255,3 +255,34 @@ Platform specifics:
   The guarantee is therefore "owner-only ACL (inherited from `%TEMP%`) + immediate unlink",
   **not** the Linux "never on disk" invariant. The residual exposure is the brief on-disk
   window, mitigated by the immediate unlink; this is a deliberate, documented degradation.
+
+## Savings & dashboard integration (per-project attribution)
+
+`headroom wrap agy` runs its selective-MITM dispatch as an in-process `create_app()`
+inside the wrap process — a **separate OS process** from the long-running shared proxy
+that renders the savings dashboard. The dashboard reads that shared process's *in-memory*
+metrics (`m.tokens_saved_total`, `m.savings_tracker.stats_preview()`), so agy's savings,
+recorded in agy's own process, never reached it. Two consequences were reported on
+PR #1044: no agy savings on the dashboard, and no agy project row in Per-Project Savings.
+
+Resolution (two parts):
+
+- **Per-project attribution.** agy is a Go binary with no header/base-URL knob, so the
+  project label cannot be injected via the child's env (as it is for Claude/Codex). It is
+  injected at the MITM boundary instead: `make_host_guard` stamps `x-headroom-project`
+  (the launch-directory basename, computed once) onto every intercepted request *after*
+  the Host allowlist check — the trust boundary is unchanged.
+
+- **Cross-process savings via a durable event inbox.** agy does not write shared savings
+  state directly. In the agy process, `HEADROOM_SAVINGS_PATH`, `HEADROOM_SAVINGS_EVENTS_PATH`,
+  and `HEADROOM_OTEL_METRICS_ENABLED=0` are redirected to a throwaway temp dir, and each
+  request emits one event file into `~/.headroom/savings.d/` carrying the exact
+  `PrometheusMetrics.record_request` arguments. The shared proxy drains that inbox (a
+  periodic task plus an opportunistic drain on `/stats`) and **replays each event through
+  its own `record_request` funnel** — the single funnel that already updates every
+  dashboard surface (token/$ heroes, per-project rows, history, CSV, ledger). Because the
+  proxy replay is the sole writer of shared savings state, each agy request is counted
+  once. Delivery is **at-least-once** with a best-effort processed-id journal: savings are
+  estimates, so a rare double-count in the crash window between record and unlink is
+  accepted rather than paying for a transactional store. For users who never run agy the
+  inbox is empty and the dashboard is byte-identical to before.
