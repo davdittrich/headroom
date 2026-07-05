@@ -2185,6 +2185,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         app.state.startup_error = None
         await initialize_context_tool_session_baseline()
 
+        agy_drain_task: asyncio.Task[None] | None = None
         try:
             try:
                 previous_handler = _install_loop_exception_handler()
@@ -2194,7 +2195,8 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                     asyncio.create_task(_log_toin_stats_periodically())
                 # Periodically drain the agy cross-process savings inbox so
                 # agy sessions' savings surface on the shared dashboard.
-                asyncio.create_task(_drain_agy_savings_periodically(proxy.metrics))
+                # Tracked so it is cancelled on shutdown (no leaked task).
+                agy_drain_task = asyncio.create_task(_drain_agy_savings_periodically(proxy.metrics))
                 if proxy.usage_reporter:
                     await proxy.usage_reporter.start(proxy)
                 if proxy.traffic_learner:
@@ -2232,6 +2234,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
             app.state.ready = False
             # Shutdown
+            # Cancel the agy savings-drain loop so it does not leak past shutdown.
+            if agy_drain_task is not None:
+                agy_drain_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await agy_drain_task
             if _cc_reconciler is not None:
                 await _cc_reconciler.stop()
             if _beacon_is_owner[0]:

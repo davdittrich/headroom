@@ -1194,10 +1194,18 @@ class TestAgyRetrieveMcpWiring:
 
         live_spec = seen["spec"]
         assert live_spec is not None, "interactive run must register a headroom retrieve entry"
-        # The entry must point at the live loopback retrieve port (54323 from the
-        # stub), via HEADROOM_PROXY_URL on the headroom mcp serve child.
-        assert live_spec.command == "headroom"
-        assert live_spec.args == ("mcp", "serve")
+        # The entry invokes `headroom mcp serve`, resolved via
+        # resolve_headroom_command() — either the resolved `headroom` binary or
+        # `<python> -m headroom.cli` when the binary is not on PATH.  Assert
+        # against the actual resolution rather than a hard-coded "headroom" so
+        # the test is robust across dev (editable) and CI installs.
+        from headroom.install.runtime import resolve_headroom_command
+
+        expected = resolve_headroom_command()
+        assert live_spec.command == expected[0]
+        assert live_spec.args == (*expected[1:], "mcp", "serve")
+        # It must point at the live loopback retrieve port (54323 from the stub),
+        # via HEADROOM_PROXY_URL on the headroom mcp serve child.
         assert live_spec.env.get("HEADROOM_PROXY_URL") == "http://127.0.0.1:54323"
 
         # After teardown the ephemeral entry MUST be gone (no dead pointer).
