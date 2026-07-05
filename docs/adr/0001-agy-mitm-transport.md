@@ -286,3 +286,14 @@ Resolution (two parts):
   estimates, so a rare double-count in the crash window between record and unlink is
   accepted rather than paying for a transactional store. For users who never run agy the
   inbox is empty and the dashboard is byte-identical to before.
+
+## Third-party tool parity (tokensave)
+
+`headroom wrap agy` now sets up the same code-graph compressor as every other client:
+**tokensave is the primary MCP**, with serena as the backup only when tokensave is
+unavailable (a new `--no-tokensave` flag mirrors `--no-serena`). tokensave is registered
+via `AgyRegistrar` with a verify-then-remove `initialize` handshake and a ledger record so
+`unwrap agy` removes it cleanly; user-managed entries are preserved. Verified live: an
+interactive `wrap agy` leaves `mcpServers = {lean-ctx, tokensave}` (serena dropped, tokensave
+handshake-verified). Like all agy MCP wiring this is **interactive-only** — agy 1.0.16 still
+hangs on any MCP in `--print` mode (re-verified), so print mode registers no MCP.
