@@ -392,6 +392,38 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
         client=outcome.client,
     )
 
+    # 1b. agy cross-process emit (best-effort, agy process only). When agy runs
+    #     as a separate process from the shared proxy, this drops one inbox
+    #     event carrying the SAME funnel kwargs; the shared proxy drains and
+    #     replays it through its own record_request so the savings land on the
+    #     shared dashboard, counted once. Gated by a marker env var the shared
+    #     proxy never sets, so it never emits. Never raises into the request.
+    from headroom.proxy import agy_savings_inbox
+
+    if agy_savings_inbox.agy_emit_enabled():
+        try:
+            agy_savings_inbox.emit_event(
+                provider=outcome.provider,
+                model=outcome.model,
+                input_tokens=outcome.optimized_tokens,
+                output_tokens=outcome.output_tokens,
+                tokens_saved=outcome.tokens_saved,
+                latency_ms=outcome.total_latency_ms,
+                cached=outcome.cache_hit,
+                overhead_ms=outcome.overhead_ms,
+                ttfb_ms=outcome.ttfb_ms,
+                cache_read_tokens=outcome.cache_read_tokens,
+                cache_write_tokens=outcome.cache_write_tokens,
+                cache_write_5m_tokens=outcome.cache_write_5m_tokens,
+                cache_write_1h_tokens=outcome.cache_write_1h_tokens,
+                uncached_input_tokens=outcome.uncached_input_tokens,
+                attempted_input_tokens=outcome.attempted_input_tokens,
+                project=project,
+                client=outcome.client,
+            )
+        except Exception:  # noqa: BLE001 - best-effort, never break the response
+            pass
+
     # 2. Cost tracker (optional).
     cost_tracker = getattr(handler, "cost_tracker", None)
     if cost_tracker is not None:

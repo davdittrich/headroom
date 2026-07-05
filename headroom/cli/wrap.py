@@ -7018,7 +7018,21 @@ def agy(
     old_sigint: Any = None
     old_sigterm: Any = None
     retrieve_registered = False
+    # Cross-process savings: redirect THIS process's in-proxy funnel writes to a
+    # throwaway dir and turn on the inbox emit marker. agy runs its dispatch app
+    # in this process, so the funnel's durable writes (savings ledger,
+    # SavingsTracker, OTEL) must go nowhere durable — the shared proxy replays
+    # each emitted inbox event through its OWN funnel and is the sole writer of
+    # shared state. The tmp dir + env vars live only for this agy session.
+    agy_savings_tmp: str | None = None
     try:
+        agy_savings_tmp = tempfile.mkdtemp(prefix="headroom-agy-savings-")
+        os.environ["HEADROOM_SAVINGS_PATH"] = str(Path(agy_savings_tmp) / "proxy_savings.json")
+        os.environ["HEADROOM_SAVINGS_EVENTS_PATH"] = str(
+            Path(agy_savings_tmp) / "savings_events.jsonl"
+        )
+        os.environ["HEADROOM_OTEL_METRICS_ENABLED"] = "0"
+        os.environ["HEADROOM_AGY_INBOX_EMIT"] = "1"
         # Snapshot compression-store baseline and install the fail-open warning
         # handler BEFORE the dispatch thread starts so we catch every event.
         session_stats.snapshot_start()
@@ -7266,6 +7280,10 @@ def agy(
         # it doesn't leak into the click process. Ref: headroom-30y.15
         session_stats.print_summary(fail_open_handler)
         remove_fail_open_handler(fail_open_handler)
+        # Clean up the throwaway savings dir (the env vars die with the process,
+        # which is fine — nothing else in this process consumes them).
+        if agy_savings_tmp is not None:
+            shutil.rmtree(agy_savings_tmp, ignore_errors=True)
 
 
 # =============================================================================
