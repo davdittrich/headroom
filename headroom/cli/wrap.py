@@ -954,6 +954,52 @@ def _setup_headroom_retrieve_mcp_agy(
     return False
 
 
+def _maybe_warn_agy_ccr_downgrade(retrieve_registered: bool) -> None:
+    """Loudly warn when ccr mode silently downgraded to lossless this run.
+
+    Mirrors the downgrade condition in
+    ``headroom.proxy.handlers.gemini._resolve_agy_fr_mode``: ccr is the
+    default (and the only mode that ships recoverable functionResponse
+    compression), but it requires the retrieve MCP to resolve
+    ``[Retrieve more: hash=…]`` markers. When the retrieve MCP did not wire
+    for this run, that handler falls back to ``lossless`` -- a byte-recoverable
+    no-op -- so tool-output savings collapse to ~0 with no other signal to the
+    user. Stays silent when retrieve DID wire, or when ``lossless`` was
+    requested explicitly (no downgrade occurred).
+
+    Cause detection is ADVISORY only: this probes ``mcp`` importability in
+    THIS (parent) interpreter, but the agy child is launched via
+    ``resolve_headroom_command()`` (``shutil.which("headroom")``), which need
+    not share this venv. A false negative here (mcp present in the parent,
+    absent in the child) still degrades gracefully to the generic
+    handshake-failure branch.
+    """
+    mode = (os.environ.get("HEADROOM_AGY_FR_MODE") or "ccr").strip().lower()
+    if mode not in ("ccr", "lossless"):
+        mode = "ccr"
+    if mode != "ccr" or retrieve_registered:
+        return
+
+    if _module_available("mcp"):
+        cause = "the retrieve MCP handshake failed"
+        remedy = "Check proxy.log for the handshake failure detail."
+    else:
+        cause = (
+            "mcp is not importable in this interpreter (ADVISORY: likely cause -- "
+            "the agy child is resolved via `headroom` on PATH and may run in a "
+            "different environment than this one)"
+        )
+        remedy = "Install with: pip install 'headroom-ai[proxy]'  (or: pip install mcp)"
+
+    click.echo()
+    click.echo("  ⚠️  WARNING: agy compression savings are DISABLED this run.")
+    click.echo("  ⚠️  ccr mode (default) requires the retrieve MCP; it did not wire, so")
+    click.echo("  ⚠️  functionResponse compression fell back to lossless (saves ~0 on tool output).")
+    click.echo(f"  ⚠️  Cause: {cause}.")
+    click.echo(f"  ⚠️  Fix:   {remedy}")
+    click.echo()
+
+
 def _revert_headroom_retrieve_mcp_agy(registrar: Any) -> None:
     """Remove the per-run headroom retrieve MCP entry from agy (best-effort).
 
@@ -7269,6 +7315,8 @@ def agy(
         else:
             os.environ.pop("HEADROOM_AGY_RETRIEVE_WIRED", None)
             env.pop("HEADROOM_AGY_RETRIEVE_WIRED", None)
+
+        _maybe_warn_agy_ccr_downgrade(retrieve_registered)
 
         # ------------------------------------------------------------------
         # Install signal handlers so the terminator/dispatch are always torn
