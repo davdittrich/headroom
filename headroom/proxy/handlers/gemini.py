@@ -72,7 +72,7 @@ _FR_CCR_MARKER_TEMPLATE = _FR_CCR_MARKER_PREFIX + '{hash}") to expand. Retrieve 
 _FR_MARKER_MIN_RATIO = 2
 
 
-def _is_headroom_retrieve_name(name: str | None) -> bool:
+def _is_headroom_retrieve_name(name: object) -> bool:
     """Match the ``headroom_retrieve`` tool by name, bare or MCP-prefixed.
 
     Mirrors the Rust exemplar (``crates/headroom-core/src/transforms/
@@ -82,9 +82,13 @@ def _is_headroom_retrieve_name(name: str | None) -> bool:
     fragment without the ``__`` boundary (e.g. ``xheadroom_retrieve``) does
     NOT match -- only an exact bare name or a proper namespaced suffix does.
     """
-    if not name:
-        return False
-    return name == "headroom_retrieve" or name.endswith("__headroom_retrieve")
+    # ``name`` comes from untrusted request JSON; a non-str value (e.g. int)
+    # would raise on ``.endswith`` and the caller's blanket except would abort
+    # FR compression for the whole request. Guard with isinstance, matching the
+    # sibling OpenAI path.
+    return isinstance(name, str) and (
+        name == "headroom_retrieve" or name.endswith("__headroom_retrieve")
+    )
 
 
 def _requested_agy_fr_mode() -> str:

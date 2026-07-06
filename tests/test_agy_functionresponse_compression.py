@@ -301,6 +301,10 @@ def test_is_headroom_retrieve_name_matching() -> None:
     assert _is_headroom_retrieve_name("xheadroom_retrieve") is False
     assert _is_headroom_retrieve_name(None) is False
     assert _is_headroom_retrieve_name("") is False
+    # untrusted JSON: non-str name must return False, never raise
+    assert _is_headroom_retrieve_name(123) is False
+    assert _is_headroom_retrieve_name({"headroom_retrieve": 1}) is False
+    assert _is_headroom_retrieve_name(["headroom_retrieve"]) is False
 
 
 def test_headroom_retrieve_output_exempted_from_recompression(
