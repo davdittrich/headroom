@@ -72,6 +72,21 @@ _FR_CCR_MARKER_TEMPLATE = _FR_CCR_MARKER_PREFIX + '{hash}") to expand. Retrieve 
 _FR_MARKER_MIN_RATIO = 2
 
 
+def _requested_agy_fr_mode() -> str:
+    """Normalize the REQUESTED functionResponse mode from the environment.
+
+    ``HEADROOM_AGY_FR_MODE`` selects ``ccr`` (default) or ``lossless``;
+    unset/invalid values fall back to ``ccr``. Single source of truth shared by
+    ``_resolve_agy_fr_mode`` (the downgrade decision) and the wrap-agy downgrade
+    warning (``headroom.cli.wrap._maybe_warn_agy_ccr_downgrade``) so the two
+    cannot drift.
+    """
+    mode = (os.environ.get("HEADROOM_AGY_FR_MODE") or "ccr").strip().lower()
+    if mode not in ("ccr", "lossless"):
+        return "ccr"
+    return mode
+
+
 def _resolve_agy_fr_mode() -> str:
     """Resolve the functionResponse compression mode for an agy run.
 
@@ -80,9 +95,7 @@ def _resolve_agy_fr_mode() -> str:
     (``HEADROOM_AGY_RETRIEVE_WIRED`` != "1"), we must NOT ship unrecoverable
     markers -- downgrade to ``lossless`` (byte-recoverable / no-op).
     """
-    mode = (os.environ.get("HEADROOM_AGY_FR_MODE") or "ccr").strip().lower()
-    if mode not in ("ccr", "lossless"):
-        mode = "ccr"
+    mode = _requested_agy_fr_mode()
     if mode == "ccr" and os.environ.get("HEADROOM_AGY_RETRIEVE_WIRED") != "1":
         return "lossless"
     return mode

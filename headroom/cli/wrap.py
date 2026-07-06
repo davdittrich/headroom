@@ -957,8 +957,9 @@ def _setup_headroom_retrieve_mcp_agy(
 def _maybe_warn_agy_ccr_downgrade(retrieve_registered: bool) -> None:
     """Loudly warn when ccr mode silently downgraded to lossless this run.
 
-    Mirrors the downgrade condition in
-    ``headroom.proxy.handlers.gemini._resolve_agy_fr_mode``: ccr is the
+    Fires iff ``headroom.proxy.handlers.gemini._resolve_agy_fr_mode`` would
+    downgrade: both read the requested mode from the shared
+    ``_requested_agy_fr_mode`` helper (single source of truth). ccr is the
     default (and the only mode that ships recoverable functionResponse
     compression), but it requires the retrieve MCP to resolve
     ``[Retrieve more: hash=…]`` markers. When the retrieve MCP did not wire
@@ -974,15 +975,17 @@ def _maybe_warn_agy_ccr_downgrade(retrieve_registered: bool) -> None:
     absent in the child) still degrades gracefully to the generic
     handshake-failure branch.
     """
-    mode = (os.environ.get("HEADROOM_AGY_FR_MODE") or "ccr").strip().lower()
-    if mode not in ("ccr", "lossless"):
-        mode = "ccr"
-    if mode != "ccr" or retrieve_registered:
+    from headroom.proxy.handlers.gemini import _requested_agy_fr_mode
+
+    if _requested_agy_fr_mode() != "ccr" or retrieve_registered:
         return
 
     if _module_available("mcp"):
-        cause = "the retrieve MCP handshake failed"
-        remedy = "Check proxy.log for the handshake failure detail."
+        cause = (
+            "the retrieve MCP failed to register or complete its handshake "
+            "(see the 'MCP retrieve tool:' line above)"
+        )
+        remedy = "Fix the failure shown on that line, then re-run `headroom wrap agy`."
     else:
         cause = (
             "mcp is not importable in this interpreter (ADVISORY: likely cause -- "
