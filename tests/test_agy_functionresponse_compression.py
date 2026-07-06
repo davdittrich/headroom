@@ -30,10 +30,10 @@ from headroom.cache.compression_store import (
     get_compression_store,
     reset_compression_store,
 )
+from headroom.ccr.tool_injection import is_headroom_retrieve_name
 from headroom.parser import CCR_RETRIEVAL_MARKER_RE
 from headroom.proxy.handlers.gemini import (
     _FR_CCR_MARKER_PREFIX,
-    _is_headroom_retrieve_name,
     _resolve_agy_fr_mode,
 )
 from headroom.proxy.server import HeadroomProxy, ProxyConfig, create_app
@@ -291,20 +291,20 @@ def test_uniform_historical_and_tail_compressed(proxy: Any, tok: Any, ccr_store:
 # ---------------------------------------------------------------------------
 def test_is_headroom_retrieve_name_matching() -> None:
     # Bare name and MCP-prefixed / custom-prefixed variants match.
-    assert _is_headroom_retrieve_name("headroom_retrieve") is True
-    assert _is_headroom_retrieve_name("mcp__headroom__headroom_retrieve") is True
-    assert _is_headroom_retrieve_name("custom__headroom_retrieve") is True
+    assert is_headroom_retrieve_name("headroom_retrieve") is True
+    assert is_headroom_retrieve_name("mcp__headroom__headroom_retrieve") is True
+    assert is_headroom_retrieve_name("custom__headroom_retrieve") is True
     # Unrelated / near-miss names must NOT match.
-    assert _is_headroom_retrieve_name("read_file") is False
-    assert _is_headroom_retrieve_name("my_headroom_retrieve_helper") is False
+    assert is_headroom_retrieve_name("read_file") is False
+    assert is_headroom_retrieve_name("my_headroom_retrieve_helper") is False
     # No double-underscore boundary -- must NOT match (single "x" prefix).
-    assert _is_headroom_retrieve_name("xheadroom_retrieve") is False
-    assert _is_headroom_retrieve_name(None) is False
-    assert _is_headroom_retrieve_name("") is False
+    assert is_headroom_retrieve_name("xheadroom_retrieve") is False
+    assert is_headroom_retrieve_name(None) is False
+    assert is_headroom_retrieve_name("") is False
     # untrusted JSON: non-str name must return False, never raise
-    assert _is_headroom_retrieve_name(123) is False
-    assert _is_headroom_retrieve_name({"headroom_retrieve": 1}) is False
-    assert _is_headroom_retrieve_name(["headroom_retrieve"]) is False
+    assert is_headroom_retrieve_name(123) is False
+    assert is_headroom_retrieve_name({"headroom_retrieve": 1}) is False
+    assert is_headroom_retrieve_name(["headroom_retrieve"]) is False
 
 
 def test_headroom_retrieve_output_exempted_from_recompression(

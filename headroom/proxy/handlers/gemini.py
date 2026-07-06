@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from fastapi import Request
     from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from headroom.ccr.tool_injection import is_headroom_retrieve_name
 from headroom.copilot_auth import build_copilot_upstream_url
 from headroom.proxy.auth_mode import classify_client
 from headroom.proxy.compression_decision import CompressionDecision
@@ -70,25 +71,6 @@ _FR_CCR_MARKER_TEMPLATE = _FR_CCR_MARKER_PREFIX + '{hash}") to expand. Retrieve 
 # We therefore set the floor to ``_FR_MARKER_MIN_RATIO`` times the marker's
 # token cost, computed at runtime against the request's tokenizer.
 _FR_MARKER_MIN_RATIO = 2
-
-
-def _is_headroom_retrieve_name(name: object) -> bool:
-    """Match the ``headroom_retrieve`` tool by name, bare or MCP-prefixed.
-
-    Mirrors the Rust exemplar (``crates/headroom-core/src/transforms/
-    live_zone.rs``, ``headroom_retrieve_call_ids`` collection): the tool is
-    exposed either as the bare name or double-underscore-namespaced (e.g.
-    ``mcp__headroom__headroom_retrieve``). A single trailing ``retrieve``
-    fragment without the ``__`` boundary (e.g. ``xheadroom_retrieve``) does
-    NOT match -- only an exact bare name or a proper namespaced suffix does.
-    """
-    # ``name`` comes from untrusted request JSON; a non-str value (e.g. int)
-    # would raise on ``.endswith`` and the caller's blanket except would abort
-    # FR compression for the whole request. Guard with isinstance, matching the
-    # sibling OpenAI path.
-    return isinstance(name, str) and (
-        name == "headroom_retrieve" or name.endswith("__headroom_retrieve")
-    )
 
 
 def _requested_agy_fr_mode() -> str:
@@ -977,7 +959,7 @@ class GeminiHandlerMixin:
         functionCall/functionResponse pairing are preserved.
 
         EXEMPTION: a functionResponse named ``headroom_retrieve`` (bare or
-        MCP-namespaced, see ``_is_headroom_retrieve_name``) is left untouched.
+        MCP-namespaced, see ``is_headroom_retrieve_name``) is left untouched.
         That tool's own output is the just-resolved ORIGINAL of a marker the
         model expanded; re-compressing it back into the same marker is a
         self-defeating loop (the OpenAI path already exempts this -- see
@@ -1003,7 +985,7 @@ class GeminiHandlerMixin:
                 response = fr.get("response")
                 if response is None:
                     continue
-                if _is_headroom_retrieve_name(fr.get("name")):
+                if is_headroom_retrieve_name(fr.get("name")):
                     continue
                 fr["response"] = self._walk_fr_compress(
                     response, mode, tokenizer, store, floor, fr.get("name"), stats
