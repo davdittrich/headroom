@@ -30,6 +30,7 @@ from headroom.cache.compression_store import (
     get_compression_store,
     reset_compression_store,
 )
+from headroom.parser import CCR_RETRIEVAL_MARKER_RE
 from headroom.proxy.handlers.gemini import (
     _FR_CCR_MARKER_PREFIX,
     _resolve_agy_fr_mode,
@@ -60,7 +61,10 @@ def _make_sse() -> StreamingResponse:
 
 def _hash_of(marker: str) -> str:
     assert marker.startswith(_FR_CCR_MARKER_PREFIX), marker
-    return marker.split("hash=", 1)[1].rstrip("]")
+    # rsplit: the marker text names ``headroom_retrieve(hash="...")`` before
+    # the trailing ``Retrieve more: hash=<h>]`` -- take the LAST occurrence so
+    # the hash comes from the canonical trailing form the parser regex keys on.
+    return marker.rsplit("hash=", 1)[1].rstrip("]")
 
 
 def _fr_leaf(contents: list, entry: int, part: int = 0, key: str = "output") -> Any:
@@ -136,6 +140,32 @@ def test_ccr_byte_recovery(proxy: Any, tok: Any, ccr_store: Any) -> None:
     assert leaves == 1 and before > after > 0
 
     marker = _fr_leaf(contents, 0)
+    entry = ccr_store.retrieve(_hash_of(marker))
+    assert entry is not None
+    assert entry.original_content == BIG_LEAF
+
+
+# ---------------------------------------------------------------------------
+# Self-describing marker: names the retrieval tool so a model that needs the
+# compressed detail knows how to expand it (WU4 observed 0 retrieve calls
+# because the old marker named no tool).
+# ---------------------------------------------------------------------------
+def test_marker_names_headroom_retrieve_tool(proxy: Any, tok: Any, ccr_store: Any) -> None:
+    c1 = [_fr_entry()]
+    c2 = [_fr_entry()]
+    proxy._compress_agy_function_responses(c1, "ccr", tok, ccr_store)
+    proxy._compress_agy_function_responses(c2, "ccr", tok, ccr_store)
+    marker = _fr_leaf(c1, 0)
+
+    # Names the tool + gives a one-line call-to-expand instruction.
+    assert "headroom_retrieve" in marker
+    # Store-lookup path substring intact: parser.CCR_RETRIEVAL_MARKER_RE and
+    # the CCR retrieval path both key on this exact substring.
+    assert "Retrieve more: hash=" in marker
+    assert CCR_RETRIEVAL_MARKER_RE.search(marker) is not None
+    # Deterministic: identical original -> identical marker bytes, twice over.
+    assert marker == _fr_leaf(c2, 0)
+    # Round-trips via the store using the trailing canonical hash.
     entry = ccr_store.retrieve(_hash_of(marker))
     assert entry is not None
     assert entry.original_content == BIG_LEAF
