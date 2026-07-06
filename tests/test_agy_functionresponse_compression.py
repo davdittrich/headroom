@@ -33,6 +33,7 @@ from headroom.cache.compression_store import (
 from headroom.parser import CCR_RETRIEVAL_MARKER_RE
 from headroom.proxy.handlers.gemini import (
     _FR_CCR_MARKER_PREFIX,
+    _is_headroom_retrieve_name,
     _resolve_agy_fr_mode,
 )
 from headroom.proxy.server import HeadroomProxy, ProxyConfig, create_app
@@ -282,6 +283,84 @@ def test_uniform_historical_and_tail_compressed(proxy: Any, tok: Any, ccr_store:
     assert leaves == 2
     assert _fr_leaf(contents, 0).startswith(_FR_CCR_MARKER_PREFIX)
     assert _fr_leaf(contents, 2).startswith(_FR_CCR_MARKER_PREFIX)
+
+
+# ---------------------------------------------------------------------------
+# Anti-self-defeating-loop: headroom_retrieve's OWN output must never be
+# re-compressed back into the marker it was expanded from (headroom-37g.8).
+# ---------------------------------------------------------------------------
+def test_is_headroom_retrieve_name_matching() -> None:
+    # Bare name and MCP-prefixed / custom-prefixed variants match.
+    assert _is_headroom_retrieve_name("headroom_retrieve") is True
+    assert _is_headroom_retrieve_name("mcp__headroom__headroom_retrieve") is True
+    assert _is_headroom_retrieve_name("custom__headroom_retrieve") is True
+    # Unrelated / near-miss names must NOT match.
+    assert _is_headroom_retrieve_name("read_file") is False
+    assert _is_headroom_retrieve_name("my_headroom_retrieve_helper") is False
+    # No double-underscore boundary -- must NOT match (single "x" prefix).
+    assert _is_headroom_retrieve_name("xheadroom_retrieve") is False
+    assert _is_headroom_retrieve_name(None) is False
+    assert _is_headroom_retrieve_name("") is False
+
+
+def test_headroom_retrieve_output_exempted_from_recompression(
+    proxy: Any, tok: Any, ccr_store: Any
+) -> None:
+    contents = [
+        {
+            "role": "user",
+            "parts": [
+                {
+                    "functionResponse": {
+                        "name": "mcp__headroom__headroom_retrieve",
+                        "response": {"output": BIG_LEAF},
+                    }
+                },
+                {
+                    "functionResponse": {
+                        "name": "read_file",
+                        "response": {"output": BIG_LEAF + "!"},
+                    }
+                },
+            ],
+        }
+    ]
+    before, after, leaves = proxy._compress_agy_function_responses(contents, "ccr", tok, ccr_store)
+    # Only the normal tool's leaf is compressed; the retrieve leaf is skipped.
+    assert leaves == 1
+    retrieve_leaf = _fr_leaf(contents, 0, part=0)
+    normal_leaf = _fr_leaf(contents, 0, part=1)
+    assert retrieve_leaf == BIG_LEAF
+    assert not retrieve_leaf.startswith(_FR_CCR_MARKER_PREFIX)
+    assert normal_leaf.startswith(_FR_CCR_MARKER_PREFIX)
+
+
+def test_headroom_retrieve_bare_and_suffixed_names_both_exempted(
+    proxy: Any, tok: Any, ccr_store: Any
+) -> None:
+    contents = [
+        {
+            "role": "user",
+            "parts": [
+                {
+                    "functionResponse": {
+                        "name": "headroom_retrieve",
+                        "response": {"output": BIG_LEAF},
+                    }
+                },
+                {
+                    "functionResponse": {
+                        "name": "toolgroup__headroom_retrieve",
+                        "response": {"output": BIG_LEAF + "!"},
+                    }
+                },
+            ],
+        }
+    ]
+    before, after, leaves = proxy._compress_agy_function_responses(contents, "ccr", tok, ccr_store)
+    assert leaves == 0
+    assert _fr_leaf(contents, 0, part=0) == BIG_LEAF
+    assert _fr_leaf(contents, 0, part=1) == BIG_LEAF + "!"
 
 
 # ---------------------------------------------------------------------------

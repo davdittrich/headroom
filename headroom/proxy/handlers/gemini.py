@@ -72,6 +72,21 @@ _FR_CCR_MARKER_TEMPLATE = _FR_CCR_MARKER_PREFIX + '{hash}") to expand. Retrieve 
 _FR_MARKER_MIN_RATIO = 2
 
 
+def _is_headroom_retrieve_name(name: str | None) -> bool:
+    """Match the ``headroom_retrieve`` tool by name, bare or MCP-prefixed.
+
+    Mirrors the Rust exemplar (``crates/headroom-core/src/transforms/
+    live_zone.rs``, ``headroom_retrieve_call_ids`` collection): the tool is
+    exposed either as the bare name or double-underscore-namespaced (e.g.
+    ``mcp__headroom__headroom_retrieve``). A single trailing ``retrieve``
+    fragment without the ``__`` boundary (e.g. ``xheadroom_retrieve``) does
+    NOT match -- only an exact bare name or a proper namespaced suffix does.
+    """
+    if not name:
+        return False
+    return name == "headroom_retrieve" or name.endswith("__headroom_retrieve")
+
+
 def _requested_agy_fr_mode() -> str:
     """Normalize the REQUESTED functionResponse mode from the environment.
 
@@ -957,6 +972,13 @@ class GeminiHandlerMixin:
         in place. ``functionCall`` parts are never touched; JSON shape and
         functionCall/functionResponse pairing are preserved.
 
+        EXEMPTION: a functionResponse named ``headroom_retrieve`` (bare or
+        MCP-namespaced, see ``_is_headroom_retrieve_name``) is left untouched.
+        That tool's own output is the just-resolved ORIGINAL of a marker the
+        model expanded; re-compressing it back into the same marker is a
+        self-defeating loop (the OpenAI path already exempts this -- see
+        ``headroom_retrieve_call_ids`` in ``live_zone.rs``).
+
         Returns ``(fr_tokens_before, fr_tokens_after, leaves_compressed)`` over
         the leaves that were actually compressed.
         """
@@ -976,6 +998,8 @@ class GeminiHandlerMixin:
                     continue
                 response = fr.get("response")
                 if response is None:
+                    continue
+                if _is_headroom_retrieve_name(fr.get("name")):
                     continue
                 fr["response"] = self._walk_fr_compress(
                     response, mode, tokenizer, store, floor, fr.get("name"), stats
