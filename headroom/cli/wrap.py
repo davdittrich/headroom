@@ -7256,6 +7256,20 @@ def agy(
             # Idempotent — no-op when the entry is absent.
             AgyRegistrar().unregister_server("headroom")
 
+        # WU1 (headroom-37g.1): tell the in-process Cloud Code Assist handler
+        # whether the CCR retrieve listener is wired for this run. The handler
+        # ships recoverable functionResponse hash markers only when retrieval can
+        # resolve them; otherwise it falls back to lossless. The dispatch app
+        # runs in THIS process, so the signal must live in os.environ (mirrors
+        # HEADROOM_AGY_INBOX_EMIT above); also mirror it into the child env.
+        # HEADROOM_AGY_FR_MODE is already inherited via os.environ.copy() above.
+        if retrieve_registered:
+            os.environ["HEADROOM_AGY_RETRIEVE_WIRED"] = "1"
+            env["HEADROOM_AGY_RETRIEVE_WIRED"] = "1"
+        else:
+            os.environ.pop("HEADROOM_AGY_RETRIEVE_WIRED", None)
+            env.pop("HEADROOM_AGY_RETRIEVE_WIRED", None)
+
         # ------------------------------------------------------------------
         # Install signal handlers so the terminator/dispatch are always torn
         # down on SIGINT/SIGTERM (mirrors _launch_tool's signal-safe teardown

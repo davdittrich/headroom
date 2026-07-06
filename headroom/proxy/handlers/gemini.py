@@ -27,6 +27,61 @@ logger = logging.getLogger("headroom.proxy")
 DEFAULT_CLOUDCODE_API_URL = "https://cloudcode-pa.googleapis.com"
 ANTIGRAVITY_DAILY_API_URL = "https://daily-cloudcode-pa.googleapis.com"
 
+# ---------------------------------------------------------------------------
+# WU1 (headroom-37g.1): uniform deterministic recoverable compression of agy
+# functionResponse leaves.
+#
+# agy's per-turn bulk lives in ``functionResponse`` parts. Those entries carry
+# non-text parts, so ``_gemini_contents_to_messages`` routes them into
+# ``preserved_indices`` and ``_rebuild_gemini_contents`` restores them verbatim
+# -- the text compressor never sees them. Only tiny residual text is compressed,
+# it inflates, the revert guard fires, and tokens_saved collapses to 0 (PR
+# #1044: "704 -> 718, reverting").
+#
+# We compress the large STRING leaves inside those parts with a DETERMINISTIC,
+# IDEMPOTENT, RECOVERABLE transform applied UNIFORMLY to every functionResponse
+# leaf (historical + tail). Because headroom is an in-flight MITM that never
+# rewrites agy's LOCAL history, agy re-sends the ORIGINAL bytes each turn; a
+# deterministic transform (same original -> identical bytes every turn) yields a
+# byte-stable compressed prefix that re-hits the Cloud Code Assist server-side
+# cache. Recoverability is mandatory: the model reads functionResponse back as
+# its own prior tool results, so lossy summaries would corrupt multi-turn
+# reasoning.
+# ---------------------------------------------------------------------------
+
+# Marker shipped in place of a compressed leaf (CCR mode). It carries fixed
+# prose plus the 24-hex-char CCR hash (SHA-256(original)[:24], the
+# compression_store default), which ``headroom_retrieve`` resolves back to the
+# original bytes. Matches the existing bracketed marker style / regex
+# (parser.CCR_RETRIEVAL_MARKER_RE: ``Retrieve more: hash=``).
+_FR_CCR_HASH_LEN = 24
+_FR_CCR_MARKER_PREFIX = "[functionResponse compressed. Retrieve more: hash="
+_FR_CCR_MARKER_TEMPLATE = _FR_CCR_MARKER_PREFIX + "{hash}]"
+
+# Per-leaf floor DERIVED from marker overhead (not a magic 200). Replacing a
+# leaf ships the marker in its place, so the net saving is
+# ``leaf_tokens - marker_tokens``. Compressing is only worthwhile when that net
+# saving exceeds the marker's OWN cost, i.e. ``leaf_tokens > 2 * marker_tokens``.
+# We therefore set the floor to ``_FR_MARKER_MIN_RATIO`` times the marker's
+# token cost, computed at runtime against the request's tokenizer.
+_FR_MARKER_MIN_RATIO = 2
+
+
+def _resolve_agy_fr_mode() -> str:
+    """Resolve the functionResponse compression mode for an agy run.
+
+    ``HEADROOM_AGY_FR_MODE`` selects ``ccr`` (default) or ``lossless``. When
+    ``ccr`` is requested but the CCR retrieve listener is not wired for this run
+    (``HEADROOM_AGY_RETRIEVE_WIRED`` != "1"), we must NOT ship unrecoverable
+    markers -- downgrade to ``lossless`` (byte-recoverable / no-op).
+    """
+    mode = (os.environ.get("HEADROOM_AGY_FR_MODE") or "ccr").strip().lower()
+    if mode not in ("ccr", "lossless"):
+        mode = "ccr"
+    if mode == "ccr" and os.environ.get("HEADROOM_AGY_RETRIEVE_WIRED") != "1":
+        return "lossless"
+    return mode
+
 
 class GeminiHandlerMixin:
     """Mixin providing Gemini API handler methods for HeadroomProxy."""
@@ -775,6 +830,140 @@ class GeminiHandlerMixin:
                 },
             )
 
+    def _fr_marker_token_floor(self, tokenizer: Any) -> int:
+        """Derive the per-leaf compression floor from the CCR marker overhead.
+
+        A compressed leaf ships the marker in its place, so the net saving is
+        ``leaf_tokens - marker_tokens``. We only compress when that saving
+        exceeds the marker's own cost (``_FR_MARKER_MIN_RATIO`` x marker).
+        """
+        sample = _FR_CCR_MARKER_TEMPLATE.format(hash="0" * _FR_CCR_HASH_LEN)
+        marker_tokens = tokenizer.count_text(sample)
+        return max(1, marker_tokens * _FR_MARKER_MIN_RATIO)
+
+    def _compress_fr_leaf(
+        self,
+        leaf: str,
+        mode: str,
+        tokenizer: Any,
+        store: Any,
+        tool_name: str | None,
+    ) -> str:
+        """Deterministically compress a single functionResponse string leaf.
+
+        ``ccr``: cache the ORIGINAL and ship a hash marker. The hash defaults to
+        SHA-256(original)[:24] -> an identical original yields identical marker
+        bytes every turn (deterministic + cache-coherent). Idempotent: an
+        already-compressed marker is returned unchanged.
+        ``lossless``: format-native reversible compaction (no marker).
+        """
+        if mode == "ccr":
+            # Idempotency guard: never re-wrap our own marker.
+            if leaf.startswith(_FR_CCR_MARKER_PREFIX):
+                return leaf
+            marker_body_tokens = tokenizer.count_text(
+                _FR_CCR_MARKER_TEMPLATE.format(hash="0" * _FR_CCR_HASH_LEN)
+            )
+            # Default hash = SHA-256(original)[:24] (DETERMINISTIC). Do NOT pass
+            # explicit_hash -- determinism must come from the content itself so
+            # the same leaf maps to the same marker bytes across turns.
+            hash_key = store.store(
+                leaf,
+                _FR_CCR_MARKER_TEMPLATE,
+                original_tokens=tokenizer.count_text(leaf),
+                compressed_tokens=marker_body_tokens,
+                tool_name=tool_name,
+            )
+            return _FR_CCR_MARKER_TEMPLATE.format(hash=hash_key)
+        # lossless: reversible, deterministic, self-verified smaller-or-unchanged.
+        from headroom.transforms.lossless_compaction import compact_lossless
+
+        return compact_lossless(leaf, "text")
+
+    def _walk_fr_compress(
+        self,
+        value: Any,
+        mode: str,
+        tokenizer: Any,
+        store: Any,
+        floor: int,
+        tool_name: str | None,
+        stats: dict[str, int],
+    ) -> Any:
+        """Recurse dict/list; compress every string leaf >= ``floor`` in place.
+
+        Non-string scalars and sub-floor leaves are skipped. Mutates containers
+        in place and returns ``value`` for convenient reassignment.
+        """
+        if isinstance(value, dict):
+            for k, v in value.items():
+                value[k] = self._walk_fr_compress(
+                    v, mode, tokenizer, store, floor, tool_name, stats
+                )
+            return value
+        if isinstance(value, list):
+            for i, v in enumerate(value):
+                value[i] = self._walk_fr_compress(
+                    v, mode, tokenizer, store, floor, tool_name, stats
+                )
+            return value
+        if isinstance(value, str):
+            leaf_tokens = tokenizer.count_text(value)
+            if leaf_tokens < floor:
+                return value
+            new_leaf = self._compress_fr_leaf(value, mode, tokenizer, store, tool_name)
+            if new_leaf != value:
+                new_tokens = tokenizer.count_text(new_leaf)
+                # Guard: only accept an actual reduction (lossless may no-op).
+                if new_tokens < leaf_tokens:
+                    stats["before"] += leaf_tokens
+                    stats["after"] += new_tokens
+                    stats["leaves"] += 1
+                    return new_leaf
+            return value
+        # Non-string scalar (int/float/bool/None): skipped, JSON shape preserved.
+        return value
+
+    def _compress_agy_function_responses(
+        self,
+        contents: list[dict],
+        mode: str,
+        tokenizer: Any,
+        store: Any,
+    ) -> tuple[int, int, int]:
+        """Uniformly compress functionResponse string leaves across ALL entries.
+
+        Walks every ``contents[]`` entry (historical + tail), every ``parts[]``
+        entry, and every ``functionResponse`` part (an entry may carry several),
+        recursing into the ``response`` value to compress its large string leaves
+        in place. ``functionCall`` parts are never touched; JSON shape and
+        functionCall/functionResponse pairing are preserved.
+
+        Returns ``(fr_tokens_before, fr_tokens_after, leaves_compressed)`` over
+        the leaves that were actually compressed.
+        """
+        floor = self._fr_marker_token_floor(tokenizer)
+        stats: dict[str, int] = {"before": 0, "after": 0, "leaves": 0}
+        for content in contents:
+            if not isinstance(content, dict):
+                continue
+            parts = content.get("parts")
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                fr = part.get("functionResponse")
+                if not isinstance(fr, dict):
+                    continue
+                response = fr.get("response")
+                if response is None:
+                    continue
+                fr["response"] = self._walk_fr_compress(
+                    response, mode, tokenizer, store, floor, fr.get("name"), stats
+                )
+        return stats["before"], stats["after"], stats["leaves"]
+
     async def handle_google_cloudcode_stream(
         self,
         request: Request,
@@ -899,6 +1088,33 @@ class GeminiHandlerMixin:
             optimized_tokens = original_tokens
             transforms_applied = []
 
+        # WU1 (headroom-37g.1): uniform deterministic recoverable compression of
+        # agy functionResponse leaves. Runs INDEPENDENT of the text-pipeline
+        # revert above so the per-turn tool-output bulk (which lives in preserved
+        # functionResponse parts the text compressor never sees) is compressed
+        # and counted even when the tiny residual text inflates and reverts.
+        fr_before = fr_after = fr_leaves = 0
+        if is_antigravity and _decision.should_compress and isinstance(contents, list):
+            try:
+                fr_mode = _resolve_agy_fr_mode()
+                fr_store = None
+                if fr_mode == "ccr":
+                    from headroom.cache.compression_store import get_compression_store
+
+                    fr_store = get_compression_store()
+                fr_before, fr_after, fr_leaves = self._compress_agy_function_responses(
+                    contents, fr_mode, tokenizer, fr_store
+                )
+                if fr_leaves:
+                    logger.info(
+                        f"[{request_id}] agy functionResponse compression: "
+                        f"mode={fr_mode} leaves={fr_leaves} "
+                        f"tokens {fr_before}->{fr_after} retrieve_wired="
+                        f"{os.environ.get('HEADROOM_AGY_RETRIEVE_WIRED') == '1'}"
+                    )
+            except Exception as e:
+                logger.warning(f"[{request_id}] agy functionResponse compression failed: {e}")
+
         if optimized_messages != messages:
             optimized_contents, optimized_system = self._messages_to_gemini_contents(
                 optimized_messages
@@ -915,7 +1131,19 @@ class GeminiHandlerMixin:
                     request_payload["systemInstruction"] = optimized_system
                 elif "systemInstruction" in request_payload:
                     del request_payload["systemInstruction"]
+        elif fr_leaves:
+            # Text pipeline reverted (or produced no change) but functionResponse
+            # leaves were compressed in place. Ship the mutated contents as-is:
+            # original structure preserved, only FR string leaves replaced. Avoid
+            # the messages<->contents round-trip (which collapses multi-part text).
+            request_payload["contents"] = contents
 
+        # Fold the functionResponse leaf delta into the accounting so the saving
+        # ships and is recorded even when the text pipeline reverted. FR tokens
+        # are disjoint from the text-pipeline counts (messages excludes
+        # functionResponse), so this never double-counts the #819 waste path.
+        original_tokens += fr_before
+        optimized_tokens += fr_after
         tokens_saved = original_tokens - optimized_tokens
         optimization_latency = (time.time() - start_time) * 1000
         base_url = self._resolve_cloudcode_base_url(is_antigravity)
