@@ -6965,6 +6965,9 @@ def _stop_agy_servers(servers: _AgyServers | None) -> None:
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
 @click.option(
+    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
+)
+@click.option(
     "--no-intercept",
     is_flag=True,
     help=(
@@ -6989,13 +6992,16 @@ def _stop_agy_servers(servers: _AgyServers | None) -> None:
     default=False,
     help="Enable code graph indexing via codebase-memory-mcp (optional; interactive-only)",
 )
+@click.option("--no-proxy", is_flag=True, help="Skip proxy startup (use existing proxy)")
 @click.argument("agy_args", nargs=-1, type=click.UNPROCESSED)
 def agy(
+    port: int,
     no_intercept: bool,
     backend: str | None,
     no_serena: bool,
     no_tokensave: bool,
     code_graph: bool,
+    no_proxy: bool,
     agy_args: tuple,
 ) -> None:
     """Launch agy through Headroom's selective TLS-MITM transport.
@@ -7106,6 +7112,20 @@ def agy(
     old_sigint: Any = None
     old_sigterm: Any = None
     retrieve_registered = False
+
+    # Shared Headroom proxy (default :8787). Its savings-inbox DRAIN loop
+    # (_drain_agy_savings_periodically) is what turns the savings.d events
+    # emitted below into the dashboard's $/token hero number and this
+    # project's row. Set up the same way every other wrap subcommand does
+    # (_make_cleanup / _register_proxy_client) but WITHOUT a second
+    # signal.signal(SIGTERM, ...): agy installs its own SIGTERM handler
+    # (_agy_sigterm below), which calls cleanup() itself, and the `finally`
+    # block below also calls cleanup() — together they cover both the
+    # signal-exit and normal-exit paths without clobbering agy's handler.
+    proxy_holder: list[subprocess.Popen | None] = [None]
+    cleanup = _make_cleanup(proxy_holder, port)
+    _register_proxy_client(port)
+
     # Cross-process savings: redirect THIS process's in-proxy funnel writes to a
     # throwaway dir and turn on the inbox emit marker. agy runs its dispatch app
     # in this process, so the funnel's durable writes (savings ledger,
@@ -7114,6 +7134,19 @@ def agy(
     # shared state. The tmp dir + env vars live only for this agy session.
     agy_savings_tmp: str | None = None
     try:
+        # MUST run before the os.environ mutations below: when no proxy is
+        # already running, _ensure_proxy -> _start_proxy snapshots
+        # os.environ.copy() to launch the shared proxy subprocess. If this ran
+        # after HEADROOM_AGY_INBOX_EMIT / HEADROOM_SAVINGS_PATH /
+        # HEADROOM_SAVINGS_EVENTS_PATH / HEADROOM_OTEL_METRICS_ENABLED were
+        # set, the shared durable proxy would inherit them: double-count its
+        # own traffic, redirect its durable savings ledger into this session's
+        # throwaway tmp dir (deleted on agy exit), and disable OTEL for every
+        # client sharing the proxy. agy uses its own MITM env (build_agy_env
+        # below) rather than a base-URL redirect, so unlike the other wrap
+        # subcommands we do NOT call _push_runtime_env here.
+        proxy_holder[0] = _ensure_proxy(port, no_proxy, agent_type="agy")
+
         agy_savings_tmp = tempfile.mkdtemp(prefix="headroom-agy-savings-")
         os.environ["HEADROOM_SAVINGS_PATH"] = str(Path(agy_savings_tmp) / "proxy_savings.json")
         os.environ["HEADROOM_SAVINGS_EVENTS_PATH"] = str(
@@ -7332,6 +7365,7 @@ def agy(
                 _revert_headroom_retrieve_mcp_agy(AgyRegistrar())
             # code_graph_registered: persistent entry (like Serena), NOT reverted on exit.
             _stop_agy_servers(servers)
+            cleanup()
             # Flush compression summary on kill (idempotent — won't double-print
             # if the finally below also runs). Ref: headroom-30y.15
             session_stats.print_summary(fail_open_handler)
@@ -7376,6 +7410,7 @@ def agy(
         if old_sigterm is not None:
             signal.signal(signal.SIGTERM, old_sigterm)
         _stop_agy_servers(servers)
+        cleanup()
         # Print session compression summary (idempotent — won't double-print
         # if _agy_sigterm already flushed it). Remove the logging handler so
         # it doesn't leak into the click process. Ref: headroom-30y.15
