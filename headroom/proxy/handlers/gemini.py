@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from fastapi import Request
     from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from headroom.cache.compression_store import default_ccr_hash
 from headroom.ccr.tool_injection import is_headroom_retrieve_name
 from headroom.copilot_auth import build_copilot_upstream_url
 from headroom.proxy.auth_mode import classify_client
@@ -73,6 +75,31 @@ _FR_CCR_MARKER_TEMPLATE = _FR_CCR_MARKER_PREFIX + "{hash}]"
 # We therefore set the floor to ``_FR_MARKER_MIN_RATIO`` times the marker's
 # token cost, computed at runtime against the request's tokenizer.
 _FR_MARKER_MIN_RATIO = 2
+
+# WU2-A (headroom-37g.17): agy resends full history with ORIGINAL tool outputs
+# every turn (it never rewrites local history to hold headroom's markers). The
+# compressor above re-hashes and re-compresses the resent cold original on
+# every subsequent turn, so a model that already retrieved a hash via
+# ``headroom_retrieve`` is forced to re-retrieve it every turn (observed 236x
+# thrash). agy has no call_id, so -- unlike the OpenAI/live_zone.rs path,
+# which exempts by call_id (``live_zone.rs:2362-2384``) -- the exemption here
+# keys on the retrieved HASH itself: any 24-hex-char token found in the args
+# of a functionCall that references ``headroom_retrieve`` is treated as
+# "already retrieved this turn" and its matching functionResponse leaf is
+# left uncompressed.
+_RETRIEVE_HASH_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{24}(?![0-9a-f])")
+
+
+def _scan_hex_hashes(value: Any, hashes: set[str]) -> None:
+    """Recursively collect 24-hex-char tokens from every STRING value in ``value``."""
+    if isinstance(value, dict):
+        for v in value.values():
+            _scan_hex_hashes(v, hashes)
+    elif isinstance(value, list):
+        for v in value:
+            _scan_hex_hashes(v, hashes)
+    elif isinstance(value, str):
+        hashes.update(_RETRIEVE_HASH_RE.findall(value.lower()))
 
 
 def _requested_agy_fr_mode() -> str:
@@ -902,6 +929,41 @@ class GeminiHandlerMixin:
 
         return compact_lossless(leaf, "text")
 
+    def _collect_retrieved_hashes(self, contents: list[dict]) -> set[str]:
+        """Collect CCR hashes the model already retrieved via ``headroom_retrieve``.
+
+        Scans every ``functionCall`` part across ALL of ``contents`` (any
+        entry, not just the tail -- agy resends the full history every turn)
+        for calls that reference ``headroom_retrieve`` (bare name, or the
+        generic MCP dispatch shape e.g. ``call_mcp_tool`` whose args mention
+        ``headroom_retrieve``), then recursively pulls every 24-hex-char
+        token out of that call's ``args``. See the WU2-A comment above
+        ``_RETRIEVE_HASH_RE`` for why this keys on the hash rather than a
+        call_id (agy has none).
+        """
+        hashes: set[str] = set()
+        for content in contents:
+            if not isinstance(content, dict):
+                continue
+            parts = content.get("parts")
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                fc = part.get("functionCall")
+                if not isinstance(fc, dict):
+                    continue
+                name = fc.get("name", "")
+                args = fc.get("args") or {}
+                if not (
+                    is_headroom_retrieve_name(name)
+                    or "headroom_retrieve" in json.dumps(args)
+                ):
+                    continue
+                _scan_hex_hashes(args, hashes)
+        return hashes
+
     def _walk_fr_compress(
         self,
         value: Any,
@@ -911,28 +973,34 @@ class GeminiHandlerMixin:
         floor: int,
         tool_name: str | None,
         stats: dict[str, int],
+        retrieved_hashes: set[str],
     ) -> Any:
         """Recurse dict/list; compress every string leaf >= ``floor`` in place.
 
-        Non-string scalars and sub-floor leaves are skipped. Mutates containers
-        in place and returns ``value`` for convenient reassignment.
+        Non-string scalars and sub-floor leaves are skipped. A leaf whose
+        default CCR hash is in ``retrieved_hashes`` is exempt (WU2-A: the
+        model already retrieved it this turn; re-compressing it would force
+        an endless re-retrieve loop). Mutates containers in place and
+        returns ``value`` for convenient reassignment.
         """
         if isinstance(value, dict):
             for k, v in value.items():
                 value[k] = self._walk_fr_compress(
-                    v, mode, tokenizer, store, floor, tool_name, stats
+                    v, mode, tokenizer, store, floor, tool_name, stats, retrieved_hashes
                 )
             return value
         if isinstance(value, list):
             for i, v in enumerate(value):
                 value[i] = self._walk_fr_compress(
-                    v, mode, tokenizer, store, floor, tool_name, stats
+                    v, mode, tokenizer, store, floor, tool_name, stats, retrieved_hashes
                 )
             return value
         if isinstance(value, str):
             leaf_tokens = tokenizer.count_text(value)
             if leaf_tokens < floor:
                 return value
+            if default_ccr_hash(value) in retrieved_hashes:
+                return value  # exempt: model already retrieved this hash (live_zone.rs parity)
             new_leaf = self._compress_fr_leaf(value, mode, tokenizer, store, tool_name)
             if new_leaf != value:
                 new_tokens = tokenizer.count_text(new_leaf)
@@ -973,6 +1041,7 @@ class GeminiHandlerMixin:
         """
         floor = self._fr_marker_token_floor(tokenizer)
         stats: dict[str, int] = {"before": 0, "after": 0, "leaves": 0}
+        retrieved_hashes = self._collect_retrieved_hashes(contents)
         for content in contents:
             if not isinstance(content, dict):
                 continue
@@ -991,7 +1060,7 @@ class GeminiHandlerMixin:
                 if is_headroom_retrieve_name(fr.get("name")):
                     continue
                 fr["response"] = self._walk_fr_compress(
-                    response, mode, tokenizer, store, floor, fr.get("name"), stats
+                    response, mode, tokenizer, store, floor, fr.get("name"), stats, retrieved_hashes
                 )
         return stats["before"], stats["after"], stats["leaves"]
 

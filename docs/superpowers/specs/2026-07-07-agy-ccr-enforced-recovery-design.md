@@ -1,7 +1,7 @@
 # agy ccr thrash — enforced `headroom_retrieve` + lossless floor (supersedes 37g.8, live-zone-parity, native-recovery)
 
 <!-- date: 2026-07-07 -->
-<!-- status: design-review-gate PASSED iter2 (all 5 APPROVED: PM/Architect/Designer/Security/CTO; Architect+CTO verified the §9 reuse table is accurate). Non-blocking refinements folded (call-id-correlation exemption, side-effect-free auth, PrefixCacheTracker cap state, sole-MCP operational note). Ready for ticket restructure + writing-plans. -->
+<!-- status: design-review-gate PASSED iter2 (all 5 APPROVED: PM/Architect/Designer/Security/CTO; Architect+CTO verified the §9 reuse table is accurate). Non-blocking refinements folded (side-effect-free auth, PrefixCacheTracker cap state, sole-MCP operational note). REVISED post-WU-SPIKE-3 (37g.29): §3B retrieve exemption = RETRIEVE-CALL-SCAN SUPPRESSION (agy analog of live_zone.rs headroom_retrieve_call_ids, keyed by hash since agy has no call_id). Supersedes call-id-correlation AND the eviction-holed store-membership variant. Grounded: fry HEAD lacks the exemption -> Flash thrashes 236x on delayed-reference; the fix = port what OpenAI/Anthropic already do. WU2/37g.17 reconciled. Forcing WUs (4B) NOT closed pending re-test on the WU2-fixed build (prior 'forcing harmful' data was confounded by the missing exemption). -->
 
 ## 0. Prior errors corrected
 
@@ -42,7 +42,7 @@ retrieved.
 
 **Therefore, before ANY forcing is built (§3B), run WU-4A.5:** measure the
 voluntary (unforced) retrieve-rate + net-tokens under the current marker (with
-the §3B call-id exemption in place, else the retrieved blob re-compresses). If
+the §3B retrieve-call-scan exemption in place, else the retrieved blob re-compresses). If
 adequate → **ship ccr-default, delete all of §3B forcing** (no coercion surface,
 epic delivered). Only if inadequate is the §3B enforcement machinery justified.
 This is the cheapest experiment that can retire 4B while delivering savings.
@@ -135,19 +135,60 @@ so `_compress_agy_function_responses`'s exemption (gemini.py:988) **misses** and
 re-compresses the just-retrieved original → the H2 self-defeating loop returns
 (the most likely cause of the 26→45 marker growth in the experiment).
 
-Fix — **correlate by CALL-ID, not name/args** (Architect): a Gemini
-`functionResponse` part carries only `name`+`response`; the dispatched inner tool
-lives in the `functionCall` ARGS, not echoed on the response, so an args-based
-exemption on the compress walk has nothing reliable to read. Reuse headroom's
-existing pairing primitive — `results_by_call_id` (parser.py:484-489) and the
-`headroom_retrieve_call_ids` set idiom the OpenAI path already uses (gemini.py:965
-docstring): pair each `call_mcp_tool` functionResponse to its functionCall by id,
-and exempt from re-compression only when that call's dispatch target is
-`headroom_retrieve`. This is **robust regardless of the retrieve result's
-name-shape** (`call_mcp_tool` vs namespaced inner name), so the earlier "open
-fact" stops being load-bearing. **One shared call-id ledger** carries a forced
-retrieve end-to-end: forced call → response sub-target verify → next-turn
-exemption (do not use three independent name checks).
+Fix — **exempt retrieved content from re-compression, exactly as the other
+clients already do** (parity with `live_zone.rs`; supersedes the earlier call-id
+and hash-membership proposals — both empirically refuted). How OpenAI/Anthropic
+avoid this loop: they collect the `call_id` of every `headroom_retrieve` call in
+the request and **skip compressing any output paired to one**
+(`headroom_retrieve_call_ids` → `continue` at `live_zone.rs:2362-2384`). Once the
+model retrieves a blob it stays verbatim → the model has it → never re-retrieves →
+no thrash, by construction. agy's `gemini.py` has **no such exemption** — that
+absence *is* the bug (WU-SPIKE-3/37g.29: fry HEAD without it thrashes Flash-High
+236× on a delayed-reference task; with it, the other clients do not).
+
+Port it, adapted to agy's wire format. agy carries **no `call_id`** (id-less;
+retrieve is dispatched via `call_mcp_tool` with the target in args — WU-SPIKE/
+37g.23), so key the exemption on the **retrieved hash** instead of the call-id.
+The retrieve call *names the hash it wants*, and those `functionCall` parts
+**persist in agy's resent history** (that is how 236 were counted). Mechanism:
+1. Scan `contents[]` once for `functionCall` parts invoking `headroom_retrieve`
+   — bare/`__headroom_retrieve` name, OR `name=call_mcp_tool` whose args reference
+   `headroom_retrieve` — and collect every 24-hex hash in their args into a
+   request-scoped `retrieved_hashes: set[str]`.
+2. When about to compress a `functionResponse` string leaf, compute
+   `H = default_ccr_hash(leaf)` (the SAME `SHA-256(original)[:24]` the store keys
+   on, compression_store.py:325 — extract a shared helper so exemption-key and
+   store-key cannot drift) and **exempt (leave verbatim) iff `H ∈ retrieved_hashes`.**
+
+This is the agy analog of `headroom_retrieve_call_ids`, keyed by hash. It is
+**request-scoped** — authority comes from the retrieve calls in the request, not
+the mutable store — so it is eviction/TTL/salt/id-immune (the fatal flaw of the
+refuted store-membership variant). No over-exemption: a leaf whose hash was never
+retrieved still compresses (cold-history savings preserved). The existing
+name-based exemption (`is_headroom_retrieve_name`, gemini.py:989) is **kept** as a
+bare-name fast path; the hash-scan adds the dispatcher-wrapped case. Convergence:
+after the first `retrieve(H)`, the leaf hashing to `H` is exempt → verbatim → the
+model answers → stops (acceptance: Flash delayed-reference 236 → ~1 retrieve).
+
+**Dual exemption (review finding, agy adversarial):** the hash-scan above exempts
+the *resent cold original* (the observed thrash driver — WU-SPIKE-3 saw 4 *stable*
+hashes re-retrieved 236×, i.e. cold originals, not nesting envelopes). But the
+retrieve *result* itself is a JSON envelope — `json.dumps({"hash": H,
+"original_content": C, …})` (`mcp_server.py:441-448,710`), NOT byte-identical to
+`C`, so its hash is not in `retrieved_hashes` and the hash-scan cannot catch it.
+The other clients exempt the retrieve *output* **content-agnostically** (by call_id
+at `live_zone.rs:2384`; by tool-name at `smart_crusher.py:1017`) — but agy has **no
+call_id**, and positional pairing is fragile under parallel/heterogeneous
+`call_mcp_tool` dispatch. Re-review (agy + architect, 2026-07-07) therefore
+**refuted (B)-as-call-id-pairing and confirmed (A) alone is sufficient** for the
+observed convergence (the resent cold original is the driver). (B) is also likely
+**redundant**: if agy nests the retrieve envelope as a *parsed dict*,
+`_walk_fr_compress` recurses to the inner `original_content` leaf (== `C`, hash `H`)
+and (A) already exempts it; (B) is load-bearing only in the *monolithic-JSON-string*
+case. So **WU2/37g.17 ships (A) alone**; the envelope exemption is **deferred to
+37g.30**, evidence-gated on capturing the real retrieve-RESULT wire shape, and — if
+needed — keyed on the **envelope-signature** (`response` carries both `hash` and
+`original_content` keys), never on call_id or position.
 
 **Cap-then-release (observable, stateful — reuses session store):**
 - **Release** one turn after a `headroom_retrieve` result appears (stateless-
