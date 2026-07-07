@@ -196,6 +196,13 @@ class StreamingMixin:
                     # Gemini sends usageMetadata in each streaming chunk
                     # Format: {"usageMetadata": {"promptTokenCount": N, "candidatesTokenCount": M}}
                     usage_meta = data.get("usageMetadata")
+                    if not usage_meta:
+                        # Cloud Code Assist (agy) wraps chunks in a response
+                        # envelope: {"response": {"usageMetadata": {...}}},
+                        # mirroring the request-side wrap (gemini.py body["request"]).
+                        response = data.get("response")
+                        if isinstance(response, dict):
+                            usage_meta = response.get("usageMetadata")
                     if usage_meta:
                         usage["input_tokens"] = usage_meta.get("promptTokenCount", 0)
                         usage["output_tokens"] = usage_meta.get("candidatesTokenCount", 0)
@@ -314,6 +321,13 @@ class StreamingMixin:
 
             elif provider == "gemini":
                 usage_meta = data.get("usageMetadata")
+                if not usage_meta:
+                    # Cloud Code Assist (agy) wraps chunks in a response
+                    # envelope: {"response": {"usageMetadata": {...}}},
+                    # mirroring the request-side wrap (gemini.py body["request"]).
+                    response = data.get("response")
+                    if isinstance(response, dict):
+                        usage_meta = response.get("usageMetadata")
                 if usage_meta:
                     usage_found["input_tokens"] = usage_meta.get("promptTokenCount", 0)
                     usage_found["output_tokens"] = usage_meta.get("candidatesTokenCount", 0)
