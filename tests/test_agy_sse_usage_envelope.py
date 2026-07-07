@@ -58,9 +58,7 @@ def test_buffer_gemini_native_top_level_still_parses():
 
 
 def test_chunk_gemini_unwraps_cloudcode_response_envelope():
-    chunk = {
-        "response": {"usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 7}}
-    }
+    chunk = {"response": {"usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 7}}}
     usage = _proxy()._parse_sse_usage(_sse(chunk), "gemini")
     assert usage is not None
     assert usage["output_tokens"] == 7

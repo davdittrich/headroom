@@ -956,10 +956,7 @@ class GeminiHandlerMixin:
                     continue
                 name = fc.get("name", "")
                 args = fc.get("args") or {}
-                if not (
-                    is_headroom_retrieve_name(name)
-                    or "headroom_retrieve" in json.dumps(args)
-                ):
+                if not (is_headroom_retrieve_name(name) or "headroom_retrieve" in json.dumps(args)):
                     continue
                 _scan_hex_hashes(args, hashes)
         return hashes
