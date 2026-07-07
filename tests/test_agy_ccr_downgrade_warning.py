@@ -4,8 +4,8 @@ Originally written test-first (red) before ``_maybe_warn_agy_ccr_downgrade``
 existed in ``headroom/cli/wrap.py``; the implementation has since landed.
 
 Scope (headroom-svf): when ``headroom wrap agy`` runs with
-``HEADROOM_AGY_FR_MODE=ccr`` (the default) but the retrieve MCP could NOT be
-wired for the run, the Cloud Code Assist handler
+``HEADROOM_AGY_FR_MODE=ccr`` (opt-in; ``lossless`` is the default) but the
+retrieve MCP could NOT be wired for the run, the Cloud Code Assist handler
 (``headroom.proxy.handlers.gemini._resolve_agy_fr_mode``) silently downgrades
 functionResponse compression to ``lossless`` (a no-op), so tool-output
 savings collapse to ~0 with no user-visible warning. This must become loud
@@ -20,9 +20,10 @@ and actionable, with best-effort cause detection:
   to the console (the agy path runs in-process servers and writes no
   ``proxy.log``).
 
-The warning fires ONLY when ccr was requested (default or explicit) AND the
-retrieve MCP did not wire. It must stay silent when retrieve DID wire, or
-when the mode was explicitly ``lossless`` (no downgrade occurred).
+The warning fires ONLY when ccr was explicitly requested AND the retrieve
+MCP did not wire. It must stay silent when retrieve DID wire, when the mode
+was left unset/invalid (falls back to the ``lossless`` default), or when
+``lossless`` was requested explicitly (no downgrade occurred).
 """
 
 from __future__ import annotations
@@ -57,13 +58,13 @@ class TestMaybeWarnAgyCcrDowngrade:
         out = capsys.readouterr().out
         assert out == ""
 
-    def test_warns_when_default_ccr_and_not_registered(
+    def test_silent_when_unset_defaults_to_lossless(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.delenv("HEADROOM_AGY_FR_MODE", raising=False)
         _maybe_warn_agy_ccr_downgrade(retrieve_registered=False)
         out = capsys.readouterr().out
-        assert "DISABLED" in out
+        assert out == ""
 
     def test_warns_when_explicit_ccr_and_not_registered(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -73,14 +74,14 @@ class TestMaybeWarnAgyCcrDowngrade:
         out = capsys.readouterr().out
         assert "DISABLED" in out
 
-    def test_invalid_mode_value_treated_as_ccr_default(
+    def test_invalid_mode_value_treated_as_lossless_default(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # Mirrors _requested_agy_fr_mode's fallback-to-ccr for garbage values.
+        # Mirrors _requested_agy_fr_mode's fallback-to-lossless for garbage values.
         monkeypatch.setenv("HEADROOM_AGY_FR_MODE", "bogus")
         _maybe_warn_agy_ccr_downgrade(retrieve_registered=False)
         out = capsys.readouterr().out
-        assert "DISABLED" in out
+        assert out == ""
 
     # ------------------------------------------------------------------
     # Cause detection: in-parent `mcp` importability drives the branch.
@@ -91,7 +92,8 @@ class TestMaybeWarnAgyCcrDowngrade:
     def test_mcp_missing_branch_recommends_proxy_extra(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.delenv("HEADROOM_AGY_FR_MODE", raising=False)
+        # ccr must be requested explicitly now that lossless is the default.
+        monkeypatch.setenv("HEADROOM_AGY_FR_MODE", "ccr")
         # False ONLY for "mcp": probing any other name would flip the branch.
         monkeypatch.setattr("headroom.cli.wrap._module_available", lambda name: name != "mcp")
         _maybe_warn_agy_ccr_downgrade(retrieve_registered=False)
@@ -105,7 +107,8 @@ class TestMaybeWarnAgyCcrDowngrade:
     def test_mcp_present_branch_points_at_console_failure_line(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.delenv("HEADROOM_AGY_FR_MODE", raising=False)
+        # ccr must be requested explicitly now that lossless is the default.
+        monkeypatch.setenv("HEADROOM_AGY_FR_MODE", "ccr")
         # True ONLY for "mcp": probing any other name would flip the branch.
         monkeypatch.setattr("headroom.cli.wrap._module_available", lambda name: name == "mcp")
         _maybe_warn_agy_ccr_downgrade(retrieve_registered=False)

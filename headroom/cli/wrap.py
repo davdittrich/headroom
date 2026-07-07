@@ -959,10 +959,10 @@ def _maybe_warn_agy_ccr_downgrade(retrieve_registered: bool) -> None:
 
     Fires iff ``headroom.proxy.handlers.gemini._resolve_agy_fr_mode`` would
     downgrade: both read the requested mode from the shared
-    ``_requested_agy_fr_mode`` helper (single source of truth). ccr is the
-    default (and the only mode that ships recoverable functionResponse
-    compression), but it requires the retrieve MCP to resolve
-    ``[Retrieve more: hash=…]`` markers. When the retrieve MCP did not wire
+    ``_requested_agy_fr_mode`` helper (single source of truth). ccr is opt-in
+    (no longer the default), but it is still the only mode that ships
+    recoverable functionResponse compression, and it requires the retrieve MCP
+    to resolve ``[Retrieve more: hash=…]`` markers. When the retrieve MCP did not wire
     for this run, that handler falls back to ``lossless`` -- a byte-recoverable
     no-op -- so tool-output savings collapse to ~0 with no other signal to the
     user. Stays silent when retrieve DID wire, or when ``lossless`` was
@@ -996,7 +996,7 @@ def _maybe_warn_agy_ccr_downgrade(retrieve_registered: bool) -> None:
 
     click.echo()
     click.echo("  ⚠️  WARNING: agy compression savings are DISABLED this run.")
-    click.echo("  ⚠️  ccr mode (default) requires the retrieve MCP; it did not wire, so")
+    click.echo("  ⚠️  ccr mode requires the retrieve MCP; it did not wire, so")
     click.echo("  ⚠️  functionResponse compression fell back to lossless (saves ~0 on tool output).")
     click.echo(f"  ⚠️  Cause: {cause}.")
     click.echo(f"  ⚠️  Fix:   {remedy}")
