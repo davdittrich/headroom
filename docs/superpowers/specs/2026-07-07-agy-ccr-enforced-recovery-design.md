@@ -27,6 +27,26 @@ passive marker, `os.walk`s instead. The fix must **compel** the call. Gemini's
 `toolConfig.functionCallingConfig` (mode=ANY) can — and the `cloudcode-pa
 /v1internal` backend honors it (agy itself sends `mode=VALIDATED`).
 
+## 2.5 STALE PREMISE — measure voluntary retrieval FIRST (plan-review finding)
+
+The "agy ignores headroom_retrieve" premise behind all of §3B enforcement is
+**stale and unvalidated for the current marker.** `gemini.py:58` records the
+0-retrieve observation came from a WU4 trial with a marker that **named no
+tool**; the marker was SINCE fixed (gemini.py:65 now self-describes + names
+`headroom_retrieve`). Every enforcement experiment in §4B-EVIDENCE **forced**
+retrieval — nobody re-measured whether agy retrieves **voluntarily** under the
+fixed marker. Also verified: **4A lossless delivers ~zero savings**
+(`compact_lossless` no-ops on typical tool output, gemini.py:936) — i.e. 4A is
+only the safety floor, NOT the epic's savings; savings require markers getting
+retrieved.
+
+**Therefore, before ANY forcing is built (§3B), run WU-4A.5:** measure the
+voluntary (unforced) retrieve-rate + net-tokens under the current marker (with
+the §3B call-id exemption in place, else the retrieved blob re-compresses). If
+adequate → **ship ccr-default, delete all of §3B forcing** (no coercion surface,
+epic delivered). Only if inadequate is the §3B enforcement machinery justified.
+This is the cheapest experiment that can retire 4B while delivering savings.
+
 ## 3. Design (mechanism — corrected & reuse-grounded)
 
 The real mechanism is NOT "a surgical toolConfig line" (iter-1 framing). It is:
