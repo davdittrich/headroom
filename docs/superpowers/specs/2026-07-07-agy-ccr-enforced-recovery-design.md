@@ -1,7 +1,7 @@
 # agy ccr thrash — enforced `headroom_retrieve` + lossless floor (supersedes 37g.8, live-zone-parity, native-recovery)
 
 <!-- date: 2026-07-07 -->
-<!-- status: design-review-gate iter2 (iter1 = 5/5 NEEDS_REVISION: 13 blockers folded below). Reuses existing headroom infra per project philosophy. -->
+<!-- status: design-review-gate PASSED iter2 (all 5 APPROVED: PM/Architect/Designer/Security/CTO; Architect+CTO verified the §9 reuse table is accurate). Non-blocking refinements folded (call-id-correlation exemption, side-effect-free auth, PrefixCacheTracker cap state, sole-MCP operational note). Ready for ticket restructure + writing-plans. -->
 
 ## 0. Prior errors corrected
 
@@ -61,10 +61,17 @@ kill-switch/escape-hatch, never a second user knob that can desync from
 
 **Trigger (request-observable v1; response-scan is a deferred enhancement):**
 fire when the request carries an **unretrieved, AUTHENTICATED** marker. A marker
-hash is authenticated by **store membership** — `CompressionStore.retrieve(hash)
-is not None` (compression_store.py:382) — NOT a bare `[a-f0-9]{24}` regex match
-(closes the forgeable-unsalted-SHA spoof: planted tool-output hashes that are not
-real store keys never trigger forcing). "Retrieved" = a `headroom_retrieve`
+hash is authenticated by **side-effect-free store membership** — a bare
+`backend.get(hash)`/`hash in store` check, NOT the full
+`CompressionStore.retrieve()` path (which fires `record_access`/`_log_retrieval`/
+feedback, compression_store.py:373, and would mutate TTL/LRU recency + pollute
+the very `P(retrieve|forced)` metric §7 measures) — and NOT a bare `[a-f0-9]{24}`
+regex match (closes the forgeable-unsalted-SHA spoof: planted tool-output hashes
+that are not real store keys never trigger forcing). Store scoping is
+single-user-local per run; deterministic hashes are cross-session-stable, so if
+`get_compression_store()` is a process-global singleton the store MUST be
+confirmed per-session-or-local-single-user (else salt, as 3D does) to avoid
+cross-session hash referencing. "Retrieved" = a `headroom_retrieve`
 result for that hash already present (see the extended exemption below for how
 dispatcher-wrapped retrieves are recognized).
 
@@ -102,26 +109,40 @@ config, a forced turn could route to a **state-mutating** tool. Mitigation
   fall back per the loop-cap.
 
 **Extended retrieve exemption (CRITICAL — fixes the observed proliferation):**
-`is_headroom_retrieve_name(fr.name)` (tool_injection.py:37) matches only bare/
+`is_headroom_retrieve_name(fr.name)` (tool_injection.py:25) matches only bare/
 `__headroom_retrieve`. A dispatcher-wrapped retrieve reports `name=call_mcp_tool`,
 so `_compress_agy_function_responses`'s exemption (gemini.py:988) **misses** and
 re-compresses the just-retrieved original → the H2 self-defeating loop returns
-(this is the most likely cause of the 26→45 marker growth in the experiment).
-Fix: extend the exemption helper to ALSO treat a `call_mcp_tool` functionResponse
-whose args/target is `headroom_retrieve` as exempt. **Open fact to resolve before
-coding:** confirm whether agy emits the retrieve result under `name=call_mcp_tool`
-or an MCP-namespaced inner name — this single fact determines the exemption
-predicate.
+(the most likely cause of the 26→45 marker growth in the experiment).
+
+Fix — **correlate by CALL-ID, not name/args** (Architect): a Gemini
+`functionResponse` part carries only `name`+`response`; the dispatched inner tool
+lives in the `functionCall` ARGS, not echoed on the response, so an args-based
+exemption on the compress walk has nothing reliable to read. Reuse headroom's
+existing pairing primitive — `results_by_call_id` (parser.py:484-489) and the
+`headroom_retrieve_call_ids` set idiom the OpenAI path already uses (gemini.py:965
+docstring): pair each `call_mcp_tool` functionResponse to its functionCall by id,
+and exempt from re-compression only when that call's dispatch target is
+`headroom_retrieve`. This is **robust regardless of the retrieve result's
+name-shape** (`call_mcp_tool` vs namespaced inner name), so the earlier "open
+fact" stops being load-bearing. **One shared call-id ledger** carries a forced
+retrieve end-to-end: forced call → response sub-target verify → next-turn
+exemption (do not use three independent name checks).
 
 **Cap-then-release (observable, stateful — reuses session store):**
 - **Release** one turn after a `headroom_retrieve` result appears (stateless-
   detectable from contents) so `mode=ANY` never blocks the answer turn; on
   release **restore the snapshotted `toolConfig`** (agy's `VALIDATED`), never
   clobber to `AUTO`.
-- **Hard consecutive-force cap N** (a real invariant, not soft): counter keyed by
-  the session id (§9). On exceeding N with no progress (no new
-  `headroom_retrieve` call-id vs prior turn), STOP forcing and fall back to 4A —
-  the DoS/wrong-hash backstop.
+- **Hard consecutive-force cap N** (a real invariant, not soft; N a named
+  constant derived from first principles beside `_FR_CCR_MARKER_TEMPLATE`, not
+  tuned-to-pass): counter + the toolConfig snapshot live in a session-keyed
+  container — `PrefixCacheTracker.get_or_create(session_id)` (prefix_tracker.py:468,
+  session id via `compute_session_id`, :481), NOT handler-instance state (the
+  iter-1 blocker-4 failure). The snapshot is written ONCE per episode
+  ("if not already saved") and never overwritten by an intermediate ANY config.
+  On exceeding N with no progress (the target hash's retrieve result still absent
+  vs prior turn), STOP forcing and fall back to 4A — the DoS/wrong-hash backstop.
 
 ### 3C. DECISIVE EXPERIMENT (clean instrumentation, runs the REFINED policy)
 
@@ -170,9 +191,18 @@ passive). Keep `4eabc716` (H2 exemption) — and EXTEND it for the dispatcher ca
 
 ## 6. Security
 
-- **[HIGH] Dispatch escalation** → dual mitigation: sole-MCP-server gate +
-  response-stream sub-target verification (§3B). Disqualifying if a forced turn
-  can reach a state-mutating third-party MCP tool.
+- **[HIGH] Dispatch escalation** → the **sole-MCP-server gate is the
+  load-bearing containment** (a forced `call_mcp_tool` physically cannot dispatch
+  to Gmail/Calendar/Drive/shell if they aren't registered for the run). The
+  response-stream sub-target verification is **defense-in-depth only** — it is
+  NEW gemini-path functionCall parsing (the existing response parser
+  `_record_ccr_feedback_from_response`, streaming.py:519, is Anthropic-shaped), so
+  §6 does NOT claim a shipped dual guarantee until that parser exists.
+  Disqualifying if a forced turn can reach a state-mutating third-party MCP tool.
+  **OPERATIONAL REALITY:** the sole-MCP gate DISABLES 4B for the common real agy
+  config (Gmail/Calendar/Drive MCP servers registered — as in this very
+  session) → **4A lossless is the effective default there**. Safe, but §7's
+  token-ROI corpus MUST reflect that 4B activates only in sole-headroom-MCP runs.
 - **[HIGH] Forgeable markers** → authenticate by **store membership**
   (`CompressionStore.retrieve`) before forcing; never a bare regex match.
 - **[MED] systemInstruction trust channel** → avoided entirely (hint goes to the
