@@ -3,9 +3,9 @@
 Originally written test-first (red) before ``_maybe_warn_agy_ccr_downgrade``
 existed in ``headroom/cli/wrap.py``; the implementation has since landed.
 
-Scope (headroom-svf): when ``headroom wrap agy`` runs with
-``HEADROOM_AGY_FR_MODE=ccr`` (opt-in; ``lossless`` is the default) but the
-retrieve MCP could NOT be wired for the run, the Cloud Code Assist handler
+Scope (headroom-svf; ccr-default per headroom-37g.32): when ``headroom wrap
+agy`` runs in ``ccr`` mode (now the default -- unset/invalid resolve to ccr)
+but the retrieve MCP could NOT be wired for the run, the Cloud Code Assist handler
 (``headroom.proxy.handlers.gemini._resolve_agy_fr_mode``) silently downgrades
 functionResponse compression to ``lossless`` (a no-op), so tool-output
 savings collapse to ~0 with no user-visible warning. This must become loud
@@ -20,10 +20,10 @@ and actionable, with best-effort cause detection:
   to the console (the agy path runs in-process servers and writes no
   ``proxy.log``).
 
-The warning fires ONLY when ccr was explicitly requested AND the retrieve
-MCP did not wire. It must stay silent when retrieve DID wire, when the mode
-was left unset/invalid (falls back to the ``lossless`` default), or when
-``lossless`` was requested explicitly (no downgrade occurred).
+The warning fires whenever the resolved mode is ccr (explicit, OR the
+unset/invalid default) AND the retrieve MCP did not wire. It must stay silent
+when retrieve DID wire, or when ``lossless`` was requested explicitly (no
+downgrade occurred).
 """
 
 from __future__ import annotations
@@ -58,13 +58,15 @@ class TestMaybeWarnAgyCcrDowngrade:
         out = capsys.readouterr().out
         assert out == ""
 
-    def test_silent_when_unset_defaults_to_lossless(
+    def test_warns_when_unset_defaults_to_ccr_and_not_registered(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        # ccr is now the default (WU-CCRDEFAULT): unset + not-wired downgrades,
+        # so the warning must fire (previously silent when lossless was default).
         monkeypatch.delenv("HEADROOM_AGY_FR_MODE", raising=False)
         _maybe_warn_agy_ccr_downgrade(retrieve_registered=False)
         out = capsys.readouterr().out
-        assert out == ""
+        assert "DISABLED" in out
 
     def test_warns_when_explicit_ccr_and_not_registered(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -74,14 +76,15 @@ class TestMaybeWarnAgyCcrDowngrade:
         out = capsys.readouterr().out
         assert "DISABLED" in out
 
-    def test_invalid_mode_value_treated_as_lossless_default(
+    def test_invalid_mode_value_treated_as_ccr_default(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # Mirrors _requested_agy_fr_mode's fallback-to-lossless for garbage values.
+        # Mirrors _requested_agy_fr_mode's fallback-to-ccr for garbage values:
+        # invalid -> ccr default -> not-wired -> warns.
         monkeypatch.setenv("HEADROOM_AGY_FR_MODE", "bogus")
         _maybe_warn_agy_ccr_downgrade(retrieve_registered=False)
         out = capsys.readouterr().out
-        assert out == ""
+        assert "DISABLED" in out
 
     # ------------------------------------------------------------------
     # Cause detection: in-parent `mcp` importability drives the branch.

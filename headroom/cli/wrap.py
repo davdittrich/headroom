@@ -959,9 +959,9 @@ def _maybe_warn_agy_ccr_downgrade(retrieve_registered: bool) -> None:
 
     Fires iff ``headroom.proxy.handlers.gemini._resolve_agy_fr_mode`` would
     downgrade: both read the requested mode from the shared
-    ``_requested_agy_fr_mode`` helper (single source of truth). ccr is opt-in
-    (no longer the default), but it is still the only mode that ships
-    recoverable functionResponse compression, and it requires the retrieve MCP
+    ``_requested_agy_fr_mode`` helper (single source of truth). ccr is the
+    default mode, and it is the only mode that ships recoverable
+    functionResponse compression, so it requires the retrieve MCP
     to resolve ``[Retrieve more: hash=…]`` markers. When the retrieve MCP did not wire
     for this run, that handler falls back to ``lossless`` -- a byte-recoverable
     no-op -- so tool-output savings collapse to ~0 with no other signal to the

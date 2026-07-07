@@ -105,26 +105,26 @@ def _scan_hex_hashes(value: Any, hashes: set[str]) -> None:
 def _requested_agy_fr_mode() -> str:
     """Normalize the REQUESTED functionResponse mode from the environment.
 
-    ``HEADROOM_AGY_FR_MODE`` selects ``ccr`` or ``lossless`` (default);
-    unset/invalid values fall back to ``lossless``. Single source of truth
+    ``HEADROOM_AGY_FR_MODE`` selects ``lossless`` or ``ccr`` (default);
+    unset/invalid values fall back to ``ccr``. Single source of truth
     shared by ``_resolve_agy_fr_mode`` (the downgrade decision) and the
     wrap-agy downgrade warning (``headroom.cli.wrap._maybe_warn_agy_ccr_downgrade``)
     so the two cannot drift.
     """
-    mode = (os.environ.get("HEADROOM_AGY_FR_MODE") or "lossless").strip().lower()
+    mode = (os.environ.get("HEADROOM_AGY_FR_MODE") or "ccr").strip().lower()
     if mode not in ("ccr", "lossless"):
-        return "lossless"
+        return "ccr"
     return mode
 
 
 def _resolve_agy_fr_mode() -> str:
     """Resolve the functionResponse compression mode for an agy run.
 
-    ``HEADROOM_AGY_FR_MODE`` selects ``ccr`` or ``lossless`` (default; ``ccr``
-    must be requested explicitly). When ``ccr`` is requested but the CCR
-    retrieve listener is not wired for this run
-    (``HEADROOM_AGY_RETRIEVE_WIRED`` != "1"), we must NOT ship unrecoverable
-    markers -- downgrade to ``lossless`` (byte-recoverable / no-op).
+    ``HEADROOM_AGY_FR_MODE`` selects ``ccr`` (default) or ``lossless``;
+    ``lossless`` must be requested explicitly to opt out of savings. When
+    ``ccr`` is in effect but the CCR retrieve listener is not wired for this
+    run (``HEADROOM_AGY_RETRIEVE_WIRED`` != "1"), we must NOT ship
+    unrecoverable markers -- downgrade to ``lossless`` (byte-recoverable / no-op).
     """
     mode = _requested_agy_fr_mode()
     if mode == "ccr" and os.environ.get("HEADROOM_AGY_RETRIEVE_WIRED") != "1":
