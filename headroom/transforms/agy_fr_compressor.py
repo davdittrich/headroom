@@ -30,7 +30,6 @@ reasoning.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -106,55 +105,90 @@ def _requested_agy_fr_mode() -> str:
     return mode
 
 
-def _fr_marker_token_floor(tokenizer: Any) -> int:
-    """Derive the per-leaf compression floor from the CCR marker overhead.
+def _fr_marker_tokens_and_floor(tokenizer: Any) -> tuple[int, int]:
+    """Derive the CCR marker's token cost and the per-leaf compression floor.
 
     A compressed leaf ships the marker in its place, so the net saving is
     ``leaf_tokens - marker_tokens``. We only compress when that saving
     exceeds the marker's own cost (``_FR_MARKER_MIN_RATIO`` x marker).
+
+    Returns ``(marker_body_tokens, floor)``: both derive from ONE
+    ``count_text`` call on the placeholder marker, so callers can thread
+    ``marker_body_tokens`` down to every leaf instead of recomputing the
+    identical value per leaf (headroom-37g.35).
     """
-    sample = _FR_CCR_MARKER_TEMPLATE.format(hash="0" * _FR_CCR_HASH_LEN)
-    marker_tokens = tokenizer.count_text(sample)
-    return int(max(1, marker_tokens * _FR_MARKER_MIN_RATIO))
+    marker_body_tokens = tokenizer.count_text(
+        _FR_CCR_MARKER_TEMPLATE.format(hash="0" * _FR_CCR_HASH_LEN)
+    )
+    floor = int(max(1, marker_body_tokens * _FR_MARKER_MIN_RATIO))
+    return marker_body_tokens, floor
 
 
 def _compress_fr_leaf(
     leaf: str,
     mode: str,
-    tokenizer: Any,
     store: Any,
     tool_name: str | None,
+    *,
+    leaf_tokens: int,
+    marker_body_tokens: int,
+    hash_key: str,
 ) -> str:
     """Deterministically compress a single functionResponse string leaf.
 
-    ``ccr``: cache the ORIGINAL and ship a hash marker. The hash defaults to
-    SHA-256(original)[:24] -> an identical original yields identical marker
-    bytes every turn (deterministic + cache-coherent). Idempotent: an
-    already-compressed marker is returned unchanged.
+    ``ccr``: cache the ORIGINAL and ship a hash marker. ``hash_key`` is
+    ``default_ccr_hash(leaf)`` -- SHA-256(original)[:24] -- computed ONCE by
+    the caller (``_walk_fr_compress``, which also uses it for the retrieve
+    exemption check) and passed here as ``explicit_hash``. This is byte-for-
+    byte identical to the store's own implicit default (``compression_store.
+    store()`` falls back to ``default_ccr_hash(original)`` when no
+    ``explicit_hash`` is given), so marker/store bytes are unchanged; we just
+    avoid a second identical hash + a second identical ``count_text(leaf)``
+    inside the store call. Idempotent: an already-compressed marker is
+    returned unchanged.
     ``lossless``: format-native reversible compaction (no marker).
     """
     if mode == "ccr":
         # Idempotency guard: never re-wrap our own marker.
         if leaf.startswith(_FR_CCR_MARKER_PREFIX):
             return leaf
-        marker_body_tokens = tokenizer.count_text(
-            _FR_CCR_MARKER_TEMPLATE.format(hash="0" * _FR_CCR_HASH_LEN)
-        )
-        # Default hash = SHA-256(original)[:24] (DETERMINISTIC). Do NOT pass
-        # explicit_hash -- determinism must come from the content itself so
-        # the same leaf maps to the same marker bytes across turns.
-        hash_key = store.store(
+        store.store(
             leaf,
             _FR_CCR_MARKER_TEMPLATE,
-            original_tokens=tokenizer.count_text(leaf),
+            original_tokens=leaf_tokens,
             compressed_tokens=marker_body_tokens,
             tool_name=tool_name,
+            explicit_hash=hash_key,
         )
         return _FR_CCR_MARKER_TEMPLATE.format(hash=hash_key)
     # lossless: reversible, deterministic, self-verified smaller-or-unchanged.
     from headroom.transforms.lossless_compaction import compact_lossless
 
     return compact_lossless(leaf, "text")
+
+
+def _args_mention_retrieve(value: Any) -> bool:
+    """Bounded recursive scan for a ``"headroom_retrieve"`` substring.
+
+    Replaces the ``"headroom_retrieve" in json.dumps(args)`` substring test
+    with a direct walk of the ``args`` structure -- no serialization. Scans
+    the SAME surface ``json.dumps`` would have covered: dict KEYS (JSON
+    object keys are strings) and dict/list VALUES, recursively, short-
+    circuiting on first match. Keep the match set identical to the old
+    ``json.dumps`` scan -- do not tighten it.
+    """
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if isinstance(k, str) and "headroom_retrieve" in k:
+                return True
+            if _args_mention_retrieve(v):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_args_mention_retrieve(v) for v in value)
+    if isinstance(value, str):
+        return "headroom_retrieve" in value
+    return False
 
 
 def _collect_retrieved_hashes(contents: list[dict]) -> set[str]:
@@ -184,7 +218,7 @@ def _collect_retrieved_hashes(contents: list[dict]) -> set[str]:
                 continue
             name = fc.get("name", "")
             args = fc.get("args") or {}
-            if not (is_headroom_retrieve_name(name) or "headroom_retrieve" in json.dumps(args)):
+            if not (is_headroom_retrieve_name(name) or _args_mention_retrieve(args)):
                 continue
             _scan_hex_hashes(args, hashes)
     return hashes
@@ -196,6 +230,7 @@ def _walk_fr_compress(
     tokenizer: Any,
     store: Any,
     floor: int,
+    marker_body_tokens: int,
     tool_name: str | None,
     stats: dict[str, int],
     retrieved_hashes: set[str],
@@ -211,13 +246,29 @@ def _walk_fr_compress(
     if isinstance(value, dict):
         for k, v in value.items():
             value[k] = _walk_fr_compress(
-                v, mode, tokenizer, store, floor, tool_name, stats, retrieved_hashes
+                v,
+                mode,
+                tokenizer,
+                store,
+                floor,
+                marker_body_tokens,
+                tool_name,
+                stats,
+                retrieved_hashes,
             )
         return value
     if isinstance(value, list):
         for i, v in enumerate(value):
             value[i] = _walk_fr_compress(
-                v, mode, tokenizer, store, floor, tool_name, stats, retrieved_hashes
+                v,
+                mode,
+                tokenizer,
+                store,
+                floor,
+                marker_body_tokens,
+                tool_name,
+                stats,
+                retrieved_hashes,
             )
         return value
     if isinstance(value, str):
@@ -225,9 +276,18 @@ def _walk_fr_compress(
             leaf_tokens = tokenizer.count_text(value)
             if leaf_tokens < floor:
                 return value
-            if default_ccr_hash(value) in retrieved_hashes:
+            hash_key = default_ccr_hash(value)
+            if hash_key in retrieved_hashes:
                 return value  # exempt: model already retrieved this hash (live_zone.rs parity)
-            new_leaf = _compress_fr_leaf(value, mode, tokenizer, store, tool_name)
+            new_leaf = _compress_fr_leaf(
+                value,
+                mode,
+                store,
+                tool_name,
+                leaf_tokens=leaf_tokens,
+                marker_body_tokens=marker_body_tokens,
+                hash_key=hash_key,
+            )
         except Exception:
             # Broad by design: one malformed leaf must not abort the whole
             # walk and strand earlier leaves half-compressed in the shared
@@ -276,7 +336,7 @@ def compress_function_response_leaves(
     Returns ``(fr_tokens_before, fr_tokens_after, leaves_compressed)`` over
     the leaves that were actually compressed.
     """
-    floor = _fr_marker_token_floor(tokenizer)
+    marker_body_tokens, floor = _fr_marker_tokens_and_floor(tokenizer)
     stats: dict[str, int] = {"before": 0, "after": 0, "leaves": 0}
     retrieved_hashes = _collect_retrieved_hashes(contents)
     for content in contents:
@@ -297,6 +357,14 @@ def compress_function_response_leaves(
             if is_headroom_retrieve_name(fr.get("name")):
                 continue
             fr["response"] = _walk_fr_compress(
-                response, mode, tokenizer, store, floor, fr.get("name"), stats, retrieved_hashes
+                response,
+                mode,
+                tokenizer,
+                store,
+                floor,
+                marker_body_tokens,
+                fr.get("name"),
+                stats,
+                retrieved_hashes,
             )
     return stats["before"], stats["after"], stats["leaves"]
