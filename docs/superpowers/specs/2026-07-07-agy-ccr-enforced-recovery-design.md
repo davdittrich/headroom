@@ -110,6 +110,40 @@ When the model needs a marker's content and has not retrieved it, the proxy
   the rejected 3B), and it targets the actual root cause — non-invocation — by
   removing the choice.
 
+### 4B-EVIDENCE. Enforcement experiment results (fry, 2026-07-07)
+
+A throwaway proxy patch (`HEADROOM_AGY_FORCE_RETRIEVE`) exercised enforcement on
+the y4q retrieve-forcing task. Findings (each corrects a prior assumption):
+
+1. **agy's tool surface:** 22 declared native tools; **no `read_file`** (it is
+   `view_file`); **MCP tools — including `headroom_retrieve` — are reachable ONLY
+   via a generic `call_mcp_tool` dispatcher.** `headroom_retrieve` is never a
+   directly-declared function. agy sets its own
+   `toolConfig.functionCallingConfig.mode=VALIDATED`, so the backend DOES honor
+   `toolConfig`.
+2. **Forcing the specific tool is impossible; force the dispatcher:**
+   `functionCallingConfig.allowedFunctionNames=["headroom_retrieve"]` targets an
+   undeclared function → no effect. Forcing `["call_mcp_tool"]` (mode=ANY) works,
+   but the dispatcher is too indirect — agy routed to `headroom_retrieve` only
+   ~1/60 forced turns (it picked other MCP tools).
+3. **Add a routing HINT + a RELEASE policy → agy retrieves reliably:** append a
+   one-line system-instruction hint ("call headroom_retrieve via call_mcp_tool
+   with the marker hash; do NOT search the filesystem") on forced turns, and do
+   NOT force in the turn right after a retrieve. Result: **`mcp_retrieve_calls`
+   climbed 0→1→2→3→4 — agy retrieved repeatedly.** The thrash COLLAPSED:
+   **220 s / 142 model calls → 23 s / 8 calls, clean exit (ec=0)**, compression
+   intact (7.4 KB → 162 tokens).
+4. **Remaining gap = convergence policy, NOT agy refusal:** greedy forcing tries
+   to retrieve ALL markers (agy needs only the one relevant blob) and `mode=ANY`
+   on the answer turn blocks the final text. A cap-then-release policy (stop
+   forcing after the needed content is retrieved) is required; tuning it cleanly
+   belongs in real implementation, not the throwaway harness.
+
+**Bottom line: "agy is retrieval-non-compliant" is REFUTED.** With proper
+enforcement (force `call_mcp_tool` + routing hint + release), agy uses
+`headroom_retrieve` and the thrash is eliminated. Enforcement (4B) is the viable
+primary mechanism; lossless (4A) is the floor, no longer the only answer.
+
 ### 4C. DECISIVE EXPERIMENT (must run before concluding anything)
 
 This is the experiment the prior designs skipped. On clean fry, instrumented
