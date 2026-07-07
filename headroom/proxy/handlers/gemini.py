@@ -993,12 +993,24 @@ class GeminiHandlerMixin:
                 )
             return value
         if isinstance(value, str):
-            leaf_tokens = tokenizer.count_text(value)
-            if leaf_tokens < floor:
+            try:
+                leaf_tokens = tokenizer.count_text(value)
+                if leaf_tokens < floor:
+                    return value
+                if default_ccr_hash(value) in retrieved_hashes:
+                    return value  # exempt: model already retrieved this hash (live_zone.rs parity)
+                new_leaf = self._compress_fr_leaf(value, mode, tokenizer, store, tool_name)
+            except Exception:
+                # Broad by design: one malformed leaf must not abort the whole
+                # walk and strand earlier leaves half-compressed in the shared
+                # `contents` object. Reachable from untrusted tool output — e.g.
+                # a lone UTF-16 surrogate makes default_ccr_hash's str.encode()
+                # raise UnicodeEncodeError. Leave this one leaf verbatim, keep going.
+                logger.warning(
+                    "agy FR: leaving one functionResponse leaf uncompressed (failed to hash/compress)",
+                    exc_info=True,
+                )
                 return value
-            if default_ccr_hash(value) in retrieved_hashes:
-                return value  # exempt: model already retrieved this hash (live_zone.rs parity)
-            new_leaf = self._compress_fr_leaf(value, mode, tokenizer, store, tool_name)
             if new_leaf != value:
                 new_tokens = tokenizer.count_text(new_leaf)
                 # Guard: only accept an actual reduction (lossless may no-op).

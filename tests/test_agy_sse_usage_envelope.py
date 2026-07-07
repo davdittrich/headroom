@@ -70,3 +70,24 @@ def test_chunk_gemini_native_top_level_still_parses():
     usage = _proxy()._parse_sse_usage(_sse(chunk), "gemini")
     assert usage is not None
     assert usage["output_tokens"] == 4
+
+
+# -- _gemini_usage_meta helper: guard malformed upstream (never crash) --
+
+
+def test_gemini_usage_meta_guards_non_dict_metadata():
+    m = HeadroomProxy._gemini_usage_meta
+    # A truthy non-dict usageMetadata must NOT reach .get() and crash the parser.
+    assert m({"usageMetadata": "garbage"}) is None
+    assert m({"usageMetadata": [1, 2]}) is None
+    assert m({"usageMetadata": 42}) is None
+    assert m({"response": {"usageMetadata": "x"}}) is None
+    assert m({"response": "notadict"}) is None
+    assert m({}) is None
+    # Well-formed top-level and enveloped both resolve to the inner dict.
+    assert m({"usageMetadata": {"candidatesTokenCount": 7}}) == {"candidatesTokenCount": 7}
+    assert m({"response": {"usageMetadata": {"candidatesTokenCount": 7}}}) == {
+        "candidatesTokenCount": 7
+    }
+    # Empty-but-present dict passes through; callers skip it on falsy (no zero-overwrite).
+    assert m({"usageMetadata": {}}) == {}
