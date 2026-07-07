@@ -215,9 +215,15 @@ class TestAgyCallSiteWiring:
 
         # -- Guard: if the call site is ever removed, never exec a binary. ---
         monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+        # _register_proxy_client writes a durable marker under workspace_dir()
+        # (~/.headroom/proxy_clients/<port>/); stub it so this test never touches
+        # the real client registry (conftest provides no HOME isolation).
+        monkeypatch.setattr("headroom.cli.wrap._register_proxy_client", lambda *a, **k: None)
 
         with pytest.raises(SystemExit):
             wrap_mod.agy.callback(
+                port=8899,
+                no_proxy=True,
                 no_intercept=False,
                 backend=None,
                 no_serena=True,
