@@ -1,7 +1,7 @@
 # agy ccr thrash — structural live-zone boundary (supersedes 37g.8)
 
 <!-- date: 2026-07-07 -->
-<!-- status: design-review-gate iteration 2 (iter1 = PM approved; Architect/Designer/Security/CTO + independent agy = NEEDS_REVISION; revisions folded below) -->
+<!-- status: design-review-gate PASSED iter2 (all 5 APPROVED: PM/Architect/Designer/Security/CTO; independent agy adversarial drove iter1). Non-blocking reviewer refinements folded. Ready for writing-plans. -->
 
 ## 1. Problem
 
@@ -78,16 +78,34 @@ has only anthropic/openai_chat/openai_responses planners; only
 
 **Boundary definition (structural, non-arbitrary — NOT a tunable N, NOT a
 cache-marker position):**
-- Compute `live_zone_start`: the `contents[]` index of the **latest user turn**
-  (the frame the model emits its next response against), mirroring Anthropic's
-  `latest_user_message_index`.
-- Optionally raise a **frozen floor** from any available frozen-prefix signal
-  (Gemini `cachedContent` length if present; else 0), mirroring
-  `frozen_message_count`.
+- Compute `live_zone_start`: the `contents[]` index of the **latest genuine
+  user turn** — the last entry with `role=="user"` that is user-authored text
+  (NOT a tool turn). In Gemini `contents[]`, a tool result is `role=="user"`
+  with a `functionResponse` part; `fr_live_zone_start` MUST skip those and land
+  on the last real user-text turn, so the whole current model/tool exchange
+  (functionResponses the model is actively working with) stays in the live zone.
+  This mirrors Anthropic's `find_latest_user_message_index`
+  (`live_zone.rs:944`); the 4A parity test asserts equality against **that**
+  reference fn (the oracle), not against the prototype itself. Where possible,
+  reuse the existing latest-user index already computed by
+  `_append_to_latest_user_tail` (gemini.py memory path) rather than recomputing,
+  to bound drift.
+- Optionally raise a **frozen floor** from a frozen-prefix signal. NOTE: the
+  request-side `cachedContent` field is **not currently parsed** in the Gemini
+  handler (only response-side `cachedContentTokenCount` exists, gemini.py:527).
+  So the frozen floor defaults to **0** in WU1; parsing `cachedContent` to raise
+  it is a **later refinement WU, not a WU1 dependency** (else-0 keeps 4A
+  correct), mirroring `frozen_message_count`.
 - `_compress_agy_function_responses` skips (leaves verbatim) every `contents[]`
   entry at index `>= live_zone_start`; compresses only entries below it (cold
   history that has aged past the latest frame). The token floor still applies
   within the cold zone.
+
+**Call-site wiring:** `_compress_agy_function_responses` currently receives
+`mode` (the FR compression mode), not an `AuthMode`. The `policy_for_mode`
+gating requires the AuthMode; thread it explicitly from the call site
+(`handle_google_cloudcode_stream`) rather than overloading `mode`, so
+`live_zone_only` resolves per auth mode without conflating the two.
 
 **Auth-mode parity (no divergence):** gate this through the existing
 `CompressionPolicy.live_zone_only` / `policy_for_mode` per auth mode, so agy
@@ -129,16 +147,25 @@ the cost. All iter-1 blockers folded in:
   Gemini request? If it never does, **4B is infeasible and is dropped** — do not
   build against an unobservable trigger.
 - **Trust-boundary discriminator (security-critical):** fire the expansion
-  **only on model-authored references** — assistant text parts and
-  `functionCall` argument regions. **Never** scan `functionResponse` /
-  tool_result byte regions (the model's own `search_results.txt` re-injects the
-  hash; scanning tool output enables a confused-deputy / injection-driven pull).
-  Specify the exact `contents[]` part-type regions eligible for trigger scanning.
+  **only on model-authored references**. Literal predicate (pin to avoid drift):
+  scan **iff** `part.text` where the containing entry `role=="model"`, **OR**
+  `part.functionCall.args`; **NEVER** `part.functionResponse.response` (any
+  role). This is implementable because Gemini `contents[].parts[]` is a tagged
+  union (`functionCall`→role model, `functionResponse`→role user), so the
+  discriminator is part-type + role, not a heuristic. The model's own
+  `search_results.txt` re-injected via a functionResponse therefore does NOT
+  trigger expansion. **Pre-registered branch:** if the PRE-REQ experiment shows
+  the hash appears inbound ONLY inside a `functionResponse` (the model cats its
+  own search file back), the model-authored rule correctly refuses to fire →
+  outcome is **drop 4B, default lossless**, NOT relax the discriminator.
 - **Session-scoped store:** bind expansion to the **current session's** live
   markers only. Prefer **session-salted hashes** (`HMAC(session_key, content)`)
   so cross-session collision/dedup is impossible by construction; else an
   explicit session-id tag on store entries + a per-session live-marker set that
-  gates both expansion and BM25 `retrieve`, with **eviction on session end**.
+  gates both expansion and BM25 `retrieve`. **Eviction trigger (precise):** evict
+  a session's live-marker set on the FIRST of — explicit end-of-session signal,
+  proxy-client deregistration (the refcount teardown), or an idle TTL — so a
+  crashed agy run cannot leave live markers expandable into a later session.
   Validate model-emitted hash charset (`[a-f0-9]`) + length (24) before lookup.
 - **Expansion cap:** per-turn cap + cooldown on auto-expansions to bound the
   cache-prefix-invalidation cost and a planted-hash DoS lever.
@@ -206,8 +233,12 @@ re-compression exemption is defensively correct; simply not sufficient).
 
 Decided **before** running, by a **named owner**:
 - **Correctness:** 0 regressions vs lossless on the holdout fixtures.
-- **Security:** 0 filesystem-scan artifacts across the corpus (disqualifying if
-  any).
+- **Security:** 0 filesystem-scan behavior across the corpus (disqualifying if
+  any). Detection must be **behavioral, not filename-signature** — monitoring
+  only for `find_hash.py`/`search_results.txt` is under-inclusive (a renamed or
+  in-memory scan evades it). Monitor the reaped agy process tree for broad-root
+  reads (`os.walk`/`glob` over paths outside the workspace, or `open()` on
+  `~/.ssh`/`.env`/cloud-cred paths), in addition to the artifact-file check.
 - **Tokens:** ≥ **[pre-registered X %]** net-token reduction (charging 4B's
   cache-prefix-invalidation cost against it) across ≥ **[pre-registered N]**
   representative real multi-turn agy sessions whose shape-mix **includes the
