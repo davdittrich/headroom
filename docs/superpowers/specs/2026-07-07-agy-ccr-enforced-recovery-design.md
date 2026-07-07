@@ -203,8 +203,11 @@ passive). Keep `4eabc716` (H2 exemption) — and EXTEND it for the dispatcher ca
   config (Gmail/Calendar/Drive MCP servers registered — as in this very
   session) → **4A lossless is the effective default there**. Safe, but §7's
   token-ROI corpus MUST reflect that 4B activates only in sole-headroom-MCP runs.
-- **[HIGH] Forgeable markers** → authenticate by **store membership**
-  (`CompressionStore.retrieve`) before forcing; never a bare regex match.
+- **[HIGH] Forgeable markers** → authenticate by **side-effect-free store
+  membership** (a bare `backend.get`/`hash in store`, NOT `CompressionStore.
+  retrieve()` which fires `record_access`/`_log_retrieval`/feedback and would
+  pollute the `P(retrieve|forced)` metric) before forcing; never a bare regex
+  match.
 - **[MED] systemInstruction trust channel** → avoided entirely (hint goes to the
   live tail, not systemInstruction); static template + store-validated hash only;
   no tool-output content enters the hint.
@@ -262,7 +265,7 @@ Discrete units (each its own ticket per "no bundling"):
 | Need | Reused existing infra | Location |
 | --- | --- | --- |
 | Retrieve exemption | `is_headroom_retrieve_name` (EXTEND for dispatcher) | tool_injection.py:37 |
-| Marker auth | `CompressionStore.retrieve(hash)` membership | compression_store.py:382 |
+| Marker auth | side-effect-free `backend.get(hash)` membership (NOT retrieve()) | compression_store.py:355/397 |
 | Session key (cap/snapshot state) | session-id derivation (`x-headroom-session-id` / model+system hash) | prefix_tracker.py:490 |
 | Decision telemetry | `log_memory_injection(...)` (hashes queries, logs every cache decision) | helpers.py:448 |
 | Tail injection (hint) | `memory_handler._append_to_latest_user_tail` | gemini.py memory path / anthropic.py:1772 |
