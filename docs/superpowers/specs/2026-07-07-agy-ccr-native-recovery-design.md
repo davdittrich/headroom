@@ -1,7 +1,7 @@
 # agy ccr thrash — native-recovery markers + lossless floor (supersedes 37g.8 AND the live-zone-parity design)
 
 <!-- date: 2026-07-07 -->
-<!-- status: design-review-gate pending (rewrite after code-verification refuted the live-zone-parity design) -->
+<!-- status: SUPERSEDED 2026-07-07 by 2026-07-07-agy-ccr-enforced-recovery-design.md. Native-recovery (3B) refuted: gemini.py:958 leaves functionCall UNCOMPRESSED, so agy already held the file path and os.walked from root anyway — a marker naming the path it already holds and ignored changes nothing. Deeper correction: "agy is non-compliant" was concluded from a PASSIVE marker suggestion; ENFORCEMENT (toolConfig.functionCallingConfig=ANY) was never attempted. See the enforced-recovery design. -->
 
 ## 0. Why this supersedes the prior (gate-passed) design
 
@@ -104,6 +104,50 @@ correlating each `functionResponse` with its preceding `functionCall` in
   turn the model actually re-reads. Whether that nets positive vs lossless (whose
   full output sits in the cached prefix every turn at the provider's cache
   discount) is exactly what gate (6) measures.
+
+### 3D. ENFORCE (use the tool it already declares): toolConfig-forced `headroom_retrieve`
+
+The strongest lever, and the one that keeps ccr's savings model intact: don't
+merely *offer* recovery — **force the model to call `headroom_retrieve`** when it
+needs a marker's content. `headroom_retrieve` is ALREADY injected into
+`body["tools"]` (tool_injection.py:180,303); the model simply never calls it.
+Gemini's `toolConfig.functionCallingConfig` supports `mode: "ANY"` +
+`allowedFunctionNames: ["headroom_retrieve"]`, which **forces** the model to emit
+a call to that function. headroom does not touch `toolConfig` today (verified:
+zero matches) — this is a new, surgical request-rewrite.
+
+- **Observable trigger (corrects the earlier "unobservable" concern):** headroom
+  is MITM on cloudcode-pa and sees the **response** stream, so the model's
+  *misdirected-recovery* `functionCall` is observable in the model's OUTPUT even
+  though the client-side `os.walk` execution is not. Trigger predicate (grep-able
+  allowlist): the model emits a native `functionCall` whose args contain a live
+  marker's 24-hex hash, OR a filesystem-search/`os.walk`/`grep` for a marker
+  string, OR a re-read of a source whose latest content is currently a marker.
+- **Enforcement action:** on the NEXT outbound request, the proxy sets
+  `toolConfig.functionCallingConfig = {mode: "ANY", allowedFunctionNames:
+  ["headroom_retrieve"]}`, forcing the model to emit `headroom_retrieve(hash=…)`.
+  The client executes it (the MCP is wired), the original content returns through
+  the retrieve path, the model converges. The proxy reverts to `mode: "AUTO"`
+  after the forced retrieve so normal tool use resumes.
+- **Why this is preferred when it works:** it uses the EXISTING retrieve
+  infrastructure and the model's own call (conversation stays coherent — no
+  proxy-authored content injection as in 3C, no re-read round-trip of the full
+  bytes as in 3B), and it works for ALL content (not just reproducible sources).
+  It is the literal fix for "agy won't call the tool": make it.
+- **Risks / experiment gates:** (i) the Cloud Code Assist backend
+  (cloudcode-pa) must honor `functionCallingConfig` — UNVERIFIED for that
+  endpoint (public Gemini API supports it); a fry experiment must confirm before
+  building. (ii) `mode: "ANY"` forces a call even if the model would rather not;
+  scope with `allowedFunctionNames` to `headroom_retrieve` only, force for ONE
+  turn, then revert, to bound disruption. (iii) The model must fill the correct
+  `hash` — with multiple live markers it could pick the wrong one; measure
+  wrong-hash rate in the experiment. (iv) Forcing-loop guard: cap consecutive
+  forced-retrieve turns (if a forced retrieve does not lead to progress, stop
+  forcing and fall back to 3A rather than loop).
+- **Security:** the forced call is `headroom_retrieve` (a read of the
+  content-addressed store) — no new capability; validate the model-supplied hash
+  charset/length + session scope before the store lookup (same as 3C). Reduces
+  the `os.walk` exfil by converting a filesystem search into a scoped store read.
 
 ### 3C. ALTERNATIVE (if 3B's re-read round-trips cost too much): proxy auto-rehydration
 
