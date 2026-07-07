@@ -6,8 +6,8 @@ byte-identical original leaf.
 Scope: this module proves the RECOVERY MECHANISM only --
 1. WU1's ccr compressor (``HeadroomProxy._compress_agy_function_responses``)
    really does replace a functionResponse leaf with a self-describing
-   ``headroom_retrieve(hash=...)`` marker, and the original bytes are gone
-   from the shipped payload.
+   ``headroom_retrieve`` marker (single-hash, ``Retrieve more: hash=...``
+   form), and the original bytes are gone from the shipped payload.
 2. ``CompressionStore.retrieve(hash)`` resolves that hash back to the
    byte-identical original via TWO independent paths that mirror the real
    ``headroom mcp serve`` child:
@@ -78,13 +78,12 @@ def _fr_leaf(contents: list, entry: int = 0, part: int = 0, key: str = "output")
 def _hash_of(marker: str) -> str:
     """Extract the hash from a ``headroom_retrieve`` marker.
 
-    Mirrors ``_hash_of`` in test_agy_functionresponse_compression.py: the
-    marker names ``headroom_retrieve(hash="...")`` before the trailing
-    ``Retrieve more: hash=<h>]`` form -- take the LAST ``hash=`` occurrence,
-    which is what ``parser.CCR_RETRIEVAL_MARKER_RE`` keys on.
+    Mirrors ``_hash_of`` in test_agy_functionresponse_compression.py:
+    single-hash marker, in the ``Retrieve more: hash=<h>]`` form that
+    ``parser.CCR_RETRIEVAL_MARKER_RE`` keys on.
     """
     assert marker.startswith(_FR_CCR_MARKER_PREFIX), marker
-    return marker.rsplit("hash=", 1)[1].rstrip("]")
+    return marker.split("hash=", 1)[1].rstrip("]")
 
 
 @pytest.fixture(autouse=True)

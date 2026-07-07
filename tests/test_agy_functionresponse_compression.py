@@ -62,10 +62,9 @@ def _make_sse() -> StreamingResponse:
 
 def _hash_of(marker: str) -> str:
     assert marker.startswith(_FR_CCR_MARKER_PREFIX), marker
-    # rsplit: the marker text names ``headroom_retrieve(hash="...")`` before
-    # the trailing ``Retrieve more: hash=<h>]`` -- take the LAST occurrence so
-    # the hash comes from the canonical trailing form the parser regex keys on.
-    return marker.rsplit("hash=", 1)[1].rstrip("]")
+    # split: single-hash marker now, in the ``Retrieve more: hash=<h>]`` form
+    # the parser regex keys on.
+    return marker.split("hash=", 1)[1].rstrip("]")
 
 
 def _fr_leaf(contents: list, entry: int, part: int = 0, key: str = "output") -> Any:

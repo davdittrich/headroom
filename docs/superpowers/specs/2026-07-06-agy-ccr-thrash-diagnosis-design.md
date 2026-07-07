@@ -6,7 +6,8 @@
 ## Problem
 
 Under ccr, agy `functionResponse` tool outputs are compressed to opaque markers
-(`[functionResponse compressed. Call headroom_retrieve(hash=…) …]`). On a HARD
+(`[functionResponse compressed. Call headroom_retrieve to expand. Retrieve
+more: hash=… ]`). On a HARD
 cross-turn retrieval task (read a 33 KB / 1200-line config; a second file then
 asks for one specific key's value; the config leaf is a marker by answer time),
 measured on a clean box (fry, N=8):

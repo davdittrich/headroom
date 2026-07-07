@@ -56,13 +56,15 @@ ANTIGRAVITY_DAILY_API_URL = "https://daily-cloudcode-pa.googleapis.com"
 # original bytes. Self-describing: it NAMES the ``headroom_retrieve`` tool and
 # gives a one-line call-to-expand instruction, so a model that needs the
 # compressed detail knows how to fetch it (a marker naming no tool led to 0
-# retrieve calls in the WU4 live trial). Still matches the existing bracketed
-# marker style / regex (parser.CCR_RETRIEVAL_MARKER_RE: ``Retrieve more:
-# hash=``) via its trailing form -- ``_hash_of``-style extraction must read
-# the LAST ``hash=`` occurrence, not the first.
+# retrieve calls in the WU4 live trial). All-ours single-hash form: the hash
+# appears exactly once, in the trailing ``Retrieve more: hash=`` form that
+# also matches the existing bracketed marker style / regex
+# (parser.CCR_RETRIEVAL_MARKER_RE).
 _FR_CCR_HASH_LEN = 24
-_FR_CCR_MARKER_PREFIX = '[functionResponse compressed. Call headroom_retrieve(hash="'
-_FR_CCR_MARKER_TEMPLATE = _FR_CCR_MARKER_PREFIX + '{hash}") to expand. Retrieve more: hash={hash}]'
+_FR_CCR_MARKER_PREFIX = (
+    "[functionResponse compressed. Call headroom_retrieve to expand. Retrieve more: hash="
+)
+_FR_CCR_MARKER_TEMPLATE = _FR_CCR_MARKER_PREFIX + "{hash}]"
 
 # Per-leaf floor DERIVED from marker overhead (not a magic 200). Replacing a
 # leaf ships the marker in its place, so the net saving is
