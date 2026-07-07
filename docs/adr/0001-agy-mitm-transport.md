@@ -305,3 +305,48 @@ and interactive mode** — tokensave-primary/serena-backup, lean-ctx context too
 retrieve MCP, and `--code-graph` — giving agy first-class MCP parity in every mode, like any
 other client. Live-verified: `wrap agy -p` wires tokensave + lean-ctx + retrieve
 (handshake-verified) and completes in ~10s.
+
+## functionResponse bulk compression (CCR) — where the savings actually come from
+
+The savings-plumbing above only surfaces savings that a compressor produced; for agy the
+compressor initially produced ~zero. Root cause: agy's request bulk lives in
+`contents[].parts[].functionResponse.response` — the tool-output leaves the coding agent
+resends every turn (file reads, greps, command output). Headroom's message-level
+compressors never touched those leaves, so a large agy session compressed almost nothing
+(PR #1044: "704 → 718" — compression *inflated* tokens and reverted).
+
+**Design — uniform, deterministic, recoverable.** Every `functionResponse.response` string
+leaf across ALL of `contents` (history + tail) above a marker-derived token floor is
+replaced by a deterministic CCR marker; the original is cached under
+`SHA-256(original)[:24]` and recovered on demand via the injected `headroom_retrieve` MCP
+tool. Key properties:
+
+- **Uniform, not live-tail-only.** agy is a MITM that never rewrites the client's own
+  history, and it resends the full history each turn. A live-zone/recency boundary (compress
+  cold history, keep the tail verbatim) is therefore **cache-incoherent** here: the same leaf
+  appears compressed in one turn and verbatim the next, so the model re-diffs it every turn.
+  Compressing every leaf identically each turn keeps the cross-turn byte-image stable.
+- **Retrieved-content exemption (anti-thrash).** A leaf whose hash the model already fetched
+  this turn (a `headroom_retrieve` / `call_mcp_tool` call carrying that 24-hex hash in its
+  args) is left verbatim — otherwise the re-sent, just-expanded original would be
+  re-compressed into the same marker and the model would retrieve it forever. This mirrors
+  the retrieve-call suppression the OpenAI/Anthropic paths already do (keyed by hash, since
+  agy has no call_id).
+- **Default + escape hatch.** `HEADROOM_AGY_FR_MODE` selects `ccr` (default, real savings)
+  or `lossless` (a safety floor that never emits markers). The WU4 efficacy trial gated the
+  default: ccr ships because it delivers material savings while `headroom_retrieve` is wired;
+  a lossless downgrade warns loudly if retrieve is not wired so markers can never become
+  unrecoverable silently.
+- **Revert-independent accounting.** Savings are recorded from the compression decision, not
+  from whether the upstream later reverts — each turn independently avoided sending those
+  bytes.
+
+## SSE output-token accounting (Cloud Code Assist response-envelope unwrap)
+
+Cloud Code Assist wraps streaming responses in a `response` envelope
+(`{"response": {"usageMetadata": {…}}}`), mirroring the request-side wrap. Both gemini SSE
+usage parsers read `usageMetadata` at the top level only, so agy's `candidatesTokenCount`
+never parsed and every turn logged "Could not parse output_tokens from SSE, estimating N
+from B bytes" — output tokens on the dashboard/ledger were a `bytes//40` estimate. The
+gemini branches now unwrap the envelope when top-level `usageMetadata` is absent; native
+Gemini (top-level) chunks are unaffected.
