@@ -1,7 +1,7 @@
 # agy ccr thrash — structural live-zone boundary (supersedes 37g.8)
 
 <!-- date: 2026-07-07 -->
-<!-- status: design-review-gate PASSED iter2 (all 5 APPROVED: PM/Architect/Designer/Security/CTO; independent agy adversarial drove iter1). Non-blocking reviewer refinements folded. Ready for writing-plans. -->
+<!-- status: SUPERSEDED 2026-07-07 by 2026-07-07-agy-ccr-native-recovery-design.md. Gate PASSED but REFUTED by code-verification: the 4A "compress cold / keep hot" boundary is inverted vs the proven Rust live-zone arch (which compresses the LIVE zone + freezes the cold prefix), does NOT stop the cross-turn thrash (config is cold at query time), and degenerates to lossless on the single-user-turn fry benchmark. See §0 of the native-recovery design. -->
 
 ## 1. Problem
 
