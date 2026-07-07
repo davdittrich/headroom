@@ -6965,7 +6965,10 @@ def _stop_agy_servers(servers: _AgyServers | None) -> None:
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
 @click.option(
-    "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
+    # NOTE: no "-p" short alias here (unlike sibling wrap subcommands): agy's
+    # own CLI uses -p for --print, so a -p alias on --port would swallow the
+    # user's prompt as the proxy port (headroom-r9k). Long --port only.
+    "--port", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
 @click.option(
     "--no-intercept",
