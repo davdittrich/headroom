@@ -304,7 +304,11 @@ all answer in ~4s in print mode). agy therefore now wires MCP tooling **identica
 and interactive mode** — tokensave-primary/serena-backup, lean-ctx context tool, the headroom
 retrieve MCP, and `--code-graph` — giving agy first-class MCP parity in every mode, like any
 other client. Live-verified: `wrap agy -p` wires tokensave + lean-ctx + retrieve
-(handshake-verified) and completes in ~10s.
+(handshake-verified) and completes in ~10s. Because the fix is agy-side, `wrap agy` still
+runs a runtime `agy --version` preflight before wiring print-mode MCP (headroom-37g.37): an
+agy older than 1.0.16, or one whose version can't be detected, is treated as unsafe by
+default, so print-mode MCP registration is suppressed and any previously-persisted entries
+are purged for that run.
 
 ## functionResponse bulk compression (CCR) — where the savings actually come from
 

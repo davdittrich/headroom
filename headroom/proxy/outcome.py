@@ -1,11 +1,10 @@
 """``RequestOutcome``: the canonical value type for "what happened during
 one completed proxy request."
 
-Per the P0 audit (``docs/superpowers/specs/P0-proxy-pipeline-audit.md``),
-18 ``metrics.record_request`` call sites across four handler files
-disagreed on argument shape — 9 of 18 omitted ``cached=``, 7 of 18
-omitted ``attempted_input_tokens=``, only 4 sites emitted a structured
-PERF log at all. This module is the structural fix: every handler
+An earlier audit found that 18 ``metrics.record_request`` call sites across
+four handler files disagreed on argument shape — 9 of 18 omitted ``cached=``,
+7 of 18 omitted ``attempted_input_tokens=``, only 4 sites emitted a
+structured PERF log at all. This module is the structural fix: every handler
 converges on building a :class:`RequestOutcome` at end-of-request and
 hands it to :func:`emit_request_outcome` (also exposed as
 :meth:`HeadroomProxy._record_request_outcome`), which owns the four

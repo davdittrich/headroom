@@ -6903,12 +6903,15 @@ def _start_agy_servers(
     Both servers bind loopback ephemeral ports (port=0).  Readiness is
     signalled via a threading.Event; startup errors raise RuntimeError fast.
 
-    When ``start_retrieve`` is True (INTERACTIVE mode only) an additional
-    PLAIN-HTTP loopback :class:`AgyRetrieveServer` is started on the same loop;
-    its port is exposed via ``.retrieve_port`` so the headroom retrieve MCP can
-    point at it.  In PRINT mode it is NOT started (no MCP server may run — agy
-    hangs).  The retrieve server shares the process-global compression cache the
-    dispatch server populates, so ``[Retrieve more: hash=…]`` markers resolve.
+    When ``start_retrieve`` is True an additional PLAIN-HTTP loopback
+    :class:`AgyRetrieveServer` is started on the same loop; its port is exposed
+    via ``.retrieve_port`` so the headroom retrieve MCP can point at it. The
+    caller now passes ``start_retrieve=True`` in every mode: the listener is a
+    harmless idle loopback socket, and whether the retrieve MCP *entry* is
+    registered is decided separately by the print-mode version gate
+    (``_agy_print_mode_mcp_allowed``, headroom-37g.37). The retrieve server
+    shares the process-global compression cache the dispatch server populates,
+    so ``[Retrieve more: hash=…]`` markers resolve.
 
     Returns an _AgyServers handle with ``.terminator`` and ``.dispatch``
     already started, and a ``.stop()`` method for clean shutdown.

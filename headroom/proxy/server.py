@@ -1707,9 +1707,6 @@ class HeadroomProxy(
         The real implementation lives in ``outcome.py`` as a free function so
         test dummies and provider mixins can call it without inheriting from
         ``HeadroomProxy``.
-
-        See ``docs/superpowers/specs/P0-proxy-pipeline-audit.md`` for the
-        divergence catalog this funnel collapses.
         """
         from headroom.proxy.outcome import emit_request_outcome
 

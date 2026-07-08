@@ -361,14 +361,20 @@ silently losing the corporate proxy path.
 #### Fail-open and known limits
 
 On compression or dispatch errors, the Headroom terminator fails open (forwards original
-bytes) so `agy` continues working.  A session-level fail-open warning and session summary
-are planned for a follow-on release (ticket headroom-2i0).
+bytes) so `agy` continues working.  A session-level fail-open warning (first occurrence) and
+an end-of-session compression summary are shipped — see the "Compression fail-open
+observability" row in [docs/agy-parity-matrix.md](docs/agy-parity-matrix.md).
 
-The following features available on other agents are not yet wired for agy in v1;
-see [docs/agy-parity-matrix.md](docs/agy-parity-matrix.md) for the full parity table:
+The Headroom MCP retrieve tool (per-run, ephemeral loopback listener) and code-graph
+(`codebase-memory-mcp`, opt-in via `--code-graph`) are wired via `AgyRegistrar`, alongside the
+tokensave code-graph compressor as agy's primary MCP with Serena as the backup
+(`--no-tokensave` / `--no-serena` to disable either). MCP registration in
+`--print`/`-p`/`--prompt` mode requires agy `>= 1.0.16`; older or undetectable agy versions
+skip registration and purge any stale entries — see
+[docs/agy-parity-matrix.md](docs/agy-parity-matrix.md) for the full parity table.
 
-- Headroom MCP retrieve tool (per-run) — ephemeral port not persistable across sessions
-- Code-graph (`codebase-memory-mcp`) — not yet wired via `AgyRegistrar`
+The following features available on other agents have no agy equivalent in v1:
+
 - `--memory` — no equivalent persistent memory API in agy
 - `--learn` — requires a stable dispatch endpoint (headroom-2i0)
 
