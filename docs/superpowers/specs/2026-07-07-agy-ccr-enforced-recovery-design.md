@@ -3,6 +3,13 @@
 <!-- date: 2026-07-07 -->
 <!-- status: design-review-gate PASSED iter2 (all 5 APPROVED: PM/Architect/Designer/Security/CTO; Architect+CTO verified the §9 reuse table is accurate). Non-blocking refinements folded (side-effect-free auth, PrefixCacheTracker cap state, sole-MCP operational note). REVISED post-WU-SPIKE-3 (37g.29): §3B retrieve exemption = RETRIEVE-CALL-SCAN SUPPRESSION (agy analog of live_zone.rs headroom_retrieve_call_ids, keyed by hash since agy has no call_id). Supersedes call-id-correlation AND the eviction-holed store-membership variant. Grounded: fry HEAD lacks the exemption -> Flash thrashes 236x on delayed-reference; the fix = port what OpenAI/Anthropic already do. WU2/37g.17 reconciled. Forcing WUs (4B) NOT closed pending re-test on the WU2-fixed build (prior 'forcing harmful' data was confounded by the missing exemption). -->
 
+<!-- POST-IMPLEMENTATION NOTE (2026-07-08): this is a historical design record. The
+implemented FR compressor + retrieve exemption were later EXTRACTED from gemini.py into
+`headroom/transforms/agy_fr_compressor.py` (headroom-37g.36), so §9/§10 `gemini.py:NNN`
+citations now resolve there. The `"headroom_retrieve" in json.dumps(args)` exemption test
+was replaced by the behaviorally-equivalent structural scan `_args_mention_retrieve`
+(headroom-37g.35). Behavior contract unchanged; only location + internal mechanism moved. -->
+
 ## 0. Prior errors corrected
 
 - **live-zone-parity (4A-old)** refuted: compressed the cold prefix + kept the

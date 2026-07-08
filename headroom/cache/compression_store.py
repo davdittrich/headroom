@@ -93,7 +93,7 @@ def default_ccr_hash(content: str) -> str:
 
     Single source of truth so the compression store's key and any exemption
     recompute (e.g. the agy retrieve exemption in
-    ``headroom.proxy.handlers.gemini``) cannot drift.
+    ``headroom.transforms.agy_fr_compressor``) cannot drift.
     """
     return hashlib.sha256(content.encode()).hexdigest()[:24]
 

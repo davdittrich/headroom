@@ -129,8 +129,15 @@ def test_count_text_called_exactly_once_per_leaf_plus_one_per_request(tok: Any, 
 def test_default_ccr_hash_called_exactly_once_per_leaf(tok: Any, store: Any) -> None:
     """``default_ccr_hash`` must be called exactly once for one compressed
     leaf: once in ``_walk_fr_compress`` for the exemption check, and that
-    SAME value is threaded into ``store.store(..., explicit_hash=...)`` so
-    the store no longer re-derives it internally."""
+    SAME value is threaded into ``store.store(..., explicit_hash=...)``.
+
+    Scope note: this spy patches the compressor module's ``default_ccr_hash``
+    binding, so it proves the compressor computes the hash once (not twice).
+    That the store then SKIPS its own internal recompute when ``explicit_hash``
+    is passed is a separate fact, verified by inspection of
+    ``compression_store.store`` (the ``explicit_hash is not None`` branch skips
+    ``default_ccr_hash(original)``), not asserted by this spy.
+    """
     with patch.object(agy_fr_compressor, "default_ccr_hash", wraps=default_ccr_hash) as hash_spy:
         before, after, leaves = compress_function_response_leaves(
             _contents_one_compressible_leaf(), "ccr", tok, store
