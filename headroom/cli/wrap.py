@@ -736,13 +736,21 @@ _HEADROOM_HOOK_MARKERS = ("rtk-rewrite", "headroom-init-claude")
 #: for print-mode invocations.
 _AGY_PRINT_FLAGS = ("--print", "-p", "--prompt")
 
+#: Minimum agy version known to no longer hang on a registered MCP server in
+#: print mode (re-verified 2026-07-05: lean-ctx + tokensave + serena all
+#: answer in ~4s on 1.0.16).  Older or unparseable/unknown versions are
+#: treated as unsafe — see ``_agy_print_mode_mcp_allowed``.
+_AGY_PRINT_MODE_MCP_MIN_VERSION = (1, 0, 16)
+
 
 def _agy_print_mode(agy_args: tuple[str, ...] | list[str]) -> bool:
     """Return True if agy is being launched in non-interactive print mode.
 
     agy treats ``--print`` / ``-p`` / ``--prompt`` as "run one prompt and exit".
-    A registered MCP server hangs agy in this mode, so callers use this to
-    suppress all MCP wiring for the run.
+    Older/unknown agy versions hang in this mode whenever a registered MCP
+    server is present, so callers use this to gate MCP wiring behind an agy
+    version preflight (see ``_agy_print_mode_mcp_allowed``); interactive mode
+    is never suppressed.
 
     Matches both space-separated forms (``--print hi``) and ``=``-joined forms
     (``--print=hi``, ``--prompt=hi``, ``-p=hi``) — all live-verified as valid
@@ -751,6 +759,51 @@ def _agy_print_mode(agy_args: tuple[str, ...] | list[str]) -> bool:
     exit 2) — it never reaches MCP init, so it cannot trigger the hang.
     """
     return any(arg.split("=", 1)[0] in _AGY_PRINT_FLAGS for arg in agy_args)
+
+
+def _detect_agy_version(agy_bin: str | None) -> tuple[int, ...] | None:
+    """Best-effort detect the installed agy binary's version.
+
+    Runs ``<agy_bin> --version`` with a 1s timeout and parses the LAST
+    ``\\d+(\\.\\d+)+`` token found in stdout (defends against a wrapper
+    script printing its own version banner before delegating to the real
+    binary).  Returns ``None`` whenever the version cannot be established —
+    no binary, non-zero exit, no parseable version token, or a slow/hung
+    process (killed after the timeout) — so callers can treat "unknown" the
+    same as "known old" (safe-by-default).  Never raises.
+    """
+    try:
+        if not agy_bin:
+            return None
+        result = subprocess.run(
+            [agy_bin, "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1.0,
+        )
+        if result.returncode != 0:
+            return None
+        matches = re.findall(r"\d+(?:\.\d+)+", result.stdout or "")
+        if not matches:
+            return None
+        return tuple(int(part) for part in matches[-1].split("."))
+    except Exception:
+        return None
+
+
+def _agy_print_mode_mcp_allowed(agy_args: tuple[str, ...] | list[str], agy_bin: str | None) -> bool:
+    """Gate print-mode MCP wiring on a known-good agy version.
+
+    Interactive mode is always allowed — the hang is print-mode-only, so no
+    version check is performed. In print mode, MCP wiring is allowed only
+    when the detected agy version is >= ``_AGY_PRINT_MODE_MCP_MIN_VERSION``;
+    an unparseable/unknown version is treated as too old (safe-by-default).
+    """
+    if not _agy_print_mode(agy_args):
+        return True
+    version = _detect_agy_version(agy_bin)
+    return version is not None and version >= _AGY_PRINT_MODE_MCP_MIN_VERSION
 
 
 def _smoke_verify_mcp_handshake(
@@ -1712,6 +1765,22 @@ def _setup_coding_compressor(registrar: Any, *, serena_context: str, **kwargs: A
 
 
 _CBM_MCP_SERVER_NAME = "codebase-memory-mcp"
+
+
+def _purge_agy_mcp_entries(registrar: Any) -> None:
+    """Actively remove all agy MCP entries that could hang a print-mode run.
+
+    Used when the print-mode agy-version preflight fails (older or unknown
+    agy): merely skipping *new* registration is not enough, since a prior
+    interactive ``headroom wrap agy`` run may have already persisted entries
+    in mcp_config.json.  Every call here is idempotent -- a no-op when the
+    entry is already absent -- so this is safe to call unconditionally.
+    """
+    _disable_tokensave_mcp(registrar)
+    _disable_serena_mcp(registrar, reason="agy print-mode MCP preflight failed")
+    _remove_headroom_installed_lean_ctx_mcp(registrar)
+    registrar.unregister_server(_CBM_MCP_SERVER_NAME)
+    registrar.unregister_server("headroom")
 
 
 def _setup_code_graph(verbose: bool = False) -> bool:
@@ -7151,7 +7220,12 @@ def agy(
         # client sharing the proxy. agy uses its own MITM env (build_agy_env
         # below) rather than a base-URL redirect, so unlike the other wrap
         # subcommands we do NOT call _push_runtime_env here.
-        proxy_holder[0] = _ensure_proxy(port, no_proxy, agent_type="agy")
+        # _ensure_proxy returns (proxy, actual_port); agy addresses the shared
+        # proxy by the requested `port` throughout (_make_cleanup /
+        # _register_proxy_client above), so the bound port is unused here — but
+        # proxy_holder[0] MUST be the Popen, not the tuple, for cleanup to reap
+        # an agy-started proxy.
+        proxy_holder[0], _actual_port = _ensure_proxy(port, no_proxy, agent_type="agy")
 
         agy_savings_tmp = tempfile.mkdtemp(prefix="headroom-agy-savings-")
         os.environ["HEADROOM_SAVINGS_PATH"] = str(Path(agy_savings_tmp) / "proxy_savings.json")
@@ -7215,134 +7289,170 @@ def agy(
         click.echo()
 
         # ------------------------------------------------------------------
-        # MCP tooling is wired identically in print and interactive mode. agy
-        # 1.0.16 no longer hangs on MCP servers in --print mode (re-verified
-        # 2026-07-05: lean-ctx + tokensave + serena all answer in ~4s), so agy
-        # gets first-class MCP parity in every mode, like any other client.
+        # MCP tooling wiring is gated on a runtime agy-version preflight: older
+        # or unknown agy binaries hang on ANY mcpServers entry when launched in
+        # print mode.  Interactive mode is unaffected and is always wired.
         # ------------------------------------------------------------------
+        mcp_allowed = _agy_print_mode_mcp_allowed(agy_args, agy_bin)
+        if mcp_allowed:
+            # ------------------------------------------------------------------
+            # MCP tooling is wired identically in print and interactive mode. agy
+            # 1.0.16 no longer hangs on MCP servers in --print mode (re-verified
+            # 2026-07-05: lean-ctx + tokensave + serena all answer in ~4s), so agy
+            # gets first-class MCP parity in every mode, like any other client.
+            # ------------------------------------------------------------------
 
-        # ------------------------------------------------------------------
-        # Context-tool and instruction-surface setup (idempotent, best-effort).
-        # ------------------------------------------------------------------
-        gemini_md = Path.home() / ".gemini" / "GEMINI.md"
-        if _selected_context_tool() == _CONTEXT_TOOL_LEAN_CTX:
-            # lean-ctx context tool: register an explicit MCP entry and
-            # smoke-verify the handshake (verify-then-remove on failure).
-            # Wired in ALL modes — agy 1.0.16 no longer hangs on MCP in print
-            # mode, so agy gets first-class MCP parity in print and interactive.
-            _setup_lean_ctx_mcp_agy(AgyRegistrar(), verbose=False)
-        elif shutil.which("rtk") is not None:
-            # RTK path: only inject context instructions when rtk is installed —
-            # otherwise GEMINI.md would tell agy to use a missing tool.
-            _inject_gemini_md_block(gemini_md, RTK_INSTRUCTIONS_BLOCK, verbose=False)
-        else:
-            click.echo(
-                "  Context tool: rtk not found — skipping context instructions "
-                "(agy still works transport-only)."
-            )
+            # ------------------------------------------------------------------
+            # Context-tool and instruction-surface setup (idempotent, best-effort).
+            # ------------------------------------------------------------------
+            gemini_md = Path.home() / ".gemini" / "GEMINI.md"
+            if _selected_context_tool() == _CONTEXT_TOOL_LEAN_CTX:
+                # lean-ctx context tool: register an explicit MCP entry and
+                # smoke-verify the handshake (verify-then-remove on failure).
+                # Wired in ALL modes — agy 1.0.16 no longer hangs on MCP in print
+                # mode, so agy gets first-class MCP parity in print and interactive.
+                _setup_lean_ctx_mcp_agy(AgyRegistrar(), verbose=False)
+            elif shutil.which("rtk") is not None:
+                # RTK path: only inject context instructions when rtk is installed —
+                # otherwise GEMINI.md would tell agy to use a missing tool.
+                _inject_gemini_md_block(gemini_md, RTK_INSTRUCTIONS_BLOCK, verbose=False)
+            else:
+                click.echo(
+                    "  Context tool: rtk not found — skipping context instructions "
+                    "(agy still works transport-only)."
+                )
 
-        # ------------------------------------------------------------------
-        # Code-graph compressor — tokensave PRIMARY, Serena BACKUP.
-        # tokensave and Serena are uvx/binary stdio servers with no proxy-URL/
-        # ephemeral-port dependency, so they persist cleanly in mcp_config.json
-        # (unlike the Headroom retrieve tool).  context="ide-assistant":
-        # Antigravity is an IDE agent and this is Serena's generic IDE profile.
-        # tokensave becomes the primary compressor when available; Serena is
-        # only registered as the backup when tokensave is unavailable (unless
-        # --no-serena).  Wired in ALL modes (print + interactive) — agy 1.0.16
-        # no longer hangs on MCP servers in print mode (re-verified 2026-07-05).
-        # ------------------------------------------------------------------
-        tokensave_ok = False
-        if no_tokensave:
-            _disable_tokensave_mcp(AgyRegistrar(), verbose=False)
-        else:
-            tokensave_ok = _setup_tokensave_mcp_agy(AgyRegistrar(), verbose=False)
-        if not tokensave_ok and not no_serena:
-            _setup_serena_mcp(AgyRegistrar(), context="ide-assistant", verbose=False, force=True)
-        else:
-            _disable_serena_mcp(
-                AgyRegistrar(),
-                verbose=False,
-                reason=(
-                    "--no-serena"
-                    if no_serena
-                    else "tokensave is now the primary code-graph compressor"
-                ),
-            )
+            # ------------------------------------------------------------------
+            # Code-graph compressor — tokensave PRIMARY, Serena BACKUP.
+            # tokensave and Serena are uvx/binary stdio servers with no proxy-URL/
+            # ephemeral-port dependency, so they persist cleanly in mcp_config.json
+            # (unlike the Headroom retrieve tool).  context="ide-assistant":
+            # Antigravity is an IDE agent and this is Serena's generic IDE profile.
+            # tokensave becomes the primary compressor when available; Serena is
+            # only registered as the backup when tokensave is unavailable (unless
+            # --no-serena).  Wired in ALL modes (print + interactive) — agy 1.0.16
+            # no longer hangs on MCP servers in print mode (re-verified 2026-07-05).
+            # ------------------------------------------------------------------
+            tokensave_ok = False
+            if no_tokensave:
+                _disable_tokensave_mcp(AgyRegistrar(), verbose=False)
+            else:
+                tokensave_ok = _setup_tokensave_mcp_agy(AgyRegistrar(), verbose=False)
+            if not tokensave_ok and not no_serena:
+                _setup_serena_mcp(
+                    AgyRegistrar(), context="ide-assistant", verbose=False, force=True
+                )
+            else:
+                _disable_serena_mcp(
+                    AgyRegistrar(),
+                    verbose=False,
+                    reason=(
+                        "--no-serena"
+                        if no_serena
+                        else "tokensave is now the primary code-graph compressor"
+                    ),
+                )
 
-        # ------------------------------------------------------------------
-        # Code graph MCP — OPT-IN, INTERACTIVE ONLY.
-        # codebase-memory-mcp is a persistent stdio MCP server that gives the
-        # agent query access to a code knowledge graph (call chains, symbol
-        # definitions, impact analysis).  Registered via AgyRegistrar behind a
-        # ``--code-graph`` flag (default OFF); skipped in print mode because
-        # any MCP server hangs agy in print mode (headroom-30y.18).
-        # On first use the cbm binary is resolved/ensured by _setup_code_graph;
-        # we re-use get_cbm_path() here for the registration-only path so we
-        # do NOT index the project a second time (that is already done by
-        # _setup_code_graph).
-        # ------------------------------------------------------------------
-        if code_graph:
-            from headroom.graph.installer import ensure_cbm, get_cbm_path
-            from headroom.mcp_registry import build_codegraph_spec
-            from headroom.mcp_registry.base import RegisterStatus
-            from headroom.mcp_registry.ledger import record_install as _record_install
+            # ------------------------------------------------------------------
+            # Code graph MCP — OPT-IN, INTERACTIVE ONLY.
+            # codebase-memory-mcp is a persistent stdio MCP server that gives the
+            # agent query access to a code knowledge graph (call chains, symbol
+            # definitions, impact analysis).  Registered via AgyRegistrar behind a
+            # ``--code-graph`` flag (default OFF); skipped in print mode because
+            # any MCP server hangs agy in print mode (headroom-30y.18).
+            # On first use the cbm binary is resolved/ensured by _setup_code_graph;
+            # we re-use get_cbm_path() here for the registration-only path so we
+            # do NOT index the project a second time (that is already done by
+            # _setup_code_graph).
+            # ------------------------------------------------------------------
+            if code_graph:
+                from headroom.graph.installer import ensure_cbm, get_cbm_path
+                from headroom.mcp_registry import build_codegraph_spec
+                from headroom.mcp_registry.base import RegisterStatus
+                from headroom.mcp_registry.ledger import record_install as _record_install
 
-            cbm_path = get_cbm_path()
-            if not cbm_path:
-                click.echo("  Code graph: downloading codebase-memory-mcp...")
-                cbm_path = ensure_cbm()
-                if cbm_path:
-                    click.echo(f"  Code graph: installed at {cbm_path}")
-                else:
-                    click.echo("  Code graph: download failed — skipping code-graph MCP for agy")
-
-            if cbm_path:
-                cbm_bin = str(cbm_path)
-                cbm_spec = build_codegraph_spec(cbm_bin)
-                cbm_result = AgyRegistrar().register_server(cbm_spec, force=True)
-                if cbm_result.status in (RegisterStatus.REGISTERED, RegisterStatus.ALREADY):
-                    if _smoke_verify_mcp_handshake(
-                        cbm_spec.command, list(cbm_spec.args), dict(cbm_spec.env)
-                    ):
-                        if cbm_result.status == RegisterStatus.REGISTERED:
-                            _record_install(AgyRegistrar().name, cbm_spec)
-                        click.echo(
-                            "  Code graph: codebase-memory-mcp MCP wired (handshake verified)."
-                        )
-                        # Also index the project (idempotent).
-                        _setup_code_graph(verbose=False)
+                cbm_path = get_cbm_path()
+                if not cbm_path:
+                    click.echo("  Code graph: downloading codebase-memory-mcp...")
+                    cbm_path = ensure_cbm()
+                    if cbm_path:
+                        click.echo(f"  Code graph: installed at {cbm_path}")
                     else:
-                        AgyRegistrar().unregister_server(_CBM_MCP_SERVER_NAME)
                         click.echo(
-                            "  Code graph: codebase-memory-mcp MCP failed handshake — "
-                            "entry removed (agy left without code graph)."
+                            "  Code graph: download failed — skipping code-graph MCP for agy"
                         )
-                else:
-                    click.echo(
-                        f"  Code graph: could not register codebase-memory-mcp MCP — "
-                        f"skipping ({cbm_result.detail})."
-                    )
 
-        # ------------------------------------------------------------------
-        # Headroom retrieve MCP.  The retrieve tool is an ``headroom mcp serve``
-        # stdio child that resolves ``[Retrieve more: hash=…]`` markers by calling
-        # the proxy's retrieve HTTP endpoint.  It points at the PLAIN-HTTP loopback
-        # retrieve listener started above (per-run, ephemeral port), which shares
-        # the process-global compression cache the dispatch server populates.
-        # Because the URL is ephemeral the entry MUST be reverted on teardown —
-        # never leave a dead pointer in mcp_config.json.  Wired in ALL modes
-        # (agy 1.0.16 no longer hangs on MCP in print mode).
-        # ------------------------------------------------------------------
-        if servers is not None and servers.retrieve_port is not None:
-            retrieve_registered = _setup_headroom_retrieve_mcp_agy(
-                AgyRegistrar(), servers.retrieve_port, verbose=False
-            )
+                if cbm_path:
+                    cbm_bin = str(cbm_path)
+                    cbm_spec = build_codegraph_spec(cbm_bin)
+                    cbm_result = AgyRegistrar().register_server(cbm_spec, force=True)
+                    if cbm_result.status in (RegisterStatus.REGISTERED, RegisterStatus.ALREADY):
+                        if _smoke_verify_mcp_handshake(
+                            cbm_spec.command, list(cbm_spec.args), dict(cbm_spec.env)
+                        ):
+                            if cbm_result.status == RegisterStatus.REGISTERED:
+                                _record_install(AgyRegistrar().name, cbm_spec)
+                            click.echo(
+                                "  Code graph: codebase-memory-mcp MCP wired (handshake verified)."
+                            )
+                            # Also index the project (idempotent).
+                            _setup_code_graph(verbose=False)
+                        else:
+                            AgyRegistrar().unregister_server(_CBM_MCP_SERVER_NAME)
+                            click.echo(
+                                "  Code graph: codebase-memory-mcp MCP failed handshake — "
+                                "entry removed (agy left without code graph)."
+                            )
+                    else:
+                        click.echo(
+                            f"  Code graph: could not register codebase-memory-mcp MCP — "
+                            f"skipping ({cbm_result.detail})."
+                        )
+
+            # ------------------------------------------------------------------
+            # Headroom retrieve MCP.  The retrieve tool is an ``headroom mcp serve``
+            # stdio child that resolves ``[Retrieve more: hash=…]`` markers by calling
+            # the proxy's retrieve HTTP endpoint.  It points at the PLAIN-HTTP loopback
+            # retrieve listener started above (per-run, ephemeral port), which shares
+            # the process-global compression cache the dispatch server populates.
+            # Because the URL is ephemeral the entry MUST be reverted on teardown —
+            # never leave a dead pointer in mcp_config.json.  Wired in ALL modes
+            # (agy 1.0.16 no longer hangs on MCP in print mode).
+            # ------------------------------------------------------------------
+            if servers is not None and servers.retrieve_port is not None:
+                retrieve_registered = _setup_headroom_retrieve_mcp_agy(
+                    AgyRegistrar(), servers.retrieve_port, verbose=False
+                )
+            else:
+                # Purge any stale "headroom" retrieve entry left by a previously
+                # SIGKILLed session pointing at a now-dead ephemeral port.
+                # Idempotent — no-op when the entry is absent.
+                AgyRegistrar().unregister_server("headroom")
+
         else:
-            # Purge any stale "headroom" retrieve entry left by a previously
-            # SIGKILLed session pointing at a now-dead ephemeral port.
-            # Idempotent — no-op when the entry is absent.
-            AgyRegistrar().unregister_server("headroom")
+            # Print-mode MCP preflight failed: agy is older than
+            # _AGY_PRINT_MODE_MCP_MIN_VERSION, or its version could not be
+            # detected.  Actively PURGE any MCP entries a prior interactive run
+            # may have persisted in mcp_config.json -- merely skipping
+            # registration is not enough, since a stale entry from an earlier
+            # run would still hang this print-mode invocation.  All calls below
+            # are idempotent (no-op when the entry is already absent).  The
+            # retrieve LISTENER started above still runs (harmless idle loopback)
+            # -- only MCP *registration* is suppressed here.
+            _purge_agy_mcp_entries(AgyRegistrar())
+            _detected_version = _detect_agy_version(agy_bin)
+            _detected_str = (
+                ".".join(str(part) for part in _detected_version)
+                if _detected_version is not None
+                else "unknown"
+            )
+            click.echo(
+                f"  MCP tooling: suppressed (detected agy version {_detected_str}; "
+                "print-mode MCP requires agy >= "
+                f"{'.'.join(str(p) for p in _AGY_PRINT_MODE_MCP_MIN_VERSION)}). "
+                "agy still runs transport-only.",
+                err=True,
+            )
 
         # WU1 (headroom-37g.1): tell the in-process Cloud Code Assist handler
         # whether the CCR retrieve listener is wired for this run. The handler
