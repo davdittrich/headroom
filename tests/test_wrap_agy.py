@@ -687,6 +687,11 @@ def _stub_agy_mitm_run(
     # Default the MCP handshake smoke check to PASS so interactive registrations
     # survive; individual tests override this when they exercise the failure path.
     monkeypatch.setattr(wrap_mod, "_smoke_verify_mcp_handshake", lambda *a, **kw: True)
+    # Default the stubbed agy to a known-good version so print-mode MCP wiring is
+    # exercised (headroom-37g.37 gates print-mode MCP on agy >= 1.0.16). The
+    # suppress/purge path for older/unknown agy is covered separately in
+    # tests/test_agy_print_mode_version_gate.py.
+    monkeypatch.setattr(wrap_mod, "_detect_agy_version", lambda _agy_bin: (1, 0, 16))
     # Default tokensave to UNAVAILABLE so the primary/backup policy falls back to
     # Serena deterministically (no network download of the real binary in tests).
     # Tests exercising the tokensave-primary path override this stub.

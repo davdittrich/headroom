@@ -775,7 +775,7 @@ def _detect_agy_version(agy_bin: str | None) -> tuple[int, ...] | None:
     try:
         if not agy_bin:
             return None
-        result = subprocess.run(
+        result = run(
             [agy_bin, "--version"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
