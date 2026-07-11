@@ -365,7 +365,7 @@ bytes) so `agy` continues working.  A session-level fail-open warning (first occ
 an end-of-session compression summary are shipped — see the "Compression fail-open
 observability" row in [docs/agy-parity-matrix.md](docs/agy-parity-matrix.md).
 
-The Headroom MCP retrieve tool (per-run, ephemeral loopback listener) and code-graph
+The Headroom MCP retrieve tool (persistent, ledger-recorded, resolves markers from the on-disk store) and code-graph
 (`codebase-memory-mcp`, opt-in via `--code-graph`) are wired via `AgyRegistrar`, alongside the
 tokensave code-graph compressor as agy's primary MCP with Serena as the backup
 (`--no-tokensave` / `--no-serena` to disable either). MCP registration in

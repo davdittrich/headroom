@@ -630,10 +630,12 @@ class HeadroomMCPServer:
                 Tool(
                     name=CCR_TOOL_NAME,
                     description=(
-                        "Retrieve original uncompressed content by hash. "
-                        "Use this when you need full details from previously compressed content. "
-                        "The hash comes from headroom_compress results or from compression "
-                        "markers like [N items compressed... hash=abc123]."
+                        "Retrieve original uncompressed content by hash. This is the ONLY "
+                        "tool that expands Headroom compression markers — use it (not any "
+                        "other retrieve/expand tool) whenever you see a marker containing "
+                        "'hash=', including '[N items compressed... hash=abc123]' and "
+                        "'[functionResponse compressed. Call headroom_retrieve to expand. "
+                        "Retrieve more: hash=...]'. The hash is the value after 'hash='."
                     ),
                     inputSchema={
                         "type": "object",

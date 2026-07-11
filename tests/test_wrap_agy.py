@@ -583,11 +583,10 @@ class TestAgyMcpRetrieveNa:
     """Verify wrap agy does NOT register a retrieve MCP entry outside the
     interactive MITM path.
 
-    Interactive MITM now starts a per-run PLAIN-HTTP loopback retrieve listener
-    and registers a per-run headroom MCP entry pointing at it (reverted on
-    teardown — see TestAgyRetrieveMcpWiring).  But --no-intercept (passthrough)
-    starts no servers, so it must register nothing: there is no listener to
-    point a persistent entry at.
+    Interactive MITM registers a persistent, ledger-recorded headroom MCP
+    retrieve entry (stable spec, on-disk store resolution — see
+    TestAgyRetrieveMcpWiring).  But --no-intercept (passthrough) starts no
+    servers, so on a fresh config it registers nothing.
     """
 
     def test_agy_mcp_config_not_written_during_wrap_no_intercept(
@@ -1165,19 +1164,20 @@ class TestAgyLeanCtxMcpWiring:
 
 
 class TestAgyRetrieveMcpWiring:
-    """Headroom retrieve MCP: per-run loopback, reverted on teardown.
+    """Headroom retrieve MCP: persistent, local-store-backed, ledger-recorded.
 
-    The retrieve listener is an ephemeral PLAIN-HTTP loopback server started in
-    BOTH print and interactive mode (full parity); its port is registered as the
-    headroom MCP's HEADROOM_PROXY_URL, then REVERTED on teardown so no stale
-    pointer survives.
+    The retrieve entry is a stable ``headroom mcp serve`` server (no ephemeral
+    port; ``env={}`` — it resolves markers from the on-disk CCR store). Started
+    in BOTH print and interactive mode, it is registered PERSISTENTLY and
+    recorded in the install ledger (like Serena/CBM), NOT reverted on teardown,
+    so agy can cache and expose ``headroom_retrieve`` across sessions.
     """
 
-    def test_interactive_registers_then_reverts_retrieve_entry(
+    def test_interactive_registers_persistent_retrieve_entry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Interactive: headroom entry registered with the live loopback port
-        DURING the run, then reverted on teardown (no stale entry remains)."""
+        """Interactive: headroom entry registered DURING the run and PERSISTS
+        after teardown (ledger-recorded, resolves from the on-disk store)."""
         from headroom.mcp_registry.agy import AgyRegistrar
 
         _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
@@ -1209,20 +1209,21 @@ class TestAgyRetrieveMcpWiring:
         expected = resolve_headroom_command()
         assert live_spec.command == expected[0]
         assert live_spec.args == (*expected[1:], "mcp", "serve")
-        # It must point at the live loopback retrieve port (54323 from the stub),
-        # via HEADROOM_PROXY_URL on the headroom mcp serve child.
-        assert live_spec.env.get("HEADROOM_PROXY_URL") == "http://127.0.0.1:54323"
+        # Stable, port-independent spec: no ephemeral HEADROOM_PROXY_URL — the
+        # child resolves markers from the shared on-disk CCR store.
+        assert dict(live_spec.env) == {}
 
-        # After teardown the ephemeral entry MUST be gone (no dead pointer).
-        assert AgyRegistrar(home_dir=tmp_path).get_server("headroom") is None, (
-            "the per-run retrieve entry must be reverted on teardown"
+        # The persistent entry SURVIVES teardown (like Serena/CBM) so agy caches
+        # and exposes it next session.
+        assert AgyRegistrar(home_dir=tmp_path).get_server("headroom") is not None, (
+            "the persistent retrieve entry must survive teardown"
         )
 
-    def test_print_mode_registers_retrieve_entry(
+    def test_print_mode_registers_persistent_retrieve_entry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Print mode wires the retrieve MCP like interactive: a headroom entry
-        is live mid-run pointing at the loopback port, then reverted on teardown."""
+        """Print mode wires the retrieve MCP like interactive: a stable headroom
+        entry is live mid-run and PERSISTS after teardown."""
         from headroom.mcp_registry.agy import AgyRegistrar
 
         _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
@@ -1243,11 +1244,11 @@ class TestAgyRetrieveMcpWiring:
         assert result.exit_code == 0
         live_spec = seen["spec"]
         assert live_spec is not None, "print mode must register a headroom retrieve entry mid-run"
-        # Entry points at the live loopback retrieve port (54323 from the stub).
-        assert live_spec.env.get("HEADROOM_PROXY_URL") == "http://127.0.0.1:54323"
-        # Reverted on teardown: no stale pointer survives.
-        assert AgyRegistrar(home_dir=tmp_path).get_server("headroom") is None, (
-            "the per-run retrieve entry must be reverted on teardown"
+        # Stable, port-independent spec (on-disk store resolution).
+        assert dict(live_spec.env) == {}
+        # Persistent: survives teardown.
+        assert AgyRegistrar(home_dir=tmp_path).get_server("headroom") is not None, (
+            "the persistent retrieve entry must survive teardown"
         )
 
     def test_print_mode_starts_retrieve_listener(
@@ -1970,7 +1971,7 @@ class TestUnwrapAgyRemovesAllHeadroomConfig:
 
         Arrange a temp HOME with:
         - GEMINI.md containing a headroom-marked block (plus user content)
-        - AgyRegistrar config with the per-run "headroom" retrieve entry
+        - AgyRegistrar config with a ledger-recorded persistent "headroom" retrieve entry
         - AgyRegistrar config with a ledger-recorded serena entry
         - AgyRegistrar config with a ledger-recorded lean-ctx entry
         - AgyRegistrar config with a user-managed "my-tool" entry (no ledger)
@@ -1989,7 +1990,11 @@ class TestUnwrapAgyRemovesAllHeadroomConfig:
         from headroom.cli.wrap import _AGY_GEMINI_BLOCK_END, _AGY_GEMINI_BLOCK_START
         from headroom.mcp_registry.agy import AgyRegistrar
         from headroom.mcp_registry.base import ServerSpec
-        from headroom.mcp_registry.install import build_lean_ctx_spec, build_serena_spec
+        from headroom.mcp_registry.install import (
+            build_headroom_spec,
+            build_lean_ctx_spec,
+            build_serena_spec,
+        )
         from headroom.mcp_registry.ledger import record_install
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -2005,14 +2010,14 @@ class TestUnwrapAgyRemovesAllHeadroomConfig:
         # --- Arrange AgyRegistrar entries ---
         reg = AgyRegistrar(home_dir=tmp_path)
 
-        # Per-run "headroom" retrieve entry (left by a killed session).
-        headroom_spec = ServerSpec(
-            name="headroom",
-            command="headroom",
-            args=("mcp", "serve"),
-            env={"HEADROOM_PROXY_URL": "http://127.0.0.1:9999"},
-        )
+        # Persistent, ledger-recorded "headroom" retrieve entry (as wrap agy now
+        # installs it: stable spec, env={}, recorded in the ledger). Ledger-gated
+        # unwrap removes it because it is Headroom-owned. (A NON-ledgered headroom
+        # entry — e.g. a `headroom mcp install` fleet entry — is left in place;
+        # that path is covered by test_agy_retrieve_persistent.)
+        headroom_spec = build_headroom_spec()
         reg.register_server(headroom_spec)
+        record_install("agy", headroom_spec)
 
         # Headroom-installed serena entry (recorded in ledger).
         serena_spec = build_serena_spec("ide-assistant")
@@ -2052,7 +2057,7 @@ class TestUnwrapAgyRemovesAllHeadroomConfig:
         # --- Assert: AgyRegistrar entries removed ---
         reg2 = AgyRegistrar(home_dir=tmp_path)
         assert reg2.get_server("headroom") is None, (
-            "the per-run 'headroom' retrieve entry must be removed by unwrap"
+            "the ledger-recorded persistent 'headroom' retrieve entry must be removed by unwrap"
         )
         assert reg2.get_server("serena") is None, (
             "the Headroom-installed serena MCP entry must be removed by unwrap"

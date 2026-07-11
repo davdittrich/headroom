@@ -960,30 +960,29 @@ def _setup_tokensave_mcp_agy(registrar: Any, *, verbose: bool = False) -> bool:
     return False
 
 
-def _setup_headroom_retrieve_mcp_agy(
-    registrar: Any, retrieve_port: int, *, verbose: bool = False
-) -> bool:
-    """Register the headroom retrieve MCP with agy, verify-then-remove.
+def _setup_headroom_retrieve_mcp_agy(registrar: Any, *, verbose: bool = False) -> bool:
+    """Register the headroom retrieve MCP with agy PERSISTENTLY (mirrors CBM).
 
     The retrieve tool is an ``headroom mcp serve`` stdio child that resolves
-    ``[Retrieve more: hash=…]`` markers by calling the proxy's retrieve HTTP
-    endpoint.  Here we point it at the PLAIN-HTTP loopback retrieve listener
-    (``http://127.0.0.1:<retrieve_port>``) started for this run, which shares
-    the process-global compression cache the dispatch server populates.
+    ``[Retrieve more: hash=…]`` markers.  It resolves them from the shared
+    on-disk CCR store (``ccr_store.db``) FIRST — see
+    ``ccr.mcp_server._retrieve_content`` — so it needs no live proxy and no
+    per-run ephemeral port; the spec is stable and port-independent
+    (``build_headroom_spec()`` with the default URL yields ``env={}``).
 
-    The entry is smoke-verified (MCP ``initialize`` handshake); a *failing*
-    handshake means the tool is broken, so the entry is removed again so a
-    dead/hanging pointer can never persist in ``mcp_config.json``.
+    agy only surfaces tools from servers in its persistent per-tool cache, so
+    the entry is registered persistently and RECORDED in the install ledger
+    (like codebase-memory-mcp / Serena), NOT reverted on teardown.  That is what
+    lets agy discover, cache, and expose ``headroom_retrieve`` across sessions —
+    the exposure the h76.5 gate then checks before keeping ccr compression on.
 
-    Returns True iff a retrieve entry was registered AND survived the smoke
-    test (so the caller knows to revert it on teardown).  The URL is per-run
-    and ephemeral, so the caller MUST revert on teardown.
+    Returns True iff the entry is registered AND survives the smoke handshake.
     """
     from headroom.mcp_registry import build_headroom_spec
     from headroom.mcp_registry.base import RegisterStatus
+    from headroom.mcp_registry.ledger import clear_install, record_install
 
-    proxy_url = f"http://127.0.0.1:{retrieve_port}"
-    spec = build_headroom_spec(proxy_url)
+    spec = build_headroom_spec()
     result = registrar.register_server(spec, force=True)
     if result.status not in (RegisterStatus.REGISTERED, RegisterStatus.ALREADY):
         click.echo(
@@ -992,22 +991,76 @@ def _setup_headroom_retrieve_mcp_agy(
         return False
 
     if _smoke_verify_mcp_handshake(spec.command, list(spec.args), dict(spec.env)):
+        # Record on BOTH REGISTERED and ALREADY: a matching on-disk entry whose
+        # ledger record was lost (e.g. cleared by the old-agy print-mode purge)
+        # must be re-claimed as Headroom-owned so ledger-gated uninstall works.
+        # record_install upserts on spec.name, so this never double-counts.
+        record_install(registrar.name, spec)
         if verbose:
             click.echo(
-                f"  MCP retrieve tool: headroom MCP registered (loopback {proxy_url}) and handshake-verified."
+                "  MCP retrieve tool: headroom MCP registered persistently "
+                "(local-store resolution) and handshake-verified."
             )
         else:
-            click.echo("  MCP retrieve tool: headroom MCP wired (handshake verified).")
+            click.echo(
+                "  MCP retrieve tool: headroom MCP wired (persistent, handshake verified)."
+            )
         return True
 
+    # Handshake failed: remove the entry AND clear any ledger record so a broken
+    # pointer can never persist or masquerade as Headroom-owned.
     registrar.unregister_server("headroom")
+    clear_install(registrar.name, "headroom")
     click.echo(
         "  MCP retrieve tool: headroom MCP failed handshake — entry removed (agy left transport-only)."
     )
     return False
 
 
-def _maybe_warn_agy_ccr_downgrade(retrieve_registered: bool) -> None:
+def _ccr_backend_is_cross_process() -> bool:
+    """True unless the CCR store backend is process-local (``memory``).
+
+    The agy-spawned ``headroom mcp serve`` child resolves markers against the
+    CCR store. With ``HEADROOM_CCR_BACKEND=memory`` that store is a per-process
+    dict (compression_store.py ``_create_default_ccr_backend``), so the child
+    sees an empty store and cannot resolve the proxy's hashes — markers would
+    ship unrecoverable. Every other backend (default sqlite, redis, custom
+    entry points) is shared across processes. This is a PRODUCT guard on
+    ``WIRED``, not a test-only check.
+    """
+    return (os.environ.get("HEADROOM_CCR_BACKEND") or "").strip().lower() != "memory"
+
+
+def _agy_exposes_retrieve_tool(registrar: Any) -> bool:
+    """True iff agy will actually expose ``headroom_retrieve`` as a callable tool.
+
+    A successful wrap↔child ``initialize`` handshake is necessary but NOT
+    sufficient: agy only surfaces tools from servers in its persistent per-tool
+    cache (``<config_dir>/mcp/<server>/<tool>.json``, written *during* a session),
+    so an entry that is registered-then-reverted every run never enters that
+    cache and agy rejects the call with "Unknown tool: headroom_retrieve".
+
+    Positive exposure requires ALL of:
+      1. a live ``headroom`` entry in ``mcp_config.json`` (registrar.get_server),
+      2. an agy-written tool-cache file for ``headroom_retrieve``, and
+      3. a cross-process CCR backend (so the child can resolve hashes).
+
+    Anything else = UNVERIFIED → caller withholds ``WIRED`` → ccr downgrades to
+    lossless (fail-safe; never ships unrecoverable compression). The cache is a
+    *previous* session's artifact, so pairing it with the live config entry
+    avoids a stale-cache false positive.
+    """
+    from headroom.ccr.mcp_server import CCR_TOOL_NAME
+
+    if registrar.get_server("headroom") is None:
+        return False
+    tool_cache = registrar.config_dir / "mcp" / "headroom" / f"{CCR_TOOL_NAME}.json"
+    if not tool_cache.is_file():
+        return False
+    return _ccr_backend_is_cross_process()
+
+
+def _maybe_warn_agy_ccr_downgrade(retrieve_wired: bool) -> None:
     """Loudly warn when ccr mode silently downgraded to lossless this run.
 
     Fires iff ``headroom.proxy.handlers.gemini._resolve_agy_fr_mode`` would
@@ -1027,16 +1080,21 @@ def _maybe_warn_agy_ccr_downgrade(retrieve_registered: bool) -> None:
     not share this venv. A false negative here (mcp present in the parent,
     absent in the child) still degrades gracefully to the generic
     handshake-failure branch.
+
+    ``retrieve_wired`` is the EXPOSURE-gated signal (handshake AND agy actually
+    caching the tool), not the bare handshake result -- so this also fires when
+    the child registers/handshakes fine but agy has not yet exposed the tool.
     """
     from headroom.proxy.handlers.gemini import _requested_agy_fr_mode
 
-    if _requested_agy_fr_mode() != "ccr" or retrieve_registered:
+    if _requested_agy_fr_mode() != "ccr" or retrieve_wired:
         return
 
     if _module_available("mcp"):
         cause = (
-            "the retrieve MCP failed to register or complete its handshake "
-            "(see the 'MCP retrieve tool:' line above)"
+            "the retrieve MCP did not register/handshake, or agy has not yet "
+            "exposed it as a callable tool (see the 'MCP retrieve tool:' line "
+            "above)"
         )
         remedy = "Fix the failure shown on that line, then re-run `headroom wrap agy`."
     else:
@@ -1054,19 +1112,6 @@ def _maybe_warn_agy_ccr_downgrade(retrieve_registered: bool) -> None:
     click.echo(f"  ⚠️  Cause: {cause}.")
     click.echo(f"  ⚠️  Fix:   {remedy}")
     click.echo()
-
-
-def _revert_headroom_retrieve_mcp_agy(registrar: Any) -> None:
-    """Remove the per-run headroom retrieve MCP entry from agy (best-effort).
-
-    The retrieve URL is per-run and ephemeral, so the entry must never outlive
-    the listener.  Idempotent and exception-safe so it can run from both the
-    normal finally path and the SIGTERM handler.
-    """
-    try:
-        registrar.unregister_server("headroom")
-    except Exception:  # noqa: BLE001
-        pass
 
 
 # Env vars Headroom's init/wrap inject into Claude settings.json; unwrap removes
@@ -1534,6 +1579,24 @@ def _remove_headroom_installed_lean_ctx_mcp(registrar: Any) -> str:
     return "failed"
 
 
+def _remove_headroom_installed_retrieve_mcp(registrar: Any) -> str:
+    """Remove the headroom retrieve MCP only if the ledger proves Headroom installed it.
+
+    Mirrors ``_remove_headroom_installed_cbm_mcp``: the retrieve entry is now a
+    persistent, ledger-recorded server, so cooperative uninstall is ledger-gated
+    (never clobber a user's own "headroom" entry) and clears the ledger record.
+    """
+    from headroom.mcp_registry.ledger import clear_install, headroom_installed_matching
+
+    current = registrar.get_server("headroom")
+    if not headroom_installed_matching(registrar.name, current):
+        return "not_headroom_owned"
+    if registrar.unregister_server("headroom"):
+        clear_install(registrar.name, "headroom")
+        return "removed"
+    return "failed"
+
+
 def _disable_serena_mcp(
     registrar: Any, *, verbose: bool = False, reason: str = "--no-serena"
 ) -> None:
@@ -1776,11 +1839,18 @@ def _purge_agy_mcp_entries(registrar: Any) -> None:
     in mcp_config.json.  Every call here is idempotent -- a no-op when the
     entry is already absent -- so this is safe to call unconditionally.
     """
+    from headroom.mcp_registry.ledger import clear_install
+
     _disable_tokensave_mcp(registrar)
     _disable_serena_mcp(registrar, reason="agy print-mode MCP preflight failed")
     _remove_headroom_installed_lean_ctx_mcp(registrar)
     registrar.unregister_server(_CBM_MCP_SERVER_NAME)
+    # headroom retrieve is now a ledger-recorded PERSISTENT entry; old agy hangs
+    # in print mode on ANY MCP entry, so purge it AND clear its ledger record so
+    # the persistent-skip on the next compatible-agy run does not treat the now
+    # absent entry as still-installed. Re-registration happens on that next wrap.
     registrar.unregister_server("headroom")
+    clear_install(registrar.name, "headroom")
 
 
 def _setup_code_graph(verbose: bool = False) -> bool:
@@ -7414,23 +7484,27 @@ def agy(
 
             # ------------------------------------------------------------------
             # Headroom retrieve MCP.  The retrieve tool is an ``headroom mcp serve``
-            # stdio child that resolves ``[Retrieve more: hash=…]`` markers by calling
-            # the proxy's retrieve HTTP endpoint.  It points at the PLAIN-HTTP loopback
-            # retrieve listener started above (per-run, ephemeral port), which shares
-            # the process-global compression cache the dispatch server populates.
-            # Because the URL is ephemeral the entry MUST be reverted on teardown —
-            # never leave a dead pointer in mcp_config.json.  Wired in ALL modes
-            # (agy 1.0.16 no longer hangs on MCP in print mode).
+            # stdio child that resolves ``[Retrieve more: hash=…]`` markers from the
+            # shared on-disk CCR store.  It is registered PERSISTENTLY and recorded
+            # in the install ledger (like codebase-memory-mcp / Serena) so agy can
+            # cache and expose it across sessions — it is NOT reverted on teardown.
+            # Wired in all print-mode-capable agy versions.
             # ------------------------------------------------------------------
             if servers is not None and servers.retrieve_port is not None:
                 retrieve_registered = _setup_headroom_retrieve_mcp_agy(
-                    AgyRegistrar(), servers.retrieve_port, verbose=False
+                    AgyRegistrar(), verbose=False
                 )
             else:
-                # Purge any stale "headroom" retrieve entry left by a previously
-                # SIGKILLed session pointing at a now-dead ephemeral port.
-                # Idempotent — no-op when the entry is absent.
-                AgyRegistrar().unregister_server("headroom")
+                # No in-process servers this run.  Leave a ledger-recorded
+                # PERSISTENT headroom entry in place (it resolves from the on-disk
+                # store, no live port required); only purge a stale NON-ledgered
+                # entry left by a pre-persistent SIGKILLed session (its ephemeral
+                # proxy URL is dead).  Idempotent — no-op when absent.
+                from headroom.mcp_registry.ledger import headroom_installed_matching
+
+                _reg = AgyRegistrar()
+                if not headroom_installed_matching(_reg.name, _reg.get_server("headroom")):
+                    _reg.unregister_server("headroom")
 
         else:
             # Print-mode MCP preflight failed: agy is older than
@@ -7464,14 +7538,23 @@ def agy(
         # runs in THIS process, so the signal must live in os.environ (mirrors
         # HEADROOM_AGY_INBOX_EMIT above); also mirror it into the child env.
         # HEADROOM_AGY_FR_MODE is already inherited via os.environ.copy() above.
-        if retrieve_registered:
+        #
+        # WIRED requires POSITIVE agy exposure, not just a successful handshake:
+        # the handshake proves wrap can spawn the child, but agy only surfaces
+        # tools it has cached, so a registered-then-reverted entry is rejected as
+        # "Unknown tool: headroom_retrieve". Gate WIRED on the exposure signal so
+        # ccr never ships unrecoverable markers on a false-positive handshake.
+        retrieve_exposed = retrieve_registered and _agy_exposes_retrieve_tool(
+            AgyRegistrar()
+        )
+        if retrieve_exposed:
             os.environ["HEADROOM_AGY_RETRIEVE_WIRED"] = "1"
             env["HEADROOM_AGY_RETRIEVE_WIRED"] = "1"
         else:
             os.environ.pop("HEADROOM_AGY_RETRIEVE_WIRED", None)
             env.pop("HEADROOM_AGY_RETRIEVE_WIRED", None)
 
-        _maybe_warn_agy_ccr_downgrade(retrieve_registered)
+        _maybe_warn_agy_ccr_downgrade(retrieve_exposed)
 
         # ------------------------------------------------------------------
         # Install signal handlers so the terminator/dispatch are always torn
@@ -7480,9 +7563,9 @@ def agy(
         # so agy itself owns Ctrl-C; SIGTERM stops our servers then exits via
         # SystemExit(143) so the finally below also runs.
         def _agy_sigterm(_signum: int | None = None, _frame: Any = None) -> None:
-            if retrieve_registered:
-                _revert_headroom_retrieve_mcp_agy(AgyRegistrar())
-            # code_graph_registered: persistent entry (like Serena), NOT reverted on exit.
+            # retrieve + code_graph are persistent ledger-recorded entries (like
+            # Serena), NOT reverted on exit — they resolve from the on-disk store
+            # and must survive so agy can cache/expose them next session.
             _stop_agy_servers(servers)
             cleanup()
             # Flush compression summary on kill (idempotent — won't double-print
@@ -7518,11 +7601,9 @@ def agy(
             click.echo(f"Error: agy MITM transport failed to start: {e}", err=True)
         raise SystemExit(1) from e
     finally:
-        # Revert the per-run retrieve MCP entry FIRST — its URL points at the
-        # ephemeral loopback listener we are about to stop, so leaving it would
-        # leave a dead pointer in mcp_config.json that hangs the next agy run.
-        if retrieve_registered:
-            _revert_headroom_retrieve_mcp_agy(AgyRegistrar())
+        # The headroom retrieve entry is PERSISTENT (ledger-recorded, resolves
+        # from the on-disk store) — like Serena/CBM it is intentionally NOT
+        # reverted here so agy can cache and expose it on the next session.
         # Restore prior signal handlers so they don't leak into the click process.
         if old_sigint is not None:
             signal.signal(signal.SIGINT, old_sigint)
@@ -7569,15 +7650,21 @@ def unwrap_agy() -> None:
     else:
         click.echo("  GEMINI.md: no headroom block found (already clean)")
 
-    # 2. Unregister headroom MCP retrieve entry. wrap agy registers this
-    #    per-run (interactive mode) pointing at an ephemeral loopback retrieve
-    #    listener and reverts it on exit; this removal also clears a stale
-    #    entry left by a killed session or the 'headroom mcp install' path.
+    # 2. Remove the headroom MCP retrieve entry only if the ledger proves
+    #    'wrap agy' installed it. It is now a persistent, ledger-recorded server,
+    #    so cooperative uninstall is ledger-gated like Serena/lean-ctx/CBM.
+    #    BEHAVIOR: a 'headroom mcp install' fleet entry is NOT ledger-recorded by
+    #    that path, so unwrap now leaves it in place (respecting the deliberate
+    #    fleet-wide install) instead of clobbering it. A stable persistent entry
+    #    is harmless to leave — it resolves from the on-disk store, never hangs.
     agy_reg = AgyRegistrar()
-    if agy_reg.unregister_server("headroom"):
+    retrieve_status = _remove_headroom_installed_retrieve_mcp(agy_reg)
+    if retrieve_status == "removed":
         click.echo("  Removed Headroom MCP retrieve tool from agy.")
-    else:
-        click.echo("  Headroom MCP retrieve tool was not registered in agy.")
+    elif retrieve_status == "failed":
+        click.echo("  Headroom MCP retrieve tool matched Headroom ledger but could not be removed.")
+    else:  # not_headroom_owned (absent, or a user/fleet-managed entry left untouched)
+        click.echo("  Headroom MCP retrieve tool left as-is (not 'wrap agy'-installed).")
 
     # 3. Remove Serena MCP only if the ledger proves Headroom installed it;
     #    a user-managed 'serena' entry is left untouched.

@@ -46,7 +46,7 @@ class TestMaybeWarnAgyCcrDowngrade:
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.delenv("HEADROOM_AGY_FR_MODE", raising=False)
-        _maybe_warn_agy_ccr_downgrade(retrieve_registered=True)
+        _maybe_warn_agy_ccr_downgrade(retrieve_wired=True)
         out = capsys.readouterr().out
         assert out == ""
 
@@ -54,7 +54,7 @@ class TestMaybeWarnAgyCcrDowngrade:
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setenv("HEADROOM_AGY_FR_MODE", "lossless")
-        _maybe_warn_agy_ccr_downgrade(retrieve_registered=False)
+        _maybe_warn_agy_ccr_downgrade(retrieve_wired=False)
         out = capsys.readouterr().out
         assert out == ""
 
@@ -64,7 +64,7 @@ class TestMaybeWarnAgyCcrDowngrade:
         # ccr is now the default (WU-CCRDEFAULT): unset + not-wired downgrades,
         # so the warning must fire (previously silent when lossless was default).
         monkeypatch.delenv("HEADROOM_AGY_FR_MODE", raising=False)
-        _maybe_warn_agy_ccr_downgrade(retrieve_registered=False)
+        _maybe_warn_agy_ccr_downgrade(retrieve_wired=False)
         out = capsys.readouterr().out
         assert "DISABLED" in out
 
@@ -72,7 +72,7 @@ class TestMaybeWarnAgyCcrDowngrade:
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setenv("HEADROOM_AGY_FR_MODE", "ccr")
-        _maybe_warn_agy_ccr_downgrade(retrieve_registered=False)
+        _maybe_warn_agy_ccr_downgrade(retrieve_wired=False)
         out = capsys.readouterr().out
         assert "DISABLED" in out
 
@@ -82,7 +82,7 @@ class TestMaybeWarnAgyCcrDowngrade:
         # Mirrors _requested_agy_fr_mode's fallback-to-ccr for garbage values:
         # invalid -> ccr default -> not-wired -> warns.
         monkeypatch.setenv("HEADROOM_AGY_FR_MODE", "bogus")
-        _maybe_warn_agy_ccr_downgrade(retrieve_registered=False)
+        _maybe_warn_agy_ccr_downgrade(retrieve_wired=False)
         out = capsys.readouterr().out
         assert "DISABLED" in out
 
@@ -99,7 +99,7 @@ class TestMaybeWarnAgyCcrDowngrade:
         monkeypatch.setenv("HEADROOM_AGY_FR_MODE", "ccr")
         # False ONLY for "mcp": probing any other name would flip the branch.
         monkeypatch.setattr("headroom.cli.wrap._module_available", lambda name: name != "mcp")
-        _maybe_warn_agy_ccr_downgrade(retrieve_registered=False)
+        _maybe_warn_agy_ccr_downgrade(retrieve_wired=False)
         out = capsys.readouterr().out
         assert "headroom-ai[proxy]" in out
         assert "pip install mcp" in out
@@ -114,12 +114,15 @@ class TestMaybeWarnAgyCcrDowngrade:
         monkeypatch.setenv("HEADROOM_AGY_FR_MODE", "ccr")
         # True ONLY for "mcp": probing any other name would flip the branch.
         monkeypatch.setattr("headroom.cli.wrap._module_available", lambda name: name == "mcp")
-        _maybe_warn_agy_ccr_downgrade(retrieve_registered=False)
+        _maybe_warn_agy_ccr_downgrade(retrieve_wired=False)
         out = capsys.readouterr().out
         # The agy path runs in-process servers and writes NO proxy.log; the
         # handshake failure detail is the "MCP retrieve tool:" console line.
         assert "MCP retrieve tool:" in out
-        assert "register or complete its handshake" in out
+        # Cause text broadened for the exposure gate: handshake-OK-but-uncached
+        # is now a distinct downgrade reason alongside register/handshake failure.
+        assert "did not register/handshake" in out
+        assert "exposed it as a callable tool" in out
         assert "proxy.log" not in out
         assert "headroom-ai[proxy]" not in out
 

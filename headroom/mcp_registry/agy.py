@@ -44,6 +44,17 @@ class AgyRegistrar(MCPRegistrar):
         home = home_dir if home_dir is not None else Path.home()
         self._config_file: Path = home / _AGY_CONFIG_RELPATH
 
+    @property
+    def config_dir(self) -> Path:
+        """Directory holding ``mcp_config.json`` and agy's per-tool cache.
+
+        agy persists a discovered-tool cache alongside the config file at
+        ``<config_dir>/mcp/<server>/<tool>.json``; exposing the directory from
+        the single ``home_dir`` seam lets callers probe that cache without
+        re-deriving the path (and keeps the test seam consistent).
+        """
+        return self._config_file.parent
+
     # ------------------------------------------------------------------
     # MCPRegistrar interface
     # ------------------------------------------------------------------
