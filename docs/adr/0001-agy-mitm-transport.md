@@ -336,6 +336,15 @@ tool. Key properties:
   re-compressed into the same marker and the model would retrieve it forever. This mirrors
   the retrieve-call suppression the OpenAI/Anthropic paths already do (keyed by hash, since
   agy has no call_id).
+- **Envelope exemption (name-independent).** The hash-in-args exemption above recognizes the
+  retrieve call by name/args; on agy the retrieve-result functionResponse carries an opaque
+  name and args of just `{hash}`, so that path misses it and the retrieve *output*
+  (`{hash, source, original_content, …}`) would itself re-compress into a marker the model
+  re-retrieves. The compressor therefore also detects the retrieve-result envelope by
+  **content** — value-bearing `hash` (24-hex) + `source` (`local`/`proxy`) anchors,
+  independent of tool name — and never compresses that leaf (L1), plus adds its resolved hash
+  to the retrieved set so the resent original is exempt too (L2). Verified live: one retrieval
+  per hash, no thrash.
 - **Default + escape hatch.** `HEADROOM_AGY_FR_MODE` selects `ccr` (default, real savings)
   or `lossless` (a safety floor that never emits markers). The WU4 efficacy trial gated the
   default: ccr ships because it delivers material savings while `headroom_retrieve` is wired;
