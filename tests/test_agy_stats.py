@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -19,6 +19,7 @@ from headroom.providers.agy.stats import (
     AgySessionStats,
     FailOpenWarnHandler,
     _format_summary,
+    _get_compression_stats,
     install_fail_open_handler,
     remove_fail_open_handler,
 )
@@ -153,6 +154,42 @@ class TestInstallRemoveHandler:
         h = install_fail_open_handler()
         remove_fail_open_handler(h)
         assert logger.handlers == original_handlers
+
+    def test_remove_none_handler_returns_without_error(self) -> None:
+        """Explicit None early-return (stats.py:221-222): no-op, no exception."""
+        logger = logging.getLogger(_GEMINI_LOGGER)
+        before = list(logger.handlers)
+        result = remove_fail_open_handler(None)
+        assert result is None
+        assert list(logger.handlers) == before
+
+    def test_remove_handler_swallows_removehandler_exception(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """removeHandler raising (stats.py:225-226) is swallowed, not propagated."""
+        handler = install_fail_open_handler()
+        logger = logging.getLogger(_GEMINI_LOGGER)
+
+        calls: list[logging.Handler] = []
+
+        def _raise(_h: logging.Handler) -> None:
+            calls.append(_h)
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(logger, "removeHandler", _raise)
+        try:
+            remove_fail_open_handler(handler)  # must not raise despite removeHandler blowing up
+            # Prove the raising removeHandler was ACTUALLY invoked — otherwise the
+            # swallow branch (stats.py:225-226) is untested (a mutant that never
+            # calls removeHandler would leave calls == [] and fail here).
+            assert calls == [handler]
+            # And the handler is still attached (our stub raised before real removal).
+            assert handler in logger.handlers
+        finally:
+            monkeypatch.undo()
+            logger.removeHandler(handler)  # actually detach; avoid cross-test leakage
+
+        assert handler not in logger.handlers
 
 
 # ---------------------------------------------------------------------------
@@ -367,3 +404,35 @@ class TestAgySessionStats:
 
         captured = capsys.readouterr()
         assert "2 fail-open" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# _get_compression_stats — lazy-import delegation to the compression store
+# ---------------------------------------------------------------------------
+
+
+class TestGetCompressionStats:
+    """_get_compression_stats (stats.py:82-87) delegates to
+    get_compression_store().get_stats(), importing the store lazily at call
+    time (the import happens inside the function body, not at module load)."""
+
+    def test_delegates_to_compression_store_get_stats(self) -> None:
+        fake_stats: dict[str, Any] = {
+            "entry_count": 7,
+            "max_entries": 1000,
+            "total_original_tokens": 1234,
+            "total_compressed_tokens": 567,
+        }
+        fake_store = MagicMock()
+        fake_store.get_stats.return_value = fake_stats
+
+        with patch(
+            "headroom.cache.compression_store.get_compression_store",
+            return_value=fake_store,
+        ) as mock_get_store:
+            result = _get_compression_stats()
+
+        mock_get_store.assert_called_once_with()
+        fake_store.get_stats.assert_called_once_with()
+        assert result == fake_stats
+        assert result["entry_count"] == 7
