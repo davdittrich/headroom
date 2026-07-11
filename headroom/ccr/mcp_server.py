@@ -490,7 +490,11 @@ class HeadroomMCPServer:
             try:
                 result = await self._retrieve_via_proxy(hash_key)
                 if "error" not in result:
-                    result["source"] = "proxy"
+                    # headroom-8tm WU-2b: `source` as the LEADING key (before the
+                    # large `original_content`) so the agy FR compressor's
+                    # content-based envelope exemption anchors survive truncation.
+                    # Key-order only -- same keys/values.
+                    result = {"source": "proxy", **result}
                     self._stats.record_retrieval(hash_key)
                     return result
             except Exception:

@@ -90,6 +90,67 @@ def _scan_hex_hashes(value: Any, hashes: set[str]) -> None:
         hashes.update(_RETRIEVE_HASH_RE.findall(value.lower()))
 
 
+# WU2-A follow-up (headroom-8tm): agy assigns the headroom_retrieve RESULT
+# functionResponse a name that matches neither is_headroom_retrieve_name nor
+# _args_mention_retrieve (its call args are just {"hash": ...}). So the
+# name-based fr exemption AND the functionCall hash-collection both MISS agy's
+# retrieve responses -- the resolved envelope re-compresses into a marker every
+# turn (model re-retrieves it, L1) AND the ORIGINAL leaf keeps re-retrieving
+# (the 236x, L2). We detect the envelope by CONTENT, name-independently, and use
+# it to drive both exemptions. Envelope = json.dumps({"hash": <24hex>,
+# "source": "local"|"proxy", "original_content": ...}, indent=2) (see
+# ccr.mcp_server._retrieve_content); hash + source are LEADING value-bearing
+# keys (a source read carries `"hash": hash_key` -- a variable, no 24-hex
+# literal -- so it does NOT match), so detection survives a
+# `saved to file://` original_content replacement.
+_CCR_ENVELOPE_HASH_RE = re.compile(r'"hash"\s*:\s*"([0-9a-f]{24})"(?![0-9a-f])')
+_CCR_ENVELOPE_SOURCE_RE = re.compile(r'"source"\s*:\s*"(?:local|proxy)"')
+
+
+def _ccr_envelope_hash(value: Any) -> str | None:
+    """Resolved hash if ``value`` is a headroom_retrieve result envelope, else None.
+
+    Name-independent detection of the ``ccr.mcp_server._retrieve_content``
+    envelope in either the dict form or the JSON-as-text form agy renders,
+    anchored on the two LEADING value-bearing keys (``hash`` 24-hex + ``source``
+    local|proxy).
+    """
+    if isinstance(value, dict):
+        h = value.get("hash")
+        if (
+            isinstance(h, str)
+            and len(h) == _FR_CCR_HASH_LEN
+            and all(c in "0123456789abcdef" for c in h)
+            and value.get("source") in ("local", "proxy")
+        ):
+            return h
+        return None
+    if isinstance(value, str):
+        m = _CCR_ENVELOPE_HASH_RE.search(value)
+        if m is not None and _CCR_ENVELOPE_SOURCE_RE.search(value) is not None:
+            return m.group(1)
+    return None
+
+
+def _scan_envelope_hashes(value: Any, hashes: set[str]) -> None:
+    """Collect resolved hashes from any headroom_retrieve envelope in ``value``.
+
+    L2 (headroom-8tm): the envelope carries the hash the model just retrieved;
+    adding it to ``retrieved_hashes`` exempts the ORIGINAL leaf agy resends
+    (via the existing exemption in ``_walk_fr_compress``).
+    """
+    h = _ccr_envelope_hash(value)
+    if h is not None:
+        hashes.add(h)
+        return  # envelope found; its original_content is resolved bytes, not another envelope
+    if isinstance(value, dict):
+        for v in value.values():
+            _scan_envelope_hashes(v, hashes)
+    elif isinstance(value, list):
+        for v in value:
+            _scan_envelope_hashes(v, hashes)
+
+
 def _requested_agy_fr_mode() -> str:
     """Normalize the REQUESTED functionResponse mode from the environment.
 
@@ -214,13 +275,19 @@ def _collect_retrieved_hashes(contents: list[dict]) -> set[str]:
             if not isinstance(part, dict):
                 continue
             fc = part.get("functionCall")
-            if not isinstance(fc, dict):
-                continue
-            name = fc.get("name", "")
-            args = fc.get("args") or {}
-            if not (is_headroom_retrieve_name(name) or _args_mention_retrieve(args)):
-                continue
-            _scan_hex_hashes(args, hashes)
+            if isinstance(fc, dict):
+                name = fc.get("name", "")
+                args = fc.get("args") or {}
+                if is_headroom_retrieve_name(name) or _args_mention_retrieve(args):
+                    _scan_hex_hashes(args, hashes)
+            # L2 (headroom-8tm): agy's opaque retrieve fr name defeats the
+            # functionCall-based collection above, so recover the resolved hash
+            # from the retrieve-result envelope the model already received --
+            # the ORIGINAL leaf agy resends then hits the exemption in
+            # ``_walk_fr_compress``.
+            fr = part.get("functionResponse")
+            if isinstance(fr, dict):
+                _scan_envelope_hashes(fr.get("response"), hashes)
     return hashes
 
 
@@ -244,6 +311,9 @@ def _walk_fr_compress(
     returns ``value`` for convenient reassignment.
     """
     if isinstance(value, dict):
+        if _ccr_envelope_hash(value) is not None:
+            stats["fr_envelope_exempt"] = stats.get("fr_envelope_exempt", 0) + 1
+            return value  # L1: headroom_retrieve envelope -- never re-compress (headroom-8tm)
         for k, v in value.items():
             value[k] = _walk_fr_compress(
                 v,
@@ -276,6 +346,9 @@ def _walk_fr_compress(
             leaf_tokens = tokenizer.count_text(value)
             if leaf_tokens < floor:
                 return value
+            if _ccr_envelope_hash(value) is not None:
+                stats["fr_envelope_exempt"] = stats.get("fr_envelope_exempt", 0) + 1
+                return value  # L1: retrieve envelope as text -- never re-compress (headroom-8tm)
             hash_key = default_ccr_hash(value)
             if hash_key in retrieved_hashes:
                 return value  # exempt: model already retrieved this hash (live_zone.rs parity)
@@ -337,7 +410,7 @@ def compress_function_response_leaves(
     the leaves that were actually compressed.
     """
     marker_body_tokens, floor = _fr_marker_tokens_and_floor(tokenizer)
-    stats: dict[str, int] = {"before": 0, "after": 0, "leaves": 0}
+    stats: dict[str, int] = {"before": 0, "after": 0, "leaves": 0, "fr_envelope_exempt": 0}
     retrieved_hashes = _collect_retrieved_hashes(contents)
     for content in contents:
         if not isinstance(content, dict):
@@ -367,4 +440,9 @@ def compress_function_response_leaves(
                 stats,
                 retrieved_hashes,
             )
+    if stats["fr_envelope_exempt"]:
+        logger.info(
+            "agy FR: exempted %d headroom_retrieve envelope leaf(s) from re-compression",
+            stats["fr_envelope_exempt"],
+        )
     return stats["before"], stats["after"], stats["leaves"]
