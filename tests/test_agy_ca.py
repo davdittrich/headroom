@@ -24,8 +24,13 @@ from headroom.proxy.agy_ca import (
     _assert_perms,
     _cert_near_expiry,
     _collect_corporate_ca_pems,
+    _detect_system_bundle,
     _is_ca_cert,
+    _load_via_mkstemp,
+    _not_in_os_trust,
     _parse_ca_certs_from_pem,
+    _system_trust_pem,
+    _write_all_fd,
     _windows_trust_pem,
     build_combined_bundle,
     ensure_root_ca,
@@ -963,3 +968,334 @@ def test_write_secure_uses_os_replace(tmp_path: Path, monkeypatch: pytest.Monkey
 
     assert replace_calls, "os.replace must have been called by _write_secure"
     assert dest.read_bytes() == b"hello"
+
+
+# ---------------------------------------------------------------------------
+# _assert_perms: raises on mismatched mode (line 92)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits not enforceable on Windows")
+def test_assert_perms_raises_on_wrong_mode(tmp_path: Path) -> None:
+    p = tmp_path / "wrong-perms.bin"
+    p.write_bytes(b"x")
+    p.chmod(0o644)
+    with pytest.raises(PermissionError, match="Permission check failed"):
+        _assert_perms(p, 0o600)
+
+
+# ---------------------------------------------------------------------------
+# _not_in_os_trust: raises for a path under a trust root (line 139)
+# ---------------------------------------------------------------------------
+
+
+def test_not_in_os_trust_raises_for_matching_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trust_root = tmp_path / "trust-root"
+    monkeypatch.setattr(
+        "headroom.proxy.agy_ca._OS_TRUST_PATHS",
+        (str(trust_root),),
+    )
+    bad_path = trust_root / "ca.crt"
+    with pytest.raises(RuntimeError, match="inside OS trust path"):
+        _not_in_os_trust(bad_path)
+
+
+# ---------------------------------------------------------------------------
+# _is_ca_cert: ExtensionNotFound handling (lines 206-207)
+# ---------------------------------------------------------------------------
+
+
+def test_is_ca_cert_false_when_basic_constraints_missing() -> None:
+    """A cert with no BasicConstraints extension must be treated as non-CA."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "no-bc")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=365))
+        .sign(key, hashes.SHA256())
+    )
+    assert _is_ca_cert(cert) is False
+
+
+# ---------------------------------------------------------------------------
+# _detect_system_bundle: candidate-loop fallback (line 225->223)
+# ---------------------------------------------------------------------------
+
+
+def test_detect_system_bundle_skips_missing_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing first candidate is skipped; the next existing one wins."""
+    missing = tmp_path / "does-not-exist.crt"
+    real_bundle = _fake_system_bundle(tmp_path)
+    monkeypatch.setattr(
+        "headroom.proxy.agy_ca._SYSTEM_BUNDLE_CANDIDATES",
+        (str(missing), str(real_bundle)),
+    )
+    result = _detect_system_bundle()
+    assert result == real_bundle
+
+
+# ---------------------------------------------------------------------------
+# _windows_trust_pem: a single bad-DER entry is skipped, not fatal (lines 248-250)
+# ---------------------------------------------------------------------------
+
+
+def test_windows_trust_pem_skips_bad_der_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ssl
+
+    ca_pem = _make_cert(is_ca=True)
+    ca_cert = x509.load_pem_x509_certificate(ca_pem)
+    ca_der = ca_cert.public_bytes(serialization.Encoding.DER)
+    bad_der = b"not-a-real-der-cert"
+
+    def fake_enum(store: str) -> list[tuple[bytes, str, bool]]:
+        if store == "ROOT":
+            return [(bad_der, "x509_asn", True), (ca_der, "x509_asn", True)]
+        return []
+
+    monkeypatch.setattr("ssl.enum_certificates", fake_enum, raising=False)
+
+    original_der_to_pem = ssl.DER_cert_to_PEM_cert
+
+    def fake_der_to_pem(der: bytes) -> str:
+        if der == bad_der:
+            raise ValueError("simulated malformed DER")
+        return original_der_to_pem(der)
+
+    monkeypatch.setattr("ssl.DER_cert_to_PEM_cert", fake_der_to_pem)
+
+    result = _windows_trust_pem()
+    marker = b"-----BEGIN CERTIFICATE-----"
+    present = {
+        x509.load_pem_x509_certificate(marker + block).serial_number
+        for block in result.split(marker)[1:]
+    }
+    assert ca_cert.serial_number in present, "a sibling bad-DER entry must not drop the good cert"
+
+
+# ---------------------------------------------------------------------------
+# _system_trust_pem: falls back to the Windows cert store (line 280)
+# ---------------------------------------------------------------------------
+
+
+def test_system_trust_pem_falls_back_to_windows_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("headroom.proxy.agy_ca._SYSTEM_BUNDLE_CANDIDATES", ())
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    ca_pem = _make_cert(is_ca=True)
+    ca_cert = x509.load_pem_x509_certificate(ca_pem)
+    ca_der = ca_cert.public_bytes(serialization.Encoding.DER)
+
+    def fake_enum(store: str) -> list[tuple[bytes, str, bool]]:
+        return [(ca_der, "x509_asn", True)] if store == "ROOT" else []
+
+    monkeypatch.setattr("ssl.enum_certificates", fake_enum, raising=False)
+
+    pem_bytes, source = _system_trust_pem()
+    assert source == "windows-cert-store"
+    marker = b"-----BEGIN CERTIFICATE-----"
+    present = {
+        x509.load_pem_x509_certificate(marker + block).serial_number
+        for block in pem_bytes.split(marker)[1:]
+    }
+    assert ca_cert.serial_number in present
+
+
+# ---------------------------------------------------------------------------
+# _parse_ca_certs_from_pem: PEM block missing its END marker is skipped (line 296)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_skips_pem_block_missing_end_marker() -> None:
+    good_pem = _make_cert(is_ca=True)
+    truncated = b"-----BEGIN CERTIFICATE-----\nMIIBnotcompletenoendmarkerhere\n"
+    combined = truncated + good_pem
+    results = _parse_ca_certs_from_pem(combined)
+    assert len(results) == 1
+    cert = x509.load_pem_x509_certificate(results[0])
+    assert _is_ca_cert(cert) is True
+
+
+# ---------------------------------------------------------------------------
+# ensure_root_ca / build_combined_bundle: Path.home() default (lines 367 & 461)
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_root_ca_defaults_to_home_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _, cert, key_path, cert_path = ensure_root_ca()
+    assert key_path == tmp_path / ".headroom" / "ca" / _CA_KEY_NAME
+    assert cert_path.exists()
+    assert _is_ca_cert(cert)
+
+
+def test_build_combined_bundle_defaults_to_home_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sys_bundle = _fake_system_bundle(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "headroom.proxy.agy_ca._SYSTEM_BUNDLE_CANDIDATES",
+        (str(sys_bundle),),
+    )
+    bundle_path = build_combined_bundle(corp_env_vars=())
+    assert bundle_path == tmp_path / ".headroom" / _BUNDLE_NAME
+    assert bundle_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# ensure_root_ca: corrupt CERT (not key) → regenerate (lines 383-385)
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_root_ca_corrupt_cert_regenerates(tmp_path: Path) -> None:
+    """Valid key + corrupt cert file → ensure_root_ca regenerates, not raises."""
+    _, cert1, key_path, cert_path = ensure_root_ca(base_dir=tmp_path)
+
+    cert_path.write_bytes(
+        b"-----BEGIN CERTIFICATE-----\nGARBAGE\n-----END CERTIFICATE-----\n"
+    )
+    cert_path.chmod(0o600)
+
+    _, cert2, _, _ = ensure_root_ca(base_dir=tmp_path)
+    assert cert2.serial_number != cert1.serial_number, (
+        "corrupt cert must trigger regeneration (event=ca_load_failed), yielding a new cert"
+    )
+
+
+# ---------------------------------------------------------------------------
+# build_combined_bundle: missing trailing newline on system bundle (line 474)
+# ---------------------------------------------------------------------------
+
+
+def test_bundle_appends_newline_when_system_pem_missing_trailing_newline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sys_pem_no_nl = _make_cert(is_ca=True).rstrip(b"\n")
+    assert not sys_pem_no_nl.endswith(b"\n")
+    sys_bundle = tmp_path / "system-ca-bundle.pem"
+    sys_bundle.write_bytes(sys_pem_no_nl)
+    monkeypatch.setattr(
+        "headroom.proxy.agy_ca._SYSTEM_BUNDLE_CANDIDATES",
+        (str(sys_bundle),),
+    )
+    bundle_path = build_combined_bundle(base_dir=tmp_path, corp_env_vars=())
+    bundle_data = bundle_path.read_bytes()
+    assert bundle_data.startswith(sys_pem_no_nl + b"\n"), (
+        "a missing trailing newline on the system bundle must be appended exactly once"
+    )
+
+
+# ---------------------------------------------------------------------------
+# _write_all_fd: os.write returning 0 bytes raises OSError (line 565)
+# ---------------------------------------------------------------------------
+
+
+def test_write_all_fd_raises_on_zero_byte_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(os, "write", lambda fd, data: 0)
+    with pytest.raises(OSError, match="wrote 0 bytes"):
+        _write_all_fd(0, b"some bytes to write")
+
+
+# ---------------------------------------------------------------------------
+# _load_via_mkstemp: cleanup errors in the finally block are swallowed
+# (lines 586-589 & 592-593)
+# ---------------------------------------------------------------------------
+
+
+def test_load_via_mkstemp_close_oserror_is_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the write fails (fd never reaches -1) and the finally-block os.close
+    also raises, the close OSError must be swallowed and the original write
+    failure must be the one that propagates."""
+    import ssl
+    import tempfile as _tempfile
+
+    cert_pem, key_pem = _make_leaf_pem_pair()
+    combined = cert_pem + key_pem
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+
+    captured_fd: list[int] = []
+    original_mkstemp = _tempfile.mkstemp
+
+    def _spy_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        fd, path = original_mkstemp(*args, **kwargs)
+        captured_fd.append(fd)
+        return fd, path
+
+    monkeypatch.setattr(_tempfile, "mkstemp", _spy_mkstemp)
+
+    original_write = os.write
+
+    def _fail_write(fd: int, data: bytes | bytearray) -> int:
+        if captured_fd and fd == captured_fd[0]:
+            return 0
+        return original_write(fd, data)
+
+    monkeypatch.setattr(os, "write", _fail_write)
+
+    original_close = os.close
+    close_attempts: list[int] = []
+
+    def _fail_close(fd: int) -> None:
+        if captured_fd and fd == captured_fd[0]:
+            close_attempts.append(fd)
+            raise OSError("simulated close failure")
+        original_close(fd)
+
+    monkeypatch.setattr(os, "close", _fail_close)
+
+    with pytest.raises(OSError, match="wrote 0 bytes"):
+        _load_via_mkstemp(ctx, combined)
+
+    assert close_attempts, "os.close must have been attempted in the finally block"
+
+
+def test_load_via_mkstemp_unlink_oserror_is_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing os.unlink in the cleanup finally block must not propagate."""
+    import ssl
+    import tempfile as _tempfile
+
+    cert_pem, key_pem = _make_leaf_pem_pair()
+    combined = cert_pem + key_pem
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+
+    captured_paths: list[str] = []
+    original_mkstemp = _tempfile.mkstemp
+
+    def _spy_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        fd, path = original_mkstemp(*args, **kwargs)
+        captured_paths.append(path)
+        return fd, path
+
+    monkeypatch.setattr(_tempfile, "mkstemp", _spy_mkstemp)
+
+    def _fail_unlink(path: str, *args: object, **kwargs: object) -> None:
+        raise OSError("simulated unlink failure")
+
+    monkeypatch.setattr(os, "unlink", _fail_unlink)
+
+    # Must not raise despite the unlink failure being swallowed.
+    _load_via_mkstemp(ctx, combined)
+
+    # Manual cleanup: our fake unlink prevented real removal of the temp file.
+    monkeypatch.undo()
+    for p in captured_paths:
+        if os.path.exists(p):
+            os.unlink(p)
