@@ -13,6 +13,7 @@ reset around each test).
 from __future__ import annotations
 
 import asyncio
+import socket
 
 import httpx
 import pytest
@@ -21,6 +22,7 @@ from headroom.cache.compression_store import (
     get_compression_store,
     reset_compression_store,
 )
+from headroom.proxy import agy_retrieve
 from headroom.proxy.agy_retrieve import AgyRetrieveServer
 
 
@@ -156,5 +158,262 @@ async def test_retrieve_server_stop_idempotent() -> None:
 def test_retrieve_server_address_raises_before_start() -> None:
     """address property raises RuntimeError before start()."""
     srv = AgyRetrieveServer(port=0)
+    with pytest.raises(RuntimeError):
+        _ = srv.address
+
+
+async def test_start_raises_when_lifespan_startup_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If the hypercorn lifespan task fails during startup, start() surfaces
+    that exception (instead of silently continuing on to bind a socket)."""
+    import hypercorn.asyncio.run as hypercorn_run
+
+    class _FailingLifespan:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def handle_lifespan(self) -> None:
+            raise RuntimeError("lifespan startup boom")
+
+        async def wait_for_startup(self) -> None:
+            # Yield control so the handle_lifespan task (already scheduled by
+            # loop.create_task) runs to completion — synchronously raising —
+            # before this coroutine resumes and returns.
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(hypercorn_run, "Lifespan", _FailingLifespan)
+
+    srv = AgyRetrieveServer(port=0)
+    with pytest.raises(RuntimeError, match="lifespan startup boom"):
+        await srv.start()
+
+    # The failure must be surfaced before any socket gets bound.
+    assert srv._server is None
+
+
+async def test_start_continues_when_lifespan_task_completes_without_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the lifespan task is already ``done()`` by the time
+    ``wait_for_startup()`` returns, but *without* an exception, start() must
+    NOT raise — it continues on to bind the socket normally."""
+    import hypercorn.asyncio.run as hypercorn_run
+
+    class _InstantSucceedingLifespan:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def handle_lifespan(self) -> None:
+            return None
+
+        async def wait_for_startup(self) -> None:
+            # Yield so the handle_lifespan task (scheduled by
+            # loop.create_task) runs to completion synchronously — with no
+            # exception — before this coroutine resumes and returns.
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(hypercorn_run, "Lifespan", _InstantSucceedingLifespan)
+
+    srv = AgyRetrieveServer(port=0)
+    await srv.start()  # must NOT raise: task is done(), but exception() is None
+    try:
+        assert srv._lifespan_task is not None
+        assert srv._lifespan_task.done()
+        assert srv._lifespan_task.exception() is None
+        host, port = srv.address
+        assert host == "127.0.0.1"
+        assert isinstance(port, int) and port > 0
+    finally:
+        await srv.stop()
+
+
+async def test_start_uses_so_exclusiveaddruse_on_non_posix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a non-POSIX ``os.name`` (e.g. Windows), the listener applies the
+    exclusive-address-use socket option instead of SO_REUSEADDR — per the
+    module docstring, plain SO_REUSEADDR on Windows would let a second
+    process bind the same loopback port and intercept decrypted retrieve
+    traffic."""
+
+    class _OsNameShim:
+        """Proxies the real ``os`` module except for ``.name``.
+
+        We can't monkeypatch the real ``os.name`` attribute directly: pathlib
+        (used transitively by ``create_app()``/hypercorn ``Config()`` during
+        ``start()``) also reads ``os.name`` to pick ``WindowsPath`` vs.
+        ``PosixPath`` and would break. Instead we rebind agy_retrieve's own
+        module-level ``os`` reference to this shim, leaving the real ``os``
+        module (and everyone else importing it) untouched.
+        """
+
+        def __init__(self, real_os: object, forced_name: str) -> None:
+            self._real_os = real_os
+            self.name = forced_name
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._real_os, item)
+
+    monkeypatch.setattr(agy_retrieve, "os", _OsNameShim(agy_retrieve.os, "nt"))
+    # Real SO_EXCLUSIVEADDRUSE only exists on Windows; alias it to
+    # SO_REUSEADDR's numeric value so the real setsockopt() syscall below
+    # succeeds on this (POSIX) test host.
+    monkeypatch.setattr(
+        agy_retrieve.socket, "SO_EXCLUSIVEADDRUSE", socket.SO_REUSEADDR, raising=False
+    )
+
+    setsockopt_calls: list[tuple[socket.socket, int, int, int]] = []
+    real_setsockopt = socket.socket.setsockopt
+
+    def _spy_setsockopt(
+        self: socket.socket, level: int, optname: int, value: int, *a: object, **kw: object
+    ) -> None:
+        setsockopt_calls.append((self, level, optname, value))
+        real_setsockopt(self, level, optname, value, *a, **kw)
+
+    monkeypatch.setattr(socket.socket, "setsockopt", _spy_setsockopt)
+
+    class _FakeStartedServer:
+        """Stand-in for the object asyncio.start_server() returns, so the
+        forced (non-posix) code window doesn't have to drive real
+        asyncio loop-internal connection machinery."""
+
+        def __init__(self, sock: socket.socket) -> None:
+            self.sockets = [sock]
+
+        def close(self) -> None:
+            self.sockets[0].close()
+
+        async def wait_closed(self) -> None:
+            return None
+
+    async def _fake_start_server(
+        _handler: object, sock: socket.socket | None = None, **_kw: object
+    ) -> _FakeStartedServer:
+        assert sock is not None
+        return _FakeStartedServer(sock)
+
+    monkeypatch.setattr(agy_retrieve.asyncio, "start_server", _fake_start_server)
+
+    srv = AgyRetrieveServer(port=0)
+    await srv.start()
+    try:
+        listener = srv._server.sockets[0]  # type: ignore[union-attr]
+        calls_on_listener = [c for c in setsockopt_calls if c[0] is listener]
+        # Exactly one setsockopt call was made on our listener socket, and it
+        # went through the (non-posix) elif branch — the `if os.name ==
+        # "posix"` branch never ran because we patched os.name to "nt".
+        assert calls_on_listener == [
+            (listener, socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ]
+        # The applied option is actually in effect on the real socket.
+        assert listener.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) == 1
+    finally:
+        await srv.stop()
+
+
+async def test_start_skips_sockopt_when_neither_posix_nor_exclusiveaddruse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ``os.name`` isn't "posix" AND the platform lacks
+    SO_EXCLUSIVEADDRUSE, neither socket-opt branch applies — the listener is
+    still bound successfully, with no setsockopt call made at all."""
+
+    class _OsNameShim:
+        # See test_start_uses_so_exclusiveaddruse_on_non_posix for rationale:
+        # we rebind agy_retrieve's own module-level `os` reference rather
+        # than mutating the real `os` module (which pathlib etc. also read).
+        def __init__(self, real_os: object, forced_name: str) -> None:
+            self._real_os = real_os
+            self.name = forced_name
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._real_os, item)
+
+    monkeypatch.setattr(agy_retrieve, "os", _OsNameShim(agy_retrieve.os, "nt"))
+    monkeypatch.delattr(socket, "SO_EXCLUSIVEADDRUSE", raising=False)
+
+    setsockopt_calls: list[tuple[socket.socket, int, int, int]] = []
+    real_setsockopt = socket.socket.setsockopt
+
+    def _spy_setsockopt(
+        self: socket.socket, level: int, optname: int, value: int, *a: object, **kw: object
+    ) -> None:
+        setsockopt_calls.append((self, level, optname, value))
+        real_setsockopt(self, level, optname, value, *a, **kw)
+
+    monkeypatch.setattr(socket.socket, "setsockopt", _spy_setsockopt)
+
+    srv = AgyRetrieveServer(port=0)
+    await srv.start()
+    try:
+        listener = srv._server.sockets[0]  # type: ignore[union-attr]
+        assert [c for c in setsockopt_calls if c[0] is listener] == []
+        host, port = srv.address
+        assert host == "127.0.0.1"
+        assert isinstance(port, int) and port > 0
+    finally:
+        await srv.stop()
+
+
+async def test_stop_swallows_lifespan_shutdown_exception() -> None:
+    """stop() must not propagate an exception raised by
+    ``lifespan.wait_for_shutdown()`` — it logs/ignores it and still tears
+    down the rest of the server cleanly."""
+    srv = AgyRetrieveServer(port=0)
+    await srv.start()
+
+    async def _boom() -> None:
+        raise RuntimeError("shutdown boom")
+
+    assert srv._lifespan is not None
+    srv._lifespan.wait_for_shutdown = _boom  # type: ignore[method-assign]
+
+    await srv.stop()  # must not raise despite wait_for_shutdown() failing
+
+    assert srv._lifespan is None
+    assert srv._server is None
+
+
+async def test_stop_swallows_lifespan_task_cancel_exception() -> None:
+    """stop() must not propagate an exception raised while awaiting the
+    (just-cancelled) lifespan task — it cancels, swallows, and clears the
+    reference regardless."""
+    srv = AgyRetrieveServer(port=0)
+    await srv.start()
+
+    class _FakeCancelTask:
+        def __init__(self) -> None:
+            self.cancel_called = False
+
+        def cancel(self) -> None:
+            self.cancel_called = True
+
+        def __await__(self) -> object:
+            raise RuntimeError("await-after-cancel boom")
+
+    fake_task = _FakeCancelTask()
+    srv._lifespan_task = fake_task  # type: ignore[assignment]
+
+    await srv.stop()  # must not raise despite awaiting the fake task failing
+
+    assert fake_task.cancel_called is True
+    assert srv._lifespan_task is None
+
+
+async def test_async_context_manager_starts_and_stops() -> None:
+    """Used as ``async with``, the server starts on __aenter__ and stops on
+    __aexit__."""
+    async with AgyRetrieveServer(port=0) as srv:
+        assert isinstance(srv, AgyRetrieveServer)
+        host, port = srv.address
+        assert host == "127.0.0.1"
+        assert isinstance(port, int) and port > 0
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"http://127.0.0.1:{port}/v1/retrieve/stats")
+        assert resp.status_code == 200
+
+    # __aexit__ ran stop(): lifespan task cleared, socket torn down.
+    assert srv._lifespan_task is None
     with pytest.raises(RuntimeError):
         _ = srv.address
