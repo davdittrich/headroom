@@ -602,7 +602,8 @@ class TestAgyMcpRetrieveNa:
         runner = CliRunner()
         runner.invoke(_get_main(), ["wrap", "agy", "--no-intercept"])
 
-        mcp_config = tmp_path / ".gemini" / "antigravity-cli" / "mcp_config.json"
+        # agy 1.1.x read-path (migrated from .gemini/antigravity-cli/).
+        mcp_config = tmp_path / ".gemini" / "config" / "mcp_config.json"
         # No per-run registration: file must not exist OR must not contain an
         # ephemeral headroom entry (port range check omitted; just assert no
         # ephemeral entry was written for "headroom").

@@ -341,9 +341,9 @@ headroom unwrap agy
 
 Removes all Headroom-added persistent configuration: the `GEMINI.md` block (markers
 `<!-- headroom:agy-instructions -->` / `<!-- /headroom:agy-instructions -->`),
-the Headroom MCP retrieve-tool entry from `~/.gemini/antigravity-cli/mcp_config.json`
-(if registered via `headroom mcp install`), and any Headroom-installed Serena MCP entry.
-User-managed `mcp_config.json` entries are preserved.
+the Headroom MCP retrieve-tool entry from `~/.gemini/config/mcp_config.json` (agy 1.1.x
+read-path, shared with the Antigravity IDE; if registered via `headroom mcp install`), and
+any Headroom-installed Serena MCP entry. User-managed and IDE `mcp_config.json` entries are preserved.
 
 #### Enterprise / Zero-Trust environments
 

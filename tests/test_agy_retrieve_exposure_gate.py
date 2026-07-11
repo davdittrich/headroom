@@ -2,7 +2,7 @@
 
 The wrap↔child MCP ``initialize`` handshake proves only that wrap can spawn the
 retrieve child; it does NOT prove agy will surface the tool. agy exposes tools
-only from its persistent per-tool cache (``<config_dir>/mcp/<server>/<tool>.json``),
+only from its persistent per-tool cache (``<appdata>/mcp/<server>/<tool>.json``),
 so a registered-then-reverted entry is rejected at call time as
 "Unknown tool: headroom_retrieve". These tests pin the exposure signal that
 gates ``HEADROOM_AGY_RETRIEVE_WIRED`` — the flag that keeps ccr compression on —
@@ -32,8 +32,12 @@ def _registrar(tmp_path: Path) -> AgyRegistrar:
 
 
 def _write_tool_cache(reg: AgyRegistrar, tool: str = CCR_TOOL_NAME) -> None:
-    """Simulate agy caching a discovered tool for the headroom server."""
-    cache = reg.config_dir / "mcp" / "headroom" / f"{tool}.json"
+    """Simulate agy caching a discovered tool for the headroom server.
+
+    Cache lives under agy's app-data dir (``cache_dir``), decoupled from the
+    (migrated) config dir.
+    """
+    cache = reg.cache_dir / "headroom" / f"{tool}.json"
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(f'{{"name": "{tool}"}}')
 

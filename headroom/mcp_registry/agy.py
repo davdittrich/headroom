@@ -1,8 +1,10 @@
 """Antigravity CLI (agy) MCP registrar.
 
-agy stores MCP server configuration in
-``~/.gemini/antigravity-cli/mcp_config.json`` using the same JSON shape as
-Claude Code's file path:
+agy 1.1.x reads MCP server configuration from the global, IDE-shared
+``~/.gemini/config/mcp_config.json`` (migrated from the legacy
+``~/.gemini/antigravity-cli/mcp_config.json``, which 1.1.x no longer reads —
+google-antigravity/antigravity-cli#60), using the same JSON shape as Claude
+Code's file path:
 
     {"mcpServers": {"<name>": {"command": ..., "args": ..., "env": {...}}}}
 
@@ -10,8 +12,8 @@ There is no general-purpose CLI for editing this file, so we read/write the
 JSON directly.  We do NOT use marker blocks here (unlike codex.py) because the
 JSON format does not admit inline comments; instead we operate on the
 ``mcpServers`` dict directly — adding a key to register and deleting it to
-unregister — which is both safe and merge-friendly (preserves other user
-entries untouched).
+unregister — which is both safe and merge-friendly (preserves other user and
+Antigravity-IDE entries untouched).
 """
 
 from __future__ import annotations
@@ -26,7 +28,16 @@ from .base import MCPRegistrar, RegisterResult, RegisterStatus, ServerSpec
 logger = logging.getLogger(__name__)
 
 #: Config file path relative to home, matching agy's own lookup.
-_AGY_CONFIG_RELPATH = ".gemini/antigravity-cli/mcp_config.json"
+#: agy 1.1.x MIGRATED the MCP-server read-path here from the legacy
+#: ``.gemini/antigravity-cli/mcp_config.json`` (which 1.1.x no longer reads —
+#: google-antigravity/antigravity-cli#60). This global config is SHARED with the
+#: Antigravity IDE, so registration MUST stay merge-not-clobber.
+_AGY_CONFIG_RELPATH = ".gemini/config/mcp_config.json"
+
+#: agy's app-data directory (relative to home). Independent of the config file:
+#: agy writes its per-tool cache to ``<appdata>/mcp/<server>/<tool>.json``
+#: REGARDLESS of which config file declared the server (cli.log: appDataDir).
+_AGY_APPDATA_RELPATH = ".gemini/antigravity-cli"
 
 
 class AgyRegistrar(MCPRegistrar):
@@ -43,17 +54,23 @@ class AgyRegistrar(MCPRegistrar):
         """
         home = home_dir if home_dir is not None else Path.home()
         self._config_file: Path = home / _AGY_CONFIG_RELPATH
+        self._appdata_dir: Path = home / _AGY_APPDATA_RELPATH
 
     @property
     def config_dir(self) -> Path:
-        """Directory holding ``mcp_config.json`` and agy's per-tool cache.
-
-        agy persists a discovered-tool cache alongside the config file at
-        ``<config_dir>/mcp/<server>/<tool>.json``; exposing the directory from
-        the single ``home_dir`` seam lets callers probe that cache without
-        re-deriving the path (and keeps the test seam consistent).
-        """
+        """Directory holding ``mcp_config.json`` (the read-path config)."""
         return self._config_file.parent
+
+    @property
+    def cache_dir(self) -> Path:
+        """agy's per-tool cache root: ``<appdata>/mcp``.
+
+        agy writes ``<appdata>/mcp/<server>/<tool>.json`` when it connects a
+        server — the presence of that file is the real exposure signal. This is
+        under the app-data dir, NOT the (migrated) config dir, so it is exposed
+        separately from ``config_dir``. Derived from the single ``home_dir`` seam.
+        """
+        return self._appdata_dir / "mcp"
 
     # ------------------------------------------------------------------
     # MCPRegistrar interface
@@ -62,14 +79,14 @@ class AgyRegistrar(MCPRegistrar):
     def detect(self) -> bool:
         """Return True if agy appears to be installed.
 
-        We consider agy present if its config directory exists *or* if the
-        config file itself exists.  This matches the pattern used by codex.py
-        (check for ``~/.codex``), adapted to agy's ``~/.gemini/antigravity-cli``
-        layout.  We deliberately do NOT shell out to ``shutil.which("agy")``
-        here — the registrar is also used in test environments and the CLI may
-        not be on PATH while the config directory is still present.
+        We key on agy's app-data directory (``~/.gemini/antigravity-cli``) — the
+        stable install marker — rather than the config dir, because the migrated
+        config dir (``~/.gemini/config``) may not exist until the first server is
+        written.  A pre-existing config file is also accepted.  We deliberately
+        do NOT shell out to ``shutil.which("agy")`` — the registrar is also used
+        in test environments where the CLI may not be on PATH.
         """
-        return self._config_file.parent.exists() or self._config_file.exists()
+        return self._appdata_dir.exists() or self._config_file.exists()
 
     def get_server(self, server_name: str) -> ServerSpec | None:
         """Return the registered ServerSpec for ``server_name``, or ``None``."""

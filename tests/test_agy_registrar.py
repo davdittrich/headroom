@@ -35,7 +35,8 @@ def _make_reg(tmp_path: Path) -> AgyRegistrar:
 
 
 def _config_path(tmp_path: Path) -> Path:
-    return tmp_path / ".gemini" / "antigravity-cli" / "mcp_config.json"
+    # agy 1.1.x read-path (migrated from .gemini/antigravity-cli/mcp_config.json).
+    return tmp_path / ".gemini" / "config" / "mcp_config.json"
 
 
 def _write_config(tmp_path: Path, data: dict) -> None:
@@ -59,8 +60,10 @@ class TestDetect:
         reg = _make_reg(tmp_path)
         assert reg.detect() is False
 
-    def test_returns_true_when_config_dir_exists(self, tmp_path: Path) -> None:
-        _config_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    def test_returns_true_when_appdata_dir_exists(self, tmp_path: Path) -> None:
+        # detect() keys on agy's app-data dir (the stable install marker), not
+        # the migrated config dir (which may not exist until the first write).
+        (tmp_path / ".gemini" / "antigravity-cli").mkdir(parents=True, exist_ok=True)
         reg = _make_reg(tmp_path)
         assert reg.detect() is True
 

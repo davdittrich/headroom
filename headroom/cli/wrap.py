@@ -730,7 +730,8 @@ def _setup_lean_ctx_agent(agent: str, verbose: bool = False) -> Path | None:
 _HEADROOM_HOOK_MARKERS = ("rtk-rewrite", "headroom-init-claude")
 #: agy flags that put it into single-shot, non-interactive output mode.
 #: In this mode agy hangs indefinitely whenever ANY mcpServers entry is present
-#: in ~/.gemini/antigravity-cli/mcp_config.json (verified live: lean-ctx of any
+#: in its MCP config (post-migration ~/.gemini/config/mcp_config.json; verified
+#: live on the legacy path: lean-ctx of any
 #: tool profile, serena, and even a nonexistent command all hang; empty
 #: mcpServers answers in seconds).  So Headroom must NOT activate any MCP server
 #: for print-mode invocations.
@@ -1036,7 +1037,7 @@ def _agy_exposes_retrieve_tool(registrar: Any) -> bool:
 
     A successful wrap↔child ``initialize`` handshake is necessary but NOT
     sufficient: agy only surfaces tools from servers in its persistent per-tool
-    cache (``<config_dir>/mcp/<server>/<tool>.json``, written *during* a session),
+    cache (``<appdata>/mcp/<server>/<tool>.json``, written *during* a session),
     so an entry that is registered-then-reverted every run never enters that
     cache and agy rejects the call with "Unknown tool: headroom_retrieve".
 
@@ -1054,7 +1055,10 @@ def _agy_exposes_retrieve_tool(registrar: Any) -> bool:
 
     if registrar.get_server("headroom") is None:
         return False
-    tool_cache = registrar.config_dir / "mcp" / "headroom" / f"{CCR_TOOL_NAME}.json"
+    # Cache lives under agy's app-data dir (cache_dir), NOT the migrated config
+    # dir — agy writes <appdata>/mcp/<server>/<tool>.json regardless of which
+    # config file declared the server.
+    tool_cache = registrar.cache_dir / "headroom" / f"{CCR_TOOL_NAME}.json"
     if not tool_cache.is_file():
         return False
     return _ccr_backend_is_cross_process()
