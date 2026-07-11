@@ -902,3 +902,599 @@ async def test_blind_tunnel_drain_error_closes_target() -> None:
     assert target_writer_closed, (
         "target_writer.close() must be called when client_writer.drain() raises before splice"
     )
+
+
+# ---------------------------------------------------------------------------
+# Coverage: _noop_dispatch swallows writer.close()/wait_closed() exceptions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_noop_dispatch_swallows_close_exception() -> None:
+    """_noop_dispatch must swallow exceptions raised by writer.close()."""
+    from headroom.proxy.agy_terminator import _noop_dispatch
+
+    class _RaisingWriter:
+        def close(self) -> None:
+            raise RuntimeError("close boom")
+
+        async def wait_closed(self) -> None:
+            pass
+
+    reader = asyncio.StreamReader()
+    # Must not raise, despite close() raising internally.
+    await _noop_dispatch(reader, _RaisingWriter(), "host", 443)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_noop_dispatch_swallows_wait_closed_exception() -> None:
+    """_noop_dispatch must swallow exceptions raised by writer.wait_closed()
+    (distinct from writer.close() raising: this exercises the await on
+    wait_closed() itself, reached only when close() succeeds)."""
+    from headroom.proxy.agy_terminator import _noop_dispatch
+
+    close_called = False
+
+    class _RaisingWaitClosedWriter:
+        def close(self) -> None:
+            nonlocal close_called
+            close_called = True
+
+        async def wait_closed(self) -> None:
+            raise RuntimeError("wait_closed boom")
+
+    reader = asyncio.StreamReader()
+    await _noop_dispatch(reader, _RaisingWaitClosedWriter(), "host", 443)  # type: ignore[arg-type]
+    assert close_called
+
+
+# ---------------------------------------------------------------------------
+# Coverage: _LeafCache re-mints an expired leaf in place
+# ---------------------------------------------------------------------------
+
+
+def test_leaf_cache_expired_entry_remints(tmp_ca: tuple) -> None:
+    """An expired cache entry (not_valid_after in the past) is re-minted."""
+    ca_key, ca_cert, _ = tmp_ca
+    cache = _LeafCache(max_size=10)
+    cert1, _ = cache.get_or_mint("expiring.example.com", ca_key, ca_cert)
+    obj1 = x509.load_pem_x509_certificate(cert1)
+
+    # Force the cached entry to look expired.
+    cert_pem, key_pem, _ = cache._cache["expiring.example.com"]
+    past = datetime.datetime.now(tz=datetime.timezone.utc) - datetime.timedelta(hours=1)
+    cache._cache["expiring.example.com"] = (cert_pem, key_pem, past)
+
+    cert2, _ = cache.get_or_mint("expiring.example.com", ca_key, ca_cert)
+    obj2 = x509.load_pem_x509_certificate(cert2)
+    assert obj1.serial_number != obj2.serial_number, "Expired leaf must be re-minted"
+
+
+# ---------------------------------------------------------------------------
+# Coverage: _splice_half swallows writer.write_eof() exceptions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_splice_half_write_eof_exception_swallowed() -> None:
+    """_splice_half must swallow exceptions raised by writer.write_eof()."""
+    from headroom.proxy.agy_terminator import _splice_half
+
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"payload")
+    reader.feed_eof()
+
+    written = bytearray()
+
+    class _EofRaisingWriter:
+        def write(self, data: bytes) -> None:
+            written.extend(data)
+
+        async def drain(self) -> None:
+            pass
+
+        def write_eof(self) -> None:
+            raise RuntimeError("eof boom")
+
+    # Must not raise, despite write_eof() raising internally.
+    await _splice_half(reader, _EofRaisingWriter())  # type: ignore[arg-type]
+    assert bytes(written) == b"payload"
+
+
+# ---------------------------------------------------------------------------
+# Coverage: _blind_splice except-branch cancels both pump tasks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_blind_splice_wait_exception_cancels_both_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If awaiting the pump tasks raises, both tasks are cancelled and both
+    writers are still closed via the finally block."""
+    import headroom.proxy.agy_terminator as _mod
+    from headroom.proxy.agy_terminator import _blind_splice
+
+    client_reader = asyncio.StreamReader()
+    target_reader = asyncio.StreamReader()
+    closed = {"client": False, "target": False}
+
+    class _W:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def write(self, data: bytes) -> None:
+            pass
+
+        async def drain(self) -> None:
+            pass
+
+        def write_eof(self) -> None:
+            pass
+
+        def close(self) -> None:
+            closed[self._name] = True
+
+        async def wait_closed(self) -> None:
+            pass
+
+    client_writer = _W("client")
+    target_writer = _W("target")
+
+    async def _raise_wait(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("pump wait boom")
+
+    monkeypatch.setattr(_mod.asyncio, "wait", _raise_wait)
+
+    await _blind_splice(
+        client_reader,
+        client_writer,  # type: ignore[arg-type]
+        target_reader,
+        target_writer,  # type: ignore[arg-type]
+    )
+
+    assert closed["client"] is True
+    assert closed["target"] is True
+
+
+# ---------------------------------------------------------------------------
+# Coverage: _handle_connect first-line CONNECT read timeout
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handle_connect_first_line_timeout_closes_writer(tmp_ca: tuple) -> None:
+    """First readline() (the CONNECT line itself) times out -> client_writer
+    is closed and neither MITM nor blind-tunnel dispatch runs."""
+    import unittest.mock as mock
+
+    import headroom.proxy.agy_terminator as _mod
+    from headroom.proxy.agy_terminator import _handle_connect, _LeafCache
+
+    ca_key, ca_cert, _ = tmp_ca
+    leaf_cache = _LeafCache(max_size=4)
+
+    client_reader = asyncio.StreamReader()  # No data fed -> readline() blocks forever.
+
+    close_called = False
+
+    class _TrackingWriter:
+        def get_extra_info(self, key: str, default: object = None) -> object:  # noqa: ANN401
+            return ("127.0.0.1", 1234) if key == "peername" else default
+
+        def write(self, data: bytes) -> None:
+            pass
+
+        async def drain(self) -> None:
+            pass
+
+        def close(self) -> None:
+            nonlocal close_called
+            close_called = True
+
+        async def wait_closed(self) -> None:
+            pass
+
+    client_writer = _TrackingWriter()
+
+    with mock.patch.object(_mod, "_CONNECT_TIMEOUT", 0.01):
+        await _handle_connect(
+            client_reader,
+            client_writer,  # type: ignore[arg-type]
+            allowlist=frozenset(),
+            leaf_cache=leaf_cache,
+            ca_key=ca_key,
+            ca_cert=ca_cert,
+            dispatch=None,  # type: ignore[arg-type]
+        )
+
+    assert close_called, "client_writer.close() must be called on first-line CONNECT timeout"
+
+
+# ---------------------------------------------------------------------------
+# Coverage: Proxy-Authorization header is parsed off the CONNECT request
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_proxy_authorization_header_parsed(tmp_ca: tuple) -> None:
+    """CONNECT with a Proxy-Authorization header is accepted and tunnels bytes."""
+    ca_key, ca_cert, _ = tmp_ca
+    echo_host = "127.0.0.1"
+
+    async def echo_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            data = await asyncio.wait_for(reader.read(1024), timeout=5.0)
+            if data:
+                writer.write(data)
+                await writer.drain()
+        finally:
+            writer.close()
+
+    echo_server = await asyncio.start_server(echo_handler, echo_host, 0)
+    echo_port = echo_server.sockets[0].getsockname()[1]
+
+    terminator = AgyCONNECTTerminator(
+        allowlist=frozenset({ALLOWLIST_HOST}),  # echo host NOT allowlisted -> blind tunnel
+        ca_key=ca_key,
+        ca_cert=ca_cert,
+    )
+    await terminator.start()
+    try:
+        proxy_host, proxy_port = terminator.address
+        raw_reader, raw_writer = await asyncio.open_connection(proxy_host, proxy_port)
+        connect_req = (
+            f"CONNECT {echo_host}:{echo_port} HTTP/1.1\r\n"
+            f"Host: {echo_host}:{echo_port}\r\n"
+            "Proxy-Authorization: Basic dXNlcjpwYXNz\r\n"
+            "\r\n"
+        )
+        raw_writer.write(connect_req.encode())
+        await raw_writer.drain()
+        response = await raw_reader.readline()
+        assert b"200" in response, f"Expected 200, got {response!r}"
+        await raw_reader.readline()  # Drain the blank line separating status from body.
+
+        payload = b"auth header parsed ok"
+        raw_writer.write(payload)
+        await raw_writer.drain()
+        received = await asyncio.wait_for(raw_reader.read(len(payload)), timeout=5.0)
+        assert received == payload
+    finally:
+        await terminator.stop()
+        echo_server.close()
+        await echo_server.wait_closed()
+
+
+# ---------------------------------------------------------------------------
+# Coverage: dispatch_port SUCCESS — ACK + blind-splice to loopback dispatch server
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_port_success_splices_to_dispatch_server(tmp_ca: tuple) -> None:
+    """Allowlisted CONNECT with a reachable dispatch_port: ACK written and raw
+    bytes are byte-spliced to the loopback dispatch server (no TLS)."""
+    ca_key, ca_cert, _ = tmp_ca
+    echo_host = "127.0.0.1"
+
+    async def echo_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            data = await asyncio.wait_for(reader.read(1024), timeout=5.0)
+            if data:
+                writer.write(data)
+                await writer.drain()
+        finally:
+            writer.close()
+
+    dispatch_server = await asyncio.start_server(echo_handler, echo_host, 0)
+    dispatch_port = dispatch_server.sockets[0].getsockname()[1]
+
+    terminator = AgyCONNECTTerminator(
+        allowlist=frozenset({ALLOWLIST_HOST}),
+        ca_key=ca_key,
+        ca_cert=ca_cert,
+        dispatch_port=dispatch_port,
+    )
+    await terminator.start()
+    try:
+        proxy_host, proxy_port = terminator.address
+        raw_reader, raw_writer = await asyncio.open_connection(proxy_host, proxy_port)
+        connect_req = f"CONNECT {ALLOWLIST_HOST}:443 HTTP/1.1\r\nHost: {ALLOWLIST_HOST}:443\r\n\r\n"
+        raw_writer.write(connect_req.encode())
+        await raw_writer.drain()
+        response = await raw_reader.readline()
+        assert b"200" in response, f"Expected ACK 200, got {response!r}"
+        await raw_reader.readline()  # Drain the blank line separating status from body.
+
+        payload = b"raw bytes over dispatch splice"
+        raw_writer.write(payload)
+        await raw_writer.drain()
+        received = await asyncio.wait_for(raw_reader.read(len(payload)), timeout=5.0)
+        assert received == payload, f"Splice mismatch: {received!r} != {payload!r}"
+        # Let the target-side echo connection close, unblocking the server-side
+        # _blind_splice call so it runs to completion (its own return statement)
+        # before teardown — otherwise the background handler task may be torn
+        # down mid-flight.
+        await asyncio.sleep(0.05)
+    finally:
+        await terminator.stop()
+        dispatch_server.close()
+        await dispatch_server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_port_connect_failed_close_exception_swallowed(tmp_ca: tuple) -> None:
+    """dispatch_connect_failed handling: if client_writer.close() itself also
+    raises, the inner except swallows it (headroom-vro.2: lines 461-462)."""
+    from headroom.proxy.agy_terminator import _handle_mitm, _LeafCache
+
+    ca_key, ca_cert, _ = tmp_ca
+    leaf_cache = _LeafCache(max_size=4)
+
+    # Bind then immediately close an ephemeral port so connecting to it
+    # deterministically raises ConnectionRefusedError (an OSError subclass).
+    probe = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+    dead_port = probe.sockets[0].getsockname()[1]
+    probe.close()
+    await probe.wait_closed()
+
+    close_called = False
+
+    class _RaisingCloseWriter:
+        def write(self, data: bytes) -> None:
+            pass
+
+        async def drain(self) -> None:
+            pass
+
+        def close(self) -> None:
+            nonlocal close_called
+            close_called = True
+            raise RuntimeError("close boom")
+
+        async def wait_closed(self) -> None:
+            pass
+
+    client_reader = asyncio.StreamReader()
+    client_writer = _RaisingCloseWriter()
+
+    # Must not raise, despite client_writer.close() raising inside the handler.
+    await _handle_mitm(
+        client_reader,
+        client_writer,  # type: ignore[arg-type]
+        ALLOWLIST_HOST,
+        443,
+        leaf_cache,
+        ca_key,
+        ca_cert,
+        dispatch=None,  # type: ignore[arg-type]
+        dispatch_port=dead_port,
+    )
+    assert close_called
+
+
+# ---------------------------------------------------------------------------
+# Coverage: dispatch_port connect failure closes the client after ACK
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_port_unreachable_closes_client_after_ack(tmp_ca: tuple) -> None:
+    """Allowlisted CONNECT with an unreachable dispatch_port: ACK is still sent,
+    then the connect attempt fails and client_writer is closed."""
+    ca_key, ca_cert, _ = tmp_ca
+
+    # Bind then immediately close an ephemeral port so connecting to it
+    # deterministically raises ConnectionRefusedError (an OSError subclass).
+    probe = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+    dead_port = probe.sockets[0].getsockname()[1]
+    probe.close()
+    await probe.wait_closed()
+
+    terminator = AgyCONNECTTerminator(
+        allowlist=frozenset({ALLOWLIST_HOST}),
+        ca_key=ca_key,
+        ca_cert=ca_cert,
+        dispatch_port=dead_port,
+    )
+    await terminator.start()
+    try:
+        proxy_host, proxy_port = terminator.address
+        raw_reader, raw_writer = await asyncio.open_connection(proxy_host, proxy_port)
+        connect_req = f"CONNECT {ALLOWLIST_HOST}:443 HTTP/1.1\r\nHost: {ALLOWLIST_HOST}:443\r\n\r\n"
+        raw_writer.write(connect_req.encode())
+        await raw_writer.drain()
+        response = await raw_reader.readline()
+        assert b"200" in response, (
+            f"Expected ACK 200 before dispatch-connect attempt, got {response!r}"
+        )
+        await raw_reader.readline()  # Drain the blank line separating status from body.
+
+        # dispatch connect failed -> client_writer.close() -> EOF, no more data.
+        data = await asyncio.wait_for(raw_reader.read(10), timeout=5.0)
+        assert data == b""
+    finally:
+        await terminator.stop()
+
+
+# ---------------------------------------------------------------------------
+# Coverage: legacy TLS-terminate path — handshake failure closes client
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tls_handshake_failure_closes_client(
+    tmp_ca: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When TLS upgrade raises ssl.SSLError, client_writer is closed and no
+    exception escapes _handle_mitm."""
+    import headroom.proxy.agy_terminator as _mod
+
+    ca_key, ca_cert, _ = tmp_ca
+
+    async def _raise_ssl_error(*args: object, **kwargs: object) -> None:
+        raise ssl.SSLError("handshake failed")
+
+    monkeypatch.setattr(_mod, "_upgrade_to_tls_server", _raise_ssl_error)
+
+    terminator = AgyCONNECTTerminator(
+        allowlist=frozenset({ALLOWLIST_HOST}),
+        ca_key=ca_key,
+        ca_cert=ca_cert,
+    )
+    await terminator.start()
+    try:
+        proxy_host, proxy_port = terminator.address
+        raw_reader, raw_writer = await asyncio.open_connection(proxy_host, proxy_port)
+        connect_req = f"CONNECT {ALLOWLIST_HOST}:443 HTTP/1.1\r\nHost: {ALLOWLIST_HOST}:443\r\n\r\n"
+        raw_writer.write(connect_req.encode())
+        await raw_writer.drain()
+        response = await raw_reader.readline()
+        assert b"200" in response, f"Expected 200 ACK, got {response!r}"
+        await raw_reader.readline()  # Drain the blank line separating status from body.
+
+        # TLS handshake stub raised -> client_writer closed -> EOF.
+        data = await asyncio.wait_for(raw_reader.read(10), timeout=5.0)
+        assert data == b""
+    finally:
+        await terminator.stop()
+
+
+@pytest.mark.asyncio
+async def test_tls_handshake_failure_close_exception_swallowed(
+    tmp_ca: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Legacy TLS-terminate path: if client_writer.close() itself also raises
+    after a handshake failure, the inner except swallows it (lines 496-497)."""
+    import headroom.proxy.agy_terminator as _mod
+    from headroom.proxy.agy_terminator import _handle_mitm, _LeafCache
+
+    ca_key, ca_cert, _ = tmp_ca
+    leaf_cache = _LeafCache(max_size=4)
+
+    async def _raise_ssl_error(*args: object, **kwargs: object) -> None:
+        raise ssl.SSLError("handshake failed")
+
+    monkeypatch.setattr(_mod, "_upgrade_to_tls_server", _raise_ssl_error)
+
+    close_called = False
+
+    class _FakeTransport:
+        def get_extra_info(self, key: str, default: object = None) -> object:  # noqa: ANN401
+            return "dummy-socket" if key == "socket" else default
+
+    class _RaisingCloseWriter:
+        transport = _FakeTransport()
+
+        def write(self, data: bytes) -> None:
+            pass
+
+        async def drain(self) -> None:
+            pass
+
+        def close(self) -> None:
+            nonlocal close_called
+            close_called = True
+            raise RuntimeError("close boom")
+
+        async def wait_closed(self) -> None:
+            pass
+
+    client_reader = asyncio.StreamReader()
+    client_writer = _RaisingCloseWriter()
+
+    # Must not raise, despite client_writer.close() raising inside the handler.
+    await _handle_mitm(
+        client_reader,
+        client_writer,  # type: ignore[arg-type]
+        ALLOWLIST_HOST,
+        443,
+        leaf_cache,
+        ca_key,
+        ca_cert,
+        dispatch=None,  # type: ignore[arg-type]
+        dispatch_port=None,
+    )
+    assert close_called
+
+
+# ---------------------------------------------------------------------------
+# Coverage: blind tunnel upstream connect failure -> 502 Bad Gateway
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_blind_tunnel_connect_failure_returns_502(
+    tmp_ca: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-allowlisted CONNECT whose upstream open_connection raises OSError
+    must result in a 502 Bad Gateway response."""
+    import headroom.proxy.agy_terminator as _mod
+
+    ca_key, ca_cert, _ = tmp_ca
+
+    terminator = AgyCONNECTTerminator(
+        allowlist=frozenset({ALLOWLIST_HOST}),  # target NOT allowlisted -> blind tunnel
+        ca_key=ca_key,
+        ca_cert=ca_cert,
+    )
+    await terminator.start()
+    try:
+        proxy_host, proxy_port = terminator.address
+        # Establish the client<->proxy connection BEFORE patching open_connection,
+        # since that patch also covers this very call target.
+        raw_reader, raw_writer = await asyncio.open_connection(proxy_host, proxy_port)
+
+        async def _raise_oserror(
+            host: str, port: int, **kwargs: object
+        ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(_mod.asyncio, "open_connection", _raise_oserror)
+
+        connect_req = (
+            f"CONNECT {NON_ALLOWLIST_HOST}:443 HTTP/1.1\r\nHost: {NON_ALLOWLIST_HOST}:443\r\n\r\n"
+        )
+        raw_writer.write(connect_req.encode())
+        await raw_writer.drain()
+        response = await raw_reader.readline()
+        assert b"502 Bad Gateway" in response, f"Expected 502, got {response!r}"
+    finally:
+        await terminator.stop()
+
+
+# ---------------------------------------------------------------------------
+# Coverage: AgyCONNECTTerminator lifecycle edges
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_terminator_start_without_ca_key_uses_ensure_root_ca(tmp_path: object) -> None:
+    """Omitting ca_key/ca_cert triggers the ensure_root_ca(base_dir=...) start path
+    (local CA key generation under tmp_path; never touches real ~/.headroom)."""
+    terminator = AgyCONNECTTerminator(base_dir=tmp_path)  # type: ignore[arg-type]
+    await terminator.start()
+    try:
+        host, port = terminator.address
+        assert host == "127.0.0.1"
+        assert port > 0
+        assert terminator._ca_key is not None
+        assert terminator._ca_cert is not None
+    finally:
+        await terminator.stop()
+
+
+def test_address_before_start_raises_runtime_error() -> None:
+    """Reading .address before .start() raises RuntimeError."""
+    terminator = AgyCONNECTTerminator()
+    with pytest.raises(RuntimeError):
+        _ = terminator.address
+
+
+@pytest.mark.asyncio
+async def test_stop_before_start_is_noop() -> None:
+    """Calling .stop() before .start() (no server) is a no-op and does not raise."""
+    terminator = AgyCONNECTTerminator()
+    await terminator.stop()
+    assert terminator._server is None
