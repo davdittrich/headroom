@@ -462,6 +462,203 @@ async def test_dispatch_server_start_stop_idempotent(
     await srv.stop()  # idempotent
 
 
+@pytest.mark.asyncio
+async def test_dispatch_server_ensure_root_ca_fallback(tmp_path: Any) -> None:
+    """start() with base_dir=tmp_path and NO injected CA falls back to
+    ensure_root_ca (local key-gen only, no network): CA key/cert are written
+    under base_dir/ca, and the server's leaf cache is populated from them."""
+    srv = AgyDispatchServer(base_dir=tmp_path)
+    await srv.start()
+    try:
+        ca_key_path = tmp_path / "ca" / "ca.key"
+        ca_cert_path = tmp_path / "ca" / "ca.crt"
+        assert ca_key_path.exists(), "ensure_root_ca fallback must generate ca.key on disk"
+        assert ca_cert_path.exists(), "ensure_root_ca fallback must generate ca.crt on disk"
+        assert srv._leaf_cache is not None, "leaf cache must be populated after start()"
+    finally:
+        await srv.stop()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_server_start_reraises_lifespan_startup_failure(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """start() re-raises when the hypercorn lifespan task fails during startup.
+
+    We stub hypercorn.asyncio.run.Lifespan (imported locally inside start())
+    with a fake whose handle_lifespan() signals startup THEN raises in the
+    same task step (no intervening await), so the task is deterministically
+    already done-with-exception by the time start() checks
+    `self._lifespan_task.done()`.
+    """
+    import hypercorn.asyncio.run as hypercorn_run
+
+    ca_key, ca_cert, _ = tmp_ca
+
+    class _FailingLifespan:
+        def __init__(self, app: Any, config: Any, loop: Any, lifespan_state: Any) -> None:
+            self.startup = asyncio.Event()
+            self.shutdown = asyncio.Event()
+
+        async def handle_lifespan(self) -> None:
+            self.startup.set()
+            raise RuntimeError("injected lifespan startup failure")
+
+        async def wait_for_startup(self) -> None:
+            await self.startup.wait()
+
+        async def wait_for_shutdown(self) -> None:
+            await self.shutdown.wait()
+
+    monkeypatch.setattr(hypercorn_run, "Lifespan", _FailingLifespan)
+
+    srv = AgyDispatchServer(ca_key=ca_key, ca_cert=ca_cert)
+    with pytest.raises(RuntimeError, match="injected lifespan startup failure"):
+        await srv.start()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_server_windows_so_exclusiveaddruse(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-POSIX branch: SO_EXCLUSIVEADDRUSE sockopt is set instead of SO_REUSEADDR.
+
+    os.name must read as non-"posix" ONLY for the `if os.name == "posix":`
+    check inside agy_dispatch.start() — globally patching the real `os`
+    module's `.name` breaks unrelated code paths reached from start()
+    (e.g. create_app() -> Path.home(), which selects WindowsPath/PosixPath
+    from the live os.name and blows up on a non-Windows filesystem). So we
+    replace the `os` symbol bound inside the agy_dispatch module with a thin
+    proxy that fakes only `.name`, delegating everything else to the real
+    `os` module. Real asyncio.start_server is also replaced with a fake so
+    the forced-name window does not span any real event-loop/transport
+    internals.
+    """
+    import os as os_mod
+    import socket as socket_mod
+
+    import headroom.proxy.agy_dispatch as agy_dispatch_mod
+
+    ca_key, ca_cert, _ = tmp_ca
+
+    class _FakeOSName:
+        """Proxies the real `os` module except `.name`, which reads "nt"."""
+
+        def __getattr__(self, attr: str) -> Any:
+            if attr == "name":
+                return "nt"
+            return getattr(os_mod, attr)
+
+    # Inject SO_EXCLUSIVEADDRUSE on platforms (e.g. Linux) that lack it,
+    # aliased to a real, valid sockopt so the actual setsockopt() call succeeds.
+    monkeypatch.setattr(socket_mod, "SO_EXCLUSIVEADDRUSE", socket_mod.SO_REUSEADDR, raising=False)
+
+    setsockopt_calls: list[tuple[int, int]] = []
+    original_setsockopt = socket_mod.socket.setsockopt
+
+    def _spy_setsockopt(
+        self: socket_mod.socket, level: int, optname: int, value: Any, *a: Any, **kw: Any
+    ) -> Any:
+        setsockopt_calls.append((level, optname))
+        return original_setsockopt(self, level, optname, value, *a, **kw)
+
+    monkeypatch.setattr(socket_mod.socket, "setsockopt", _spy_setsockopt)
+
+    class _FakeSocketInfo:
+        def getsockname(self) -> tuple[str, int]:
+            return ("127.0.0.1", 54321)
+
+    captured_socks: list[socket_mod.socket] = []
+
+    class _FakeServer:
+        sockets = [_FakeSocketInfo()]
+
+        def close(self) -> None:
+            pass
+
+        async def wait_closed(self) -> None:
+            pass
+
+    async def _fake_start_server(*args: Any, **kwargs: Any) -> _FakeServer:
+        sock = kwargs.get("sock")
+        if sock is not None:
+            captured_socks.append(sock)
+        return _FakeServer()
+
+    monkeypatch.setattr(asyncio, "start_server", _fake_start_server)
+    monkeypatch.setattr(agy_dispatch_mod, "os", _FakeOSName())
+
+    srv = AgyDispatchServer(ca_key=ca_key, ca_cert=ca_cert)
+    try:
+        await srv.start()
+        assert (socket_mod.SOL_SOCKET, socket_mod.SO_EXCLUSIVEADDRUSE) in setsockopt_calls, (
+            "SO_EXCLUSIVEADDRUSE setsockopt must be called when os.name != 'posix'"
+        )
+    finally:
+        await srv.stop()
+        for s in captured_socks:
+            s.close()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_server_stop_swallows_lifespan_shutdown_exception(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+) -> None:
+    """stop() swallows an exception raised by lifespan.wait_for_shutdown()
+    (e.g. LifespanTimeoutError) instead of letting it escape."""
+    ca_key, ca_cert, _ = tmp_ca
+    srv = AgyDispatchServer(ca_key=ca_key, ca_cert=ca_cert)
+    await srv.start()
+
+    class _BoomShutdown:
+        async def wait_for_shutdown(self) -> None:
+            raise RuntimeError("injected shutdown failure")
+
+    srv._lifespan = _BoomShutdown()  # type: ignore[assignment]
+
+    await srv.stop()  # must not raise despite the injected RuntimeError
+
+    assert srv._lifespan is None, "stop() must clear _lifespan even after a swallowed exception"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_server_stop_swallows_task_cancel_exception(
+    tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
+) -> None:
+    """stop() swallows a non-CancelledError exception raised while awaiting
+    the cancelled lifespan task."""
+    ca_key, ca_cert, _ = tmp_ca
+    srv = AgyDispatchServer(ca_key=ca_key, ca_cert=ca_cert)
+    await srv.start()
+
+    async def _stubborn() -> None:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            raise RuntimeError("injected cancel-time failure") from None
+
+    loop = asyncio.get_event_loop()
+    stubborn_task = loop.create_task(_stubborn())
+    await asyncio.sleep(0)  # let it start awaiting sleep(30) before we swap it in
+
+    real_lifespan_task = srv._lifespan_task
+    srv._lifespan_task = stubborn_task
+
+    try:
+        await srv.stop()  # must not raise despite the injected RuntimeError
+        assert srv._lifespan_task is None, "stop() must clear _lifespan_task after swallowing"
+    finally:
+        # Clean up the real (now-orphaned) lifespan task so it is not left pending.
+        if real_lifespan_task is not None and not real_lifespan_task.done():
+            real_lifespan_task.cancel()
+            try:
+                await real_lifespan_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+
 def test_dispatch_server_address_raises_before_start(
     tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
 ) -> None:
@@ -1103,6 +1300,34 @@ async def test_host_guard_duplicate_host_421() -> None:
 async def test_host_guard_zero_host_421() -> None:
     called, status = await _run_host_guard(_GUARD_ALLOW, {"type": "http", "headers": []})
     assert not called and status == 421
+
+
+@pytest.mark.asyncio
+async def test_host_guard_empty_host_value_421() -> None:
+    """A single Host header present but with an empty value -> 421 (blank-host branch)."""
+    called, status = await _run_host_guard(
+        _GUARD_ALLOW, {"type": "http", "headers": [(b"host", b"")]}
+    )
+    assert not called and status == 421
+
+
+@pytest.mark.asyncio
+async def test_host_guard_non_digit_port_suffix_kept_as_is() -> None:
+    """Host 'example.com:abc' has a non-digit suffix after ':' so it is NOT
+    stripped (the `if right.isdigit()` branch is False) and the literal
+    string (including the bogus ':abc' suffix) is checked against the
+    allowlist as-is.
+
+    Proof this covers the False branch (not just a passthrough): if the
+    suffix were incorrectly stripped, `normalized` would become
+    'example.com', which is absent from this test's allowlist, and the
+    request would be refused (421) instead of passed through.
+    """
+    allowlist = frozenset({"example.com:abc"})
+    called, status = await _run_host_guard(
+        allowlist, {"type": "http", "headers": [(b"host", b"example.com:abc")]}
+    )
+    assert called and status is None
 
 
 @pytest.mark.asyncio
