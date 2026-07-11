@@ -1003,9 +1003,7 @@ def _setup_headroom_retrieve_mcp_agy(registrar: Any, *, verbose: bool = False) -
                 "(local-store resolution) and handshake-verified."
             )
         else:
-            click.echo(
-                "  MCP retrieve tool: headroom MCP wired (persistent, handshake verified)."
-            )
+            click.echo("  MCP retrieve tool: headroom MCP wired (persistent, handshake verified).")
         return True
 
     # Handshake failed: remove the entry AND clear any ledger record so a broken
@@ -7548,9 +7546,7 @@ def agy(
         # tools it has cached, so a registered-then-reverted entry is rejected as
         # "Unknown tool: headroom_retrieve". Gate WIRED on the exposure signal so
         # ccr never ships unrecoverable markers on a false-positive handshake.
-        retrieve_exposed = retrieve_registered and _agy_exposes_retrieve_tool(
-            AgyRegistrar()
-        )
+        retrieve_exposed = retrieve_registered and _agy_exposes_retrieve_tool(AgyRegistrar())
         if retrieve_exposed:
             os.environ["HEADROOM_AGY_RETRIEVE_WIRED"] = "1"
             env["HEADROOM_AGY_RETRIEVE_WIRED"] = "1"

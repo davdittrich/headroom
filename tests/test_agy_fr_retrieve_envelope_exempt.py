@@ -116,7 +116,9 @@ class TestDetector:
     def test_source_read_is_not_an_envelope(self) -> None:
         # A leaf that READS headroom's own source: key NAMES present, but the
         # hash value is a variable (`hash_key`), not a 24-hex literal.
-        leaf = 'return {\n  "hash": hash_key,\n  "source": "local",\n  "original_content": entry.x,\n}'
+        leaf = (
+            'return {\n  "hash": hash_key,\n  "source": "local",\n  "original_content": entry.x,\n}'
+        )
         assert _ccr_envelope_hash(leaf) is None
 
     def test_uppercase_hash_rejected(self) -> None:
@@ -135,11 +137,18 @@ class TestDetector:
 
 # --- L1: envelope leaf never compressed -----------------------------------
 def _fr_contents(name: str, leaf: Any) -> list[dict]:
-    return [{"role": "user", "parts": [{"functionResponse": {"name": name, "response": {"output": leaf}}}]}]
+    return [
+        {
+            "role": "user",
+            "parts": [{"functionResponse": {"name": name, "response": {"output": leaf}}}],
+        }
+    ]
 
 
 class TestL1Exempt:
-    @pytest.mark.parametrize("name", ["headroom.headroom_retrieve", "headroom", "call_mcp_tool", None])
+    @pytest.mark.parametrize(
+        "name", ["headroom.headroom_retrieve", "headroom", "call_mcp_tool", None]
+    )
     def test_text_envelope_not_compressed_regardless_of_name(
         self, tok: Any, store: Any, name: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -149,7 +158,9 @@ class TestL1Exempt:
 
         calls: list = []
         orig = mod._compress_fr_leaf
-        monkeypatch.setattr(mod, "_compress_fr_leaf", lambda *a, **k: (calls.append(1), orig(*a, **k))[1])
+        monkeypatch.setattr(
+            mod, "_compress_fr_leaf", lambda *a, **k: (calls.append(1), orig(*a, **k))[1]
+        )
 
         before, after, leaves = compress_function_response_leaves(contents, "ccr", tok, store)
         out = contents[0]["parts"][0]["functionResponse"]["response"]["output"]
@@ -160,9 +171,12 @@ class TestL1Exempt:
 
     def test_proxy_and_file_pointer_variants_exempt(self, tok: Any, store: Any) -> None:
         h = default_ccr_hash(_ORIGINAL)
-        for leaf in (_agy_text(_proxy_envelope_dict(h)),
-                     _agy_text({"hash": "b" * 24, "source": "local",
-                                "original_content": "saved to: file:///tmp/y"})):
+        for leaf in (
+            _agy_text(_proxy_envelope_dict(h)),
+            _agy_text(
+                {"hash": "b" * 24, "source": "local", "original_content": "saved to: file:///tmp/y"}
+            ),
+        ):
             contents = _fr_contents("headroom.headroom_retrieve", leaf)
             compress_function_response_leaves(contents, "ccr", tok, store)
             assert contents[0]["parts"][0]["functionResponse"]["response"]["output"] == leaf
@@ -171,10 +185,14 @@ class TestL1Exempt:
         # response IS the envelope dict (structured, not text-rendered).
         h = default_ccr_hash(_ORIGINAL)
         env = _local_envelope_dict(h)
-        contents = [{"role": "user", "parts": [{"functionResponse": {"name": "headroom", "response": env}}]}]
+        contents = [
+            {"role": "user", "parts": [{"functionResponse": {"name": "headroom", "response": env}}]}
+        ]
         compress_function_response_leaves(contents, "ccr", tok, store)
         # original_content left verbatim (dict exempt as a whole)
-        assert contents[0]["parts"][0]["functionResponse"]["response"]["original_content"] == _ORIGINAL
+        assert (
+            contents[0]["parts"][0]["functionResponse"]["response"]["original_content"] == _ORIGINAL
+        )
 
 
 # --- L2: envelope hash exempts the ORIGINAL resent leaf --------------------
@@ -187,13 +205,23 @@ class TestL2Exempt:
     def test_original_leaf_exempt_when_envelope_present(self, tok: Any, store: Any) -> None:
         h = default_ccr_hash(_ORIGINAL)
         contents = [
-            {"role": "user", "parts": [
-                {"functionResponse": {"name": "headroom.headroom_retrieve",
-                                      "response": {"output": _agy_text(_local_envelope_dict(h))}}},
-            ]},
-            {"role": "user", "parts": [
-                {"functionResponse": {"name": "read_file", "response": {"output": _ORIGINAL}}},
-            ]},
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "name": "headroom.headroom_retrieve",
+                            "response": {"output": _agy_text(_local_envelope_dict(h))},
+                        }
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "parts": [
+                    {"functionResponse": {"name": "read_file", "response": {"output": _ORIGINAL}}},
+                ],
+            },
         ]
         compress_function_response_leaves(contents, "ccr", tok, store)
         # the resent ORIGINAL leaf is exempt (its hash is in retrieved_hashes)
@@ -211,8 +239,10 @@ class TestStillCompresses:
 
     def test_source_read_leaf_still_compresses(self, tok: Any, store: Any) -> None:
         # Large leaf mentioning the key NAMES but no 24-hex hash value.
-        src = ('def build():\n  return {\n    "hash": hash_key,\n    "source": "local",\n'
-               '    "original_content": entry.original_content,\n  }\n') * 40
+        src = (
+            'def build():\n  return {\n    "hash": hash_key,\n    "source": "local",\n'
+            '    "original_content": entry.original_content,\n  }\n'
+        ) * 40
         contents = _fr_contents("read_file", src)
         before, after, leaves = compress_function_response_leaves(contents, "ccr", tok, store)
         out = contents[0]["parts"][0]["functionResponse"]["response"]["output"]

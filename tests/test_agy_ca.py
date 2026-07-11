@@ -30,8 +30,8 @@ from headroom.proxy.agy_ca import (
     _not_in_os_trust,
     _parse_ca_certs_from_pem,
     _system_trust_pem,
-    _write_all_fd,
     _windows_trust_pem,
+    _write_all_fd,
     build_combined_bundle,
     ensure_root_ca,
     load_cert_chain_in_memory,
@@ -1165,9 +1165,7 @@ def test_ensure_root_ca_corrupt_cert_regenerates(tmp_path: Path) -> None:
     """Valid key + corrupt cert file → ensure_root_ca regenerates, not raises."""
     _, cert1, key_path, cert_path = ensure_root_ca(base_dir=tmp_path)
 
-    cert_path.write_bytes(
-        b"-----BEGIN CERTIFICATE-----\nGARBAGE\n-----END CERTIFICATE-----\n"
-    )
+    cert_path.write_bytes(b"-----BEGIN CERTIFICATE-----\nGARBAGE\n-----END CERTIFICATE-----\n")
     cert_path.chmod(0o600)
 
     _, cert2, _, _ = ensure_root_ca(base_dir=tmp_path)

@@ -68,9 +68,7 @@ class TestBackendCrossProcess:
 class TestExposureSignal:
     """All three conjuncts required: live config entry + tool cache + shared backend."""
 
-    def test_all_present_is_exposed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_all_present_is_exposed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("HEADROOM_CCR_BACKEND", raising=False)
         reg = _registrar(tmp_path)
         reg.register_server(build_headroom_spec(), force=True)
@@ -125,9 +123,7 @@ class TestWiredGate:
     """
 
     @pytest.mark.parametrize("exposed", [True, False])
-    def test_wired_follows_exposure(
-        self, monkeypatch: pytest.MonkeyPatch, exposed: bool
-    ) -> None:
+    def test_wired_follows_exposure(self, monkeypatch: pytest.MonkeyPatch, exposed: bool) -> None:
         import headroom.cli.wrap as wrap_mod
 
         for key in (
@@ -141,15 +137,11 @@ class TestWiredGate:
         ):
             monkeypatch.delenv(key, raising=False)
 
-        monkeypatch.setattr(
-            "shutil.which", lambda name: "/usr/bin/agy" if name == "agy" else None
-        )
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/agy" if name == "agy" else None)
         monkeypatch.setattr(
             "headroom.proxy.agy_ca.ensure_root_ca", lambda: (None, None, None, None)
         )
-        monkeypatch.setattr(
-            "headroom.proxy.agy_ca.build_combined_bundle", lambda: "/dev/null"
-        )
+        monkeypatch.setattr("headroom.proxy.agy_ca.build_combined_bundle", lambda: "/dev/null")
         monkeypatch.setattr("headroom.providers.agy.build_agy_env", lambda **kwargs: {})
 
         class _FakeStats:
@@ -160,9 +152,7 @@ class TestWiredGate:
                 pass
 
         monkeypatch.setattr("headroom.providers.agy.stats.AgySessionStats", _FakeStats)
-        monkeypatch.setattr(
-            "headroom.providers.agy.stats.install_fail_open_handler", lambda: None
-        )
+        monkeypatch.setattr("headroom.providers.agy.stats.install_fail_open_handler", lambda: None)
         monkeypatch.setattr(
             "headroom.providers.agy.stats.remove_fail_open_handler",
             lambda handler: None,
@@ -176,17 +166,13 @@ class TestWiredGate:
 
         monkeypatch.setattr("headroom.mcp_registry.agy.AgyRegistrar", _FakeRegistrar)
         monkeypatch.setattr("headroom.cli.wrap._selected_context_tool", lambda: "__none__")
-        monkeypatch.setattr(
-            "headroom.cli.wrap._disable_tokensave_mcp", lambda *a, **k: None
-        )
+        monkeypatch.setattr("headroom.cli.wrap._disable_tokensave_mcp", lambda *a, **k: None)
         monkeypatch.setattr("headroom.cli.wrap._disable_serena_mcp", lambda *a, **k: None)
 
         fake_servers = SimpleNamespace(
             terminator=SimpleNamespace(address=("127.0.0.1", 1)), retrieve_port=12345
         )
-        monkeypatch.setattr(
-            "headroom.cli.wrap._start_agy_servers", lambda *a, **k: fake_servers
-        )
+        monkeypatch.setattr("headroom.cli.wrap._start_agy_servers", lambda *a, **k: fake_servers)
         monkeypatch.setattr("headroom.cli.wrap._stop_agy_servers", lambda servers: None)
         # Handshake succeeds (registered) — exposure alone decides WIRED.
         monkeypatch.setattr(
@@ -196,9 +182,7 @@ class TestWiredGate:
         monkeypatch.setattr(
             "headroom.cli.wrap._agy_exposes_retrieve_tool", lambda registrar: exposed
         )
-        monkeypatch.setattr(
-            "headroom.cli.wrap._register_proxy_client", lambda *a, **k: None
-        )
+        monkeypatch.setattr("headroom.cli.wrap._register_proxy_client", lambda *a, **k: None)
 
         seen: list[bool] = []
 
@@ -207,9 +191,7 @@ class TestWiredGate:
             raise SystemExit(0)
 
         monkeypatch.setattr("headroom.cli.wrap._maybe_warn_agy_ccr_downgrade", _spy)
-        monkeypatch.setattr(
-            "subprocess.run", lambda *a, **k: SimpleNamespace(returncode=0)
-        )
+        monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(returncode=0))
 
         with pytest.raises(SystemExit):
             wrap_mod.agy.callback(

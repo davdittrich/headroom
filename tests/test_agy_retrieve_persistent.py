@@ -27,9 +27,7 @@ from headroom.mcp_registry.ledger import headroom_installed_matching
 def _isolated_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect the install ledger to a tmp file (no global state touched)."""
     ledger_file = tmp_path / "install_ledger.json"
-    monkeypatch.setattr(
-        "headroom.mcp_registry.ledger.ledger_path", lambda: ledger_file
-    )
+    monkeypatch.setattr("headroom.mcp_registry.ledger.ledger_path", lambda: ledger_file)
     return ledger_file
 
 
@@ -54,9 +52,7 @@ class TestPersistentRegistration:
     def test_registers_and_records_ledger(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            "headroom.cli.wrap._smoke_verify_mcp_handshake", lambda *a, **k: True
-        )
+        monkeypatch.setattr("headroom.cli.wrap._smoke_verify_mcp_handshake", lambda *a, **k: True)
         reg = _reg(tmp_path)
         assert _setup_headroom_retrieve_mcp_agy(reg) is True
         assert reg.get_server("headroom") is not None
@@ -65,9 +61,7 @@ class TestPersistentRegistration:
     def test_idempotent_already_still_recorded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            "headroom.cli.wrap._smoke_verify_mcp_handshake", lambda *a, **k: True
-        )
+        monkeypatch.setattr("headroom.cli.wrap._smoke_verify_mcp_handshake", lambda *a, **k: True)
         reg = _reg(tmp_path)
         assert _setup_headroom_retrieve_mcp_agy(reg) is True
         # Second run hits ALREADY; record_install upserts, ledger stays valid.
@@ -77,9 +71,7 @@ class TestPersistentRegistration:
     def test_reclaims_ledger_after_loss(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            "headroom.cli.wrap._smoke_verify_mcp_handshake", lambda *a, **k: True
-        )
+        monkeypatch.setattr("headroom.cli.wrap._smoke_verify_mcp_handshake", lambda *a, **k: True)
         reg = _reg(tmp_path)
         # Pre-existing matching entry with NO ledger record (e.g. after the
         # old-agy print-mode purge cleared it) — ALREADY must re-record.
@@ -93,28 +85,20 @@ class TestPersistentRegistration:
     ) -> None:
         reg = _reg(tmp_path)
         # First: succeed to seed a ledger record + entry.
-        monkeypatch.setattr(
-            "headroom.cli.wrap._smoke_verify_mcp_handshake", lambda *a, **k: True
-        )
+        monkeypatch.setattr("headroom.cli.wrap._smoke_verify_mcp_handshake", lambda *a, **k: True)
         assert _setup_headroom_retrieve_mcp_agy(reg) is True
         assert _ledgered(reg) is True
         # Now a broken child: entry removed AND ledger cleared (no dead pointer,
         # no stale ownership claim).
-        monkeypatch.setattr(
-            "headroom.cli.wrap._smoke_verify_mcp_handshake", lambda *a, **k: False
-        )
+        monkeypatch.setattr("headroom.cli.wrap._smoke_verify_mcp_handshake", lambda *a, **k: False)
         assert _setup_headroom_retrieve_mcp_agy(reg) is False
         assert reg.get_server("headroom") is None
         assert _ledgered(reg) is False
 
 
 class TestLedgerGatedUninstall:
-    def test_removes_ledgered_entry(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            "headroom.cli.wrap._smoke_verify_mcp_handshake", lambda *a, **k: True
-        )
+    def test_removes_ledgered_entry(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("headroom.cli.wrap._smoke_verify_mcp_handshake", lambda *a, **k: True)
         reg = _reg(tmp_path)
         _setup_headroom_retrieve_mcp_agy(reg)
         assert _remove_headroom_installed_retrieve_mcp(reg) == "removed"
