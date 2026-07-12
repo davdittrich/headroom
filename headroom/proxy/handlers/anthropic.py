@@ -1178,6 +1178,19 @@ class AnthropicHandlerMixin:
                 logger.info(
                     f"[{request_id}] Compression skipped: reason={_decision.passthrough_reason}"
                 )
+            # Deterministic session-lifetime pre-registration (PR-B redesign):
+            # in cache mode the retrieval tool is forwarded on EVERY request from
+            # turn 1, so it is part of the very first cached prefix and the tool
+            # list never flips mid-session. Pure frame-local function of (mode,
+            # config, _bypass, client-sent tools) — no tracker state, survives
+            # proxy restarts, and never reaches the shared pipeline. False in
+            # token/non-cache mode (is_cache_mode) so those paths stay byte-identical.
+            ccr_tool_preregistered = (
+                is_cache_mode(self.config.mode)
+                and self.config.ccr_inject_tool
+                and not _bypass
+                and bool(body.get("tools"))
+            )
             if _decision.should_compress and not _skip_compression_for_backpressure:
                 try:
                     from headroom.proxy.helpers import COMPRESSION_TIMEOUT_SECONDS
@@ -1213,6 +1226,10 @@ class AnthropicHandlerMixin:
                         current_frozen_message_count: int,
                     ) -> bool:
                         if is_token_mode(self.config.mode):
+                            return False
+                        if ccr_tool_preregistered:
+                            # Retrieval tool is forwarded from turn 1, so the
+                            # mutable tail stays reversible on every frozen turn.
                             return False
                         # If the tool is already present, CCR stays reversible even on frozen turns.
                         return (
@@ -1771,6 +1788,7 @@ class AnthropicHandlerMixin:
                     configured_inject_tool=configured_inject_tool,
                     frozen_message_count=frozen_message_count,
                     has_compressed_content=has_new_compressed_content,
+                    preregistered=ccr_tool_preregistered,
                 )
                 if should_inject:
                     if is_marker_override:
@@ -1788,6 +1806,7 @@ class AnthropicHandlerMixin:
                         request_id=request_id,
                         existing_tools=tools,
                         has_compressed_content_this_turn=has_new_compressed_content,
+                        force_register=ccr_tool_preregistered,
                     )
                     if ccr_tool_injected:
                         logger.debug(
