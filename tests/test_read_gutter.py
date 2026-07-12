@@ -16,11 +16,15 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 from headroom.proxy.interceptors import astgrep
 from headroom.transforms import read_gutter
 from headroom.transforms.code_compressor import (
     CodeAwareCompressor,
     CodeCompressorConfig,
+    CodeLanguage,
+    CodeStructure,
 )
 from headroom.transforms.read_gutter import (
     detect_and_strip_gutter,
@@ -466,4 +470,228 @@ def test_compress_does_not_crash_on_sub_majority_gutter():
 def test_module_exports_public_helpers():
     assert hasattr(read_gutter, "detect_and_strip_gutter")
     assert hasattr(read_gutter, "reanchor")
+    assert hasattr(read_gutter, "reanchor_spans")
     assert hasattr(read_gutter, "strip_line_gutter")
+
+
+# ========================================================================= #
+# headroom-510.3 — exact cross-bucket reanchor via per-element span overlay  #
+#                                                                            #
+# ``_assemble_compressed`` stays the SOLE assembler (string byte-identical)  #
+# but ALSO emits per-element SPANS; ``reanchor_spans`` overlays gutters onto #
+# element/source lines by consuming the source-order occurrence map in       #
+# SOURCE-ROW order, fixing the duplicate-line swap of the position-          #
+# independent ``reanchor`` and removing its spurious separator gutters.      #
+# ========================================================================= #
+def _degutter(text: str) -> str:
+    """Strip any line-number gutter from every line (content recovery)."""
+    return "\n".join(strip_line_gutter(line) for line in text.split("\n"))
+
+
+def _compressor_lowmin() -> CodeAwareCompressor:
+    """CCR off + tiny min-token gate so small fixtures actually compress."""
+    return CodeAwareCompressor(CodeCompressorConfig(enable_ccr=False, min_tokens_for_compression=1))
+
+
+# ---- _assemble_compressed: byte-identical string + correct spans ---------- #
+def test_assemble_compressed_typed_buckets_string_and_spans():
+    # DoD: assembled CONTENT byte-identical to historical bucket-order output;
+    # one span per element in ASSEMBLED-LINE index space; source rows intact.
+    struct = CodeStructure(
+        imports=[(0, "import os"), (1, "import sys")],
+        class_definitions=[(5, "class A:\n    pass")],
+        function_signatures=[(9, "def f():\n    return 1")],
+    )
+    assembled, spans = _compressor()._assemble_compressed(struct, CodeLanguage.PYTHON)
+
+    assert assembled == ("import os\nimport sys\n\nclass A:\n    pass\n\ndef f():\n    return 1")
+    assert spans == [(0, 0, 1), (1, 1, 2), (5, 3, 5), (9, 6, 8)]
+    n_lines = len(assembled.split("\n"))
+    assert all(le <= n_lines for _, _, le in spans)  # no span past the trim
+
+
+def test_assemble_compressed_generic_other_one_span_per_line():
+    # DoD: generic/unknown path -> one span per line, row == line index; trailing
+    # blank lines trimmed and their spans clipped; output non-empty.
+    struct = CodeStructure(other=["alpha", "beta", "", ""])
+    assembled, spans = _compressor()._assemble_compressed(struct, CodeLanguage.UNKNOWN)
+
+    assert assembled == "alpha\nbeta"
+    assert spans == [(0, 0, 1), (1, 1, 2)]
+
+
+# ---- reanchor_spans: exact cross-bucket duplicate (RED vs reanchor) ------- #
+def test_reanchor_spans_cross_bucket_duplicate_exact_rows():
+    # foo BEFORE Bar in source; identical kept line "    pass" (4-sp) in BOTH,
+    # emitted class-bucket-first (reversed vs source). Each must get its TRUE row.
+    stripped = "def foo():\n    pass\n\nclass Bar:\n    pass"
+    prefixes = ["1\t", "2\t", "3\t", "4\t", "5\t"]
+    assembled = "class Bar:\n    pass\n\ndef foo():\n    pass"
+    spans = [(3, 0, 2), (0, 3, 5)]  # Bar element row3; foo element row0
+
+    out = read_gutter.reanchor_spans(assembled, spans, stripped, prefixes)
+
+    assert out == "4\tclass Bar:\n5\t    pass\n\n1\tdef foo():\n2\t    pass"
+    # The position-independent reanchor SWAPS the duplicate rows (the bug).
+    assert reanchor(assembled, stripped, prefixes) != out
+
+
+def test_reanchor_spans_content_byte_identical_and_separators_bare():
+    # DoD: gutters are pure prefixes -> degutter recovers assembled bytes; the
+    # inter-group blank separator carries NO gutter (documented cleanup).
+    stripped = "def foo():\n    pass\n\nclass Bar:\n    pass"
+    prefixes = ["1\t", "2\t", "3\t", "4\t", "5\t"]
+    assembled = "class Bar:\n    pass\n\ndef foo():\n    pass"
+    spans = [(3, 0, 2), (0, 3, 5)]
+
+    out = read_gutter.reanchor_spans(assembled, spans, stripped, prefixes)
+
+    assert _degutter(out) == assembled
+    assert out.split("\n")[2] == ""  # separator un-guttered
+
+
+def test_reanchor_spans_ccr_footer_passes_through_unguttered():
+    # DoD: the CCR footer (appended beyond every span) survives unchanged and
+    # carries NO gutter.
+    stripped = "import os\ndef foo():\n    pass"
+    prefixes = ["1\t", "2\t", "3\t"]
+    footer = "# [12 tokens compressed. Retrieve more: hash=abc. Expires in 5m.]"
+    assembled = "import os\n\ndef foo():\n    pass\n" + footer
+    spans = [(0, 0, 1), (1, 2, 4)]
+
+    out = read_gutter.reanchor_spans(assembled, spans, stripped, prefixes)
+    out_lines = out.split("\n")
+
+    assert out_lines[-1] == footer
+    assert strip_line_gutter(out_lines[-1]) == footer
+    assert out_lines[0] == "1\timport os"
+    assert out_lines[2] == "2\tdef foo():"
+    assert out_lines[3] == "3\t    pass"
+
+
+def test_reanchor_spans_interspersed_elision_markers_bare():
+    # DoD: an elision marker INSIDE a multi-line element passes through
+    # un-guttered while the element's kept source lines get exact gutters.
+    stripped = "def big():\n    return x"
+    prefixes = ["1\t", "2\t"]
+    assembled = "def big():\n    # ... (body elided)\n    return x"
+    spans = [(0, 0, 3)]
+
+    out = read_gutter.reanchor_spans(assembled, spans, stripped, prefixes)
+    out_lines = out.split("\n")
+
+    assert out_lines[0] == "1\tdef big():"
+    assert out_lines[1] == "    # ... (body elided)"  # marker un-guttered
+    assert out_lines[2] == "2\t    return x"
+
+
+def test_reanchor_spans_generic_each_line_its_own_row():
+    stripped = "alpha\nbeta\ngamma"
+    prefixes = ["1\t", "2\t", "3\t"]
+    assembled = "alpha\nbeta\ngamma"
+    spans = [(0, 0, 1), (1, 1, 2), (2, 2, 3)]
+
+    out = read_gutter.reanchor_spans(assembled, spans, stripped, prefixes)
+
+    assert out == "1\talpha\n2\tbeta\n3\tgamma"
+    assert out  # non-empty
+
+
+def test_reanchor_spans_is_deterministic():
+    stripped = "def foo():\n    pass\n\nclass Bar:\n    pass"
+    prefixes = ["1\t", "2\t", "3\t", "4\t", "5\t"]
+    assembled = "class Bar:\n    pass\n\ndef foo():\n    pass"
+    spans = [(3, 0, 2), (0, 3, 5)]
+    a = read_gutter.reanchor_spans(assembled, spans, stripped, prefixes)
+    b = read_gutter.reanchor_spans(assembled, spans, stripped, prefixes)
+    assert a == b
+
+
+@pytest.mark.xfail(
+    reason="pre-existing residual shared with reanchor: a kept line whose only "
+    "other source occurrence is inside an ELIDED (non-emitted) body may resolve "
+    "to the elided row, since that occurrence is never consumed",
+    strict=False,
+)
+def test_reanchor_spans_elided_body_duplicate_residual():
+    # "    return x" occurs at row1 (inside foo's ELIDED body -> NOT emitted) and
+    # row4 (kept in bar). occ consumes the elided row1 first -> bar mis-rows.
+    stripped = "def foo():\n    return x\n\ndef bar():\n    return x"
+    prefixes = ["1\t", "2\t", "3\t", "4\t", "5\t"]
+    assembled = "def foo():\n    # ...\n\ndef bar():\n    return x"
+    spans = [(0, 0, 2), (3, 3, 5)]
+    out = read_gutter.reanchor_spans(assembled, spans, stripped, prefixes)
+    assert out.split("\n")[4] == "5\t    return x"  # DESIRED; currently fails
+
+
+# ---- End-to-end through compress() ---------------------------------------- #
+def test_compress_cross_bucket_duplicate_exact_rows_end_to_end():
+    # def foo BEFORE class Bar; identical kept "    pass" duplicated across the
+    # function_signatures and class_definitions buckets (reversed at assembly).
+    src = "def foo():\n    pass\n\n\nclass Bar:\n    pass\n"
+    assert src.index("def foo") < src.index("class Bar")
+    guttered = _add_gutter(src, sep="\t")
+
+    out = _compressor_lowmin().compress(guttered, language="python").compressed
+    clean_out = _compressor_lowmin().compress(src, language="python").compressed
+
+    # Content byte-identity: degutter(guttered_out) == clean compression.
+    assert _degutter(out) == clean_out
+    lines = out.split("\n")
+    guttered_set = set(guttered.split("\n"))
+    pass_lines = [ln for ln in lines if ln.endswith("    pass")]
+    assert pass_lines and all(ln in guttered_set for ln in pass_lines)
+    # Positional exactness (RED against the swapping reanchor): the "    pass"
+    # DIRECTLY under each definition must carry THAT definition's body row —
+    # foo.pass=2 under def foo (row1), Bar.pass=6 under class Bar (row5).
+    bar_i = next(i for i, ln in enumerate(lines) if ln.endswith("class Bar:"))
+    foo_i = next(i for i, ln in enumerate(lines) if ln.endswith("def foo():"))
+    assert lines[bar_i + 1] == "6\t    pass"
+    assert lines[foo_i + 1] == "2\t    pass"
+
+
+def test_compress_guttered_content_byte_identical_to_clean_real_payload():
+    # DoD: on a REAL payload, degutter(compress(guttered)) == compress(clean).
+    clean = _load_valid_python_prefix()
+    guttered = _add_gutter(clean, sep="\t")
+    comp = _compressor()  # enable_ccr=False -> no stateful footer
+    guttered_out = comp.compress(guttered, language="python").compressed
+    clean_out = comp.compress(clean, language="python").compressed
+    assert _degutter(guttered_out) == clean_out
+
+
+def test_compress_guttered_ccr_footer_has_no_gutter():
+    # DoD: CCR footer survives reanchor_spans and carries NO gutter.
+    clean = _load_valid_python_prefix()
+    guttered = _add_gutter(clean, sep="\t")
+    compressor = CodeAwareCompressor(CodeCompressorConfig(enable_ccr=True))
+    result = compressor.compress(guttered, language="python")
+    footers = [ln for ln in result.compressed.split("\n") if "Retrieve more: hash=" in ln]
+    assert footers, "expected a CCR footer"
+    for ln in footers:
+        assert not _GUTTER_LINE.match(ln)
+        assert strip_line_gutter(ln) == ln
+
+
+def test_compress_guttered_js_export_wrapped_reanchors():
+    js = "export function foo() {\n  return 1;\n}\n\nexport function bar() {\n  return 2;\n}\n"
+    guttered = _add_gutter(js, sep="\t")
+    comp = _compressor_lowmin()
+    out = comp.compress(guttered, language="javascript").compressed
+    clean_out = comp.compress(js, language="javascript").compressed
+    assert out
+    assert _degutter(out) == clean_out
+    guttered_set = set(guttered.split("\n"))
+    assert all(ln in guttered_set for ln in out.split("\n") if _GUTTER_LINE.match(ln))
+
+
+def test_compress_guttered_go_package_reanchors():
+    go = 'package main\n\nimport "fmt"\n\nfunc Foo() int {\n\treturn 1\n}\n'
+    guttered = _add_gutter(go, sep="\t")
+    comp = _compressor_lowmin()
+    out = comp.compress(guttered, language="go").compressed
+    clean_out = comp.compress(go, language="go").compressed
+    assert out
+    assert _degutter(out) == clean_out
+    guttered_set = set(guttered.split("\n"))
+    assert all(ln in guttered_set for ln in out.split("\n") if _GUTTER_LINE.match(ln))

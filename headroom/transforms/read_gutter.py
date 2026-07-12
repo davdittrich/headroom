@@ -114,3 +114,54 @@ def reanchor(compressed: str, stripped: str, prefixes: list[str]) -> str:
         else:
             out.append(cl)
     return "\n".join(out)
+
+
+def reanchor_spans(
+    assembled: str,
+    spans: list[tuple[int, int, int]],
+    stripped: str,
+    prefixes: list[str],
+) -> str:
+    """Overlay original gutters onto element lines using per-element spans.
+
+    Exact cross-bucket variant of :func:`reanchor`. ``_assemble_compressed``
+    emits, alongside the assembled string, one SPAN ``(source_row, line_start,
+    line_end)`` per kept element (half-open, indexing ``assembled.split("\\n")``)
+    in emission order. Consuming the source-order occurrence map in SOURCE-ROW
+    order (spans sorted by ``source_row``) makes identical kept lines duplicated
+    across different assembler buckets — whose emission order differs from source
+    order — resolve to their TRUE source line numbers instead of being swapped
+    (the residual of the position-independent :func:`reanchor`).
+
+    ``stripped``/``prefixes`` come from :func:`detect_and_strip_gutter`.
+
+    Only lines inside a span are gutter candidates, and only when their content
+    matches an unconsumed stripped source line (``popleft`` of the next source
+    occurrence). Every other line — inter-group blank separators, elision
+    markers interspersed within a multi-line element, the CCR footer, and any
+    reflowed text — passes through UN-guttered. This also removes the spurious
+    source-blank gutters that :func:`reanchor` applied to separators. O(n).
+    Deterministic; pure; preserves original line numbers on kept lines.
+
+    Residuals: a leading-comment blob prepended to an element sorts by the
+    element's node row (comment lines sit adjacent above the node, so their
+    source occurrences are consumed in the right order). A kept line whose only
+    OTHER occurrence lies inside an ELIDED body may resolve to the elided row,
+    since that occurrence is never emitted/consumed (pre-existing, shared with
+    :func:`reanchor`).
+    """
+    lines = assembled.split("\n")
+    n = len(lines)
+    occ: dict[str, deque[tuple[int, str]]] = {}
+    for idx, sl in enumerate(stripped.split("\n")):
+        prefix = prefixes[idx] if idx < len(prefixes) else ""
+        occ.setdefault(sl, deque()).append((idx, prefix))
+
+    assigned: dict[int, str] = {}
+    for _row, line_start, line_end in sorted(spans, key=lambda s: s[0]):
+        for i in range(line_start, min(line_end, n)):
+            bucket = occ.get(lines[i])
+            if bucket:
+                assigned[i] = bucket.popleft()[1]
+
+    return "\n".join(assigned.get(i, "") + lines[i] for i in range(n))
