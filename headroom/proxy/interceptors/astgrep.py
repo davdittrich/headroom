@@ -22,6 +22,7 @@ from typing import Any
 from headroom import binaries
 from headroom._subprocess import run
 from headroom.proxy import runtime_env
+from headroom.transforms.read_gutter import detect_and_strip_gutter, strip_line_gutter
 
 from . import base
 
@@ -127,7 +128,13 @@ class AstGrepReadOutline:
             logger.debug("ast-grep unavailable: %s", e)
             return None
 
-        matches = _run_ast_grep(exe, lang, tool_output)
+        # Claude Code's Read tool prefixes each line with a line-number gutter
+        # (e.g. "  42\t..."), which is invalid syntax. ast-grep would find no
+        # matches on that, so parse a gutter-stripped copy. Stripping is
+        # line-preserving, so match row indices still align 1:1 with the
+        # original guttered ``tool_output`` used to build the outline below.
+        stripped = detect_and_strip_gutter(tool_output)[0]
+        matches = _run_ast_grep(exe, lang, stripped)
         if not matches:
             return None
 
@@ -281,7 +288,10 @@ def _build_outline(matches: list[dict[str, Any]], source: str) -> str | None:
         while next_idx < len(lines) and not lines[next_idx].strip():
             next_idx += 1
         if next_idx < len(lines):
-            nl = lines[next_idx].lstrip()
+            # Strip any line-number gutter before the docstring/comment probe
+            # so guttered payloads are recognized; the emitted line keeps its
+            # gutter (we append the original ``lines[next_idx]``).
+            nl = strip_line_gutter(lines[next_idx]).lstrip()
             if nl.startswith(('"""', "'''", "/**", "//", "#")):
                 outline_chunks.append(lines[next_idx])
         outline_chunks.append(OUTLINE_MARKER)

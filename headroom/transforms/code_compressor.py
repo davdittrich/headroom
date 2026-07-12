@@ -52,6 +52,7 @@ from typing import Any
 from ..config import TransformResult
 from ..tokenizer import Tokenizer
 from .base import Transform
+from .read_gutter import detect_and_strip_gutter, reanchor
 
 logger = logging.getLogger(__name__)
 
@@ -1058,6 +1059,14 @@ class CodeAwareCompressor(Transform):
                 syntax_valid=True,
             )
 
+        # Claude Code's Read tool prefixes each line with a right-aligned
+        # line-number gutter, which is invalid syntax that makes tree-sitter
+        # bail (0% compression). Detect it by shape and parse a gutter-stripped
+        # copy; token counts stay on the ORIGINAL guttered ``code`` so ratios
+        # remain honest, and original line numbers are reattached at the end.
+        stripped_code, gutter_prefixes, had_gutter = detect_and_strip_gutter(code)
+        work_code = stripped_code if had_gutter else code
+
         # Detect or use specified language. An explicit hint or fence tag may be
         # an alias (js/ts/py/...) or something we don't recognize — coerce it
         # instead of constructing CodeLanguage() directly (which raises), and
@@ -1065,17 +1074,17 @@ class CodeAwareCompressor(Transform):
         if language:
             detected_lang = coerce_language(language)
             if detected_lang == CodeLanguage.UNKNOWN:
-                detected_lang, confidence = detect_language(code)
+                detected_lang, confidence = detect_language(work_code)
             else:
                 confidence = 1.0
         elif self.config.language_hint:
             detected_lang = coerce_language(self.config.language_hint)
             if detected_lang == CodeLanguage.UNKNOWN:
-                detected_lang, confidence = detect_language(code)
+                detected_lang, confidence = detect_language(work_code)
             else:
                 confidence = 1.0
         else:
-            detected_lang, confidence = detect_language(code)
+            detected_lang, confidence = detect_language(work_code)
 
         # If language unknown and fallback enabled, try Kompress
         if detected_lang == CodeLanguage.UNKNOWN:
@@ -1112,7 +1121,7 @@ class CodeAwareCompressor(Transform):
         # Parse and compress
         try:
             compressed, structure, symbol_scores = self._compress_with_ast(
-                code, detected_lang, context, tokenizer
+                work_code, detected_lang, context, tokenizer
             )
             compressed_tokens = self._estimate_tokens(compressed, tokenizer)
 
@@ -1179,6 +1188,14 @@ class CodeAwareCompressor(Transform):
                         f" Expires in {ttl_min}m.]"
                     )
 
+            if had_gutter:
+                # Reattach original line-number gutters to the kept verbatim
+                # lines (markers / CCR footer have no source match and pass
+                # through unchanged), then recount on the reanchored output so
+                # the reported ratio reflects what is actually returned.
+                compressed = reanchor(compressed, work_code, gutter_prefixes)
+                compressed_tokens = self._estimate_tokens(compressed, tokenizer)
+                ratio = compressed_tokens / max(original_tokens, 1)
             return CodeCompressionResult(
                 compressed=compressed,
                 original=code,
