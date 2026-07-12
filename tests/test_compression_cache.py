@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from headroom.cache.compression_cache import CompressionCache
+from headroom.cache.compression_cache import (
+    CompressionCache,
+    _extract_tool_result_content,
+    _swap_tool_result_content,
+)
 
 
 @pytest.fixture
@@ -687,3 +691,168 @@ def test_get_compression_cache_returns_same_instance_under_contention() -> None:
     first = results[0]
     for c in results[1:]:
         assert c is first, "Concurrent _get_compression_cache returned different instances"
+
+
+# ─── Defect 1: Anthropic list-form tool_result content ─────────────────────
+#
+# `_extract_tool_result_content` must handle Anthropic-native `tool_result`
+# blocks whose `content` is a LIST of typed blocks (e.g.
+# `[{"type": "text", "text": "..."}]`), not just plain strings. This shape
+# is emitted by MCP tools and modern Claude Code. Prior code only handled
+# `isinstance(inner, str)` and fell through to `return None` for list-form
+# content, which made `compute_frozen_count` treat such messages as
+# unstable and `break` — the tool_result never entered the compression
+# cache.
+
+
+class TestListFormToolResultContent:
+    def test_extract_list_form_joins_text_blocks(self) -> None:
+        msg = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": [
+                        {"type": "text", "text": "A"},
+                        {"type": "text", "text": "B"},
+                    ],
+                }
+            ],
+        }
+        assert _extract_tool_result_content(msg) == "A\nB"
+
+    def test_extract_list_form_no_text_blocks_returns_none(self) -> None:
+        """Non-text blocks are ignored; with NO text blocks present, the
+        result must be `None` (not `""`) — `None` is the cache-miss/unstable
+        signal downstream, whereas `""` would be treated as valid content."""
+        msg = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": [
+                        {"type": "image", "source": {"type": "base64", "data": "..."}},
+                    ],
+                }
+            ],
+        }
+        assert _extract_tool_result_content(msg) is None
+
+    def test_extract_list_form_ignores_non_text_blocks_mixed(self) -> None:
+        msg = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": [
+                        {"type": "text", "text": "A"},
+                        {"type": "image", "source": {"type": "base64", "data": "..."}},
+                        {"type": "text", "text": "B"},
+                    ],
+                }
+            ],
+        }
+        # Document order preserved; non-text block skipped.
+        assert _extract_tool_result_content(msg) == "A\nB"
+
+    def test_extract_str_form_unchanged(self) -> None:
+        """str-form path must be byte-identical: same string returned, same
+        hash produced. Guards against the list-form branch regressing the
+        pre-existing str-form behavior."""
+        original_content = "plain string content"
+        msg = {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": original_content}],
+        }
+        extracted = _extract_tool_result_content(msg)
+        assert extracted == original_content
+        assert CompressionCache.content_hash(extracted) == CompressionCache.content_hash(
+            original_content
+        )
+
+    def test_compute_frozen_count_list_form_stable_when_cached(
+        self, cache: CompressionCache
+    ) -> None:
+        """A list-form tool_result whose extracted-text hash is already in
+        the cache must be walked past by `compute_frozen_count`, exactly as
+        a str-form tool_result would be."""
+        messages = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": [
+                            {"type": "text", "text": "list"},
+                            {"type": "text", "text": "form"},
+                        ],
+                    }
+                ],
+            },
+            {"role": "user", "content": "follow up"},
+        ]
+        extracted = _extract_tool_result_content(messages[1])
+        assert extracted == "list\nform"
+        h = CompressionCache.content_hash(extracted)
+        cache.store_compressed(h, "compressed list form", tokens_saved=2)
+
+        # All 3 structurally stable; cap clamps to len-1 = 2 (live zone).
+        assert cache.compute_frozen_count(messages) == 2
+
+    def test_compute_frozen_count_list_form_cache_miss_stops_frozen(
+        self, cache: CompressionCache
+    ) -> None:
+        """Sanity counterpart: without a pre-stored cache entry, list-form
+        tool_result is NOT stable, matching str-form cache-miss behavior."""
+        messages = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": [{"type": "text", "text": "uncached"}],
+                    }
+                ],
+            },
+            {"role": "user", "content": "follow up"},
+        ]
+        assert cache.compute_frozen_count(messages) == 1
+
+    def test_swap_tool_result_content_list_form_round_trip(self) -> None:
+        """`_swap_tool_result_content` collapses list-form content down to
+        the replacement string on write (compression always yields a single
+        string); the original message is left untouched."""
+        msg = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": [
+                        {"type": "text", "text": "A"},
+                        {"type": "text", "text": "B"},
+                    ],
+                }
+            ],
+        }
+        new_msg = _swap_tool_result_content(msg, "compressed replacement")
+        assert new_msg["content"][0]["content"] == "compressed replacement"
+        # Original untouched (still list-form).
+        assert msg["content"][0]["content"] == [
+            {"type": "text", "text": "A"},
+            {"type": "text", "text": "B"},
+        ]
+
+    def test_openai_format_unchanged(self, cache: CompressionCache) -> None:
+        """OpenAI `role: tool` path must be unaffected by the list-form
+        branch added to the Anthropic path."""
+        original_content = "openai tool output unaffected"
+        msg = {"role": "tool", "tool_call_id": "tc1", "content": original_content}
+        assert _extract_tool_result_content(msg) == original_content

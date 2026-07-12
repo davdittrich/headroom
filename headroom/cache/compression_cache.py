@@ -40,6 +40,17 @@ def _is_tool_result_message(msg: dict) -> bool:
     return False
 
 
+def _join_text_blocks(blocks: list) -> str | None:
+    """Join the `text` fields of Anthropic content blocks, in document order.
+
+    Non-text blocks (e.g. images) are ignored. Returns None (not "") when no
+    text blocks are present, so callers correctly treat this as unstable
+    rather than as empty-but-valid content.
+    """
+    texts = [b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"]
+    return "\n".join(texts) if texts else None
+
+
 def _extract_tool_result_content(msg: dict) -> str | None:
     """Extract text content from a tool result message (both formats)."""
     # OpenAI format
@@ -54,6 +65,12 @@ def _extract_tool_result_content(msg: dict) -> str | None:
                 inner = block.get("content")
                 if isinstance(inner, str):
                     return inner
+                if isinstance(inner, list):
+                    # Anthropic-native tool_result blocks emitted by MCP
+                    # tools / modern Claude Code carry a list of typed
+                    # blocks (e.g. [{"type": "text", "text": "..."}])
+                    # instead of a plain string.
+                    return _join_text_blocks(inner)
     return None
 
 
@@ -69,6 +86,10 @@ def _swap_tool_result_content(msg: dict, new_content: str) -> dict:
     if isinstance(content, list):
         for block in content:
             if isinstance(block, dict) and block.get("type") == "tool_result":
+                # Compression always yields a single string, so this
+                # unconditionally collapses list-form `content` (see
+                # `_join_text_blocks`) down to `new_content` on write —
+                # intentional, not a round-trip of the original blocks.
                 block["content"] = new_content
                 break
     return new_msg
