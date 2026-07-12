@@ -617,10 +617,15 @@ def test_concurrent_cache_and_token_requests_no_cross_contamination(monkeypatch)
 
     The pre-registration flag is a coroutine-frame local, never shared state.
     Token-mode outputs must never gain headroom_retrieve from a concurrent
-    cache-mode request. Each request drives an ISOLATED client so the per-call
-    harness monkeypatches (retry/tracker) cannot race across threads — the only
-    shared state exercised is the process-wide production singletons (router,
-    session CCR tracker), which is exactly the frame-local invariant under test.
+    cache-mode request. This verifies that frame-local flag does not leak
+    across concurrent coroutine frames: each request drives an ISOLATED client
+    so the per-call harness monkeypatches (retry/tracker) cannot race across
+    threads. No shared-router path is exercised — ``ContentRouter`` is per-app
+    (one per ``create_app``, so each client has its own) and this harness
+    monkeypatches ``anthropic_pipeline.apply``, so the router is never on the
+    call path. That is acceptable precisely because PR-B introduces NO shared
+    instance state by design; the only invariant this can and does check is the
+    frame-local one.
     """
     _force_compression(monkeypatch)
     prev_original = [{"role": "user", "content": "turn1"}]
