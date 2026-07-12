@@ -2405,6 +2405,7 @@ def should_inject_ccr_tool(
     configured_inject_tool: bool,
     frozen_message_count: int,
     has_compressed_content: bool,
+    preregistered: bool = False,
 ) -> tuple[bool, bool]:
     """Decide whether the ``headroom_retrieve`` tool must be injected this turn.
 
@@ -2422,6 +2423,11 @@ def should_inject_ccr_tool(
     True only when injection happens *because* of new markers despite a deferral,
     so the caller can log the override distinctly.
     """
+    if preregistered and configured_inject_tool:
+        # Pre-registration (PR-B redesign): the retrieval tool is forwarded on
+        # every cache-mode request from turn 1, so injection is unconditional
+        # and is NOT a #1006 marker-override (is_marker_override stays False).
+        return (True, False)
     inject_tool = configured_inject_tool
     if inject_tool and frozen_message_count > 0:
         inject_tool = False  # defer to preserve cache
@@ -2436,6 +2442,7 @@ def apply_session_sticky_ccr_tool(
     request_id: str | None,
     existing_tools: list[dict[str, Any]] | None,
     has_compressed_content_this_turn: bool,
+    force_register: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Apply sticky-on CCR retrieval-tool injection per :class:`SessionCcrTracker`.
 
@@ -2483,6 +2490,28 @@ def apply_session_sticky_ccr_tool(
             request_id=request_id,
         )
         return tools_out, False
+
+    # Deterministic session-lifetime pre-registration (PR-B redesign): in cache
+    # mode the retrieval tool is forwarded on EVERY request from turn 1, so it is
+    # part of the very first cached prefix and the tool list never flips
+    # mid-session. Inject unconditionally — independent of this turn's
+    # compression AND of tracker.has_done_ccr — and record the golden bytes so the
+    # sticky-replay path produces byte-identical output if the flag ever
+    # transitions. The client/MCP dedupe above still wins (checked first).
+    if force_register:
+        tool_def = create_ccr_tool_definition(provider)
+        canonical = serialize_tool_definition_canonical(tool_def)
+        if session_id:
+            get_session_ccr_tracker().record_ccr_done(provider, session_id, canonical)
+        tools_out.append(tool_def)
+        log_tool_injection_decision(
+            provider=provider,
+            session_id=session_id,
+            decision="inject_preregistered",
+            tool_definition_bytes_count=len(canonical),
+            request_id=request_id,
+        )
+        return tools_out, True
 
     # No session_id (e.g. WS path): per-turn decision drives directly.
     if not session_id:
