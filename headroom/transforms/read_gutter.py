@@ -79,25 +79,30 @@ def detect_and_strip_gutter(text: str) -> tuple[str, list[str], bool]:
 
 
 def reanchor(compressed: str, stripped: str, prefixes: list[str]) -> str:
-    """Re-attach original gutters to kept lines via an order-independent lookup.
+    """Re-attach original gutters to kept lines via a content-keyed lookup.
+
+    LEGACY / not used in production: superseded by :func:`reanchor_spans`, which
+    the compressor calls for exact cross-bucket anchoring. ``reanchor`` is
+    retained only as the position-independent reference/contrast baseline (see
+    ``test_reanchor_spans_cross_bucket_duplicate_exact_rows``).
 
     ``stripped``/``prefixes`` come from :func:`detect_and_strip_gutter`.
 
-    The compressed output does NOT preserve source order: ``code_compressor``
-    emits kept content in FIXED BUCKET ORDER (imports → type_definitions →
-    class_definitions → function_signatures → top_level_code), so a kept
-    signature that bucketing moves earlier than it sat in source (e.g. a
-    top-level ``def`` after a later ``class``) would be scanned-past by a
-    monotonic never-rewind pointer and emitted WITHOUT its gutter. To be robust
-    to that, this builds ``occ``: a map from each stripped line's content to a
+    Builds ``occ``: a map from each stripped line's content to a
     :class:`~collections.deque` of its ``(index, prefix)`` occurrences in source
     order. For each compressed line ``cl``, if ``occ[cl]`` is non-empty it
     ``popleft()``s the next source occurrence and emits ``prefix + cl``;
     otherwise the line passes through unchanged (headers, elision markers, CCR
-    footers, reflowed text). Global (position-independent) lookup handles the
-    reordered buckets; the deque makes successive identical lines map to
-    successive source occurrences. O(n) overall. Deterministic; pure; preserves
-    original line numbers on kept (verbatim) lines.
+    footers, reflowed text). O(n) overall. Deterministic; pure.
+
+    Correct ONLY for DISTINCT-content kept lines. Byte-identical lines share one
+    deque consumed front-first, so it does NOT preserve original line numbers
+    when the emitter reorders identical lines relative to source: ``code_compressor``
+    emits kept content in FIXED BUCKET ORDER (imports → type_definitions →
+    class_definitions → function_signatures → top_level_code), so a byte-identical
+    line duplicated across buckets is SWAPPED, and a duplicate whose earlier
+    occurrence is ELIDED is front-biased to the earlier gutter.
+    :func:`reanchor_spans` fixes both via per-element source-row spans.
     """
     stripped_lines = stripped.split("\n")
     occ: dict[str, deque[tuple[int, str]]] = {}
