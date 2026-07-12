@@ -41,13 +41,23 @@ def _is_tool_result_message(msg: dict) -> bool:
 
 
 def _join_text_blocks(blocks: list) -> str | None:
-    """Join the `text` fields of Anthropic content blocks, in document order.
+    """Join the `text` fields of a PURE text-only Anthropic content block list.
 
-    Non-text blocks (e.g. images) are ignored. Returns None (not "") when no
-    text blocks are present, so callers correctly treat this as unstable
-    rather than as empty-but-valid content.
+    Returns ``None`` when the list contains ANY non-text block (e.g. an image).
+    Collapsing a mixed list to a text-only string is lossy: the downstream
+    `_swap_tool_result_content` replaces the entire block list with the joined
+    string, silently DROPPING the non-text blocks, and the text-only
+    `content_hash` would collide for two results with identical text but
+    different images. Returning ``None`` marks the message unstable so it passes
+    through UNTOUCHED — the pre-PR guarantee.
+
+    Returns ``None`` (not "") for a list with no text blocks at all, so callers
+    treat it as unstable rather than empty-but-valid content.
     """
-    texts = [b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"]
+    typed = [b for b in blocks if isinstance(b, dict)]
+    if any(b.get("type") != "text" for b in typed):
+        return None  # mixed content: collapsing to text would drop non-text blocks
+    texts = [b.get("text", "") for b in typed if b.get("type") == "text"]
     return "\n".join(texts) if texts else None
 
 

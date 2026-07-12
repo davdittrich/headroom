@@ -740,7 +740,13 @@ class TestListFormToolResultContent:
         }
         assert _extract_tool_result_content(msg) is None
 
-    def test_extract_list_form_ignores_non_text_blocks_mixed(self) -> None:
+    def test_extract_list_form_mixed_returns_none(self) -> None:
+        """A MIXED list ([text, image, text]) must extract to ``None``, NOT a
+        text-only join. Joining would let the downstream swap collapse the whole
+        block list to a string and silently DROP the image (data loss), and it
+        would let two results with identical text but different images collide
+        on the text-only hash. ``None`` marks the message unstable so it passes
+        through untouched — the pre-PR guarantee."""
         msg = {
             "role": "user",
             "content": [
@@ -755,8 +761,7 @@ class TestListFormToolResultContent:
                 }
             ],
         }
-        # Document order preserved; non-text block skipped.
-        assert _extract_tool_result_content(msg) == "A\nB"
+        assert _extract_tool_result_content(msg) is None
 
     def test_extract_str_form_unchanged(self) -> None:
         """str-form path must be byte-identical: same string returned, same
@@ -825,10 +830,11 @@ class TestListFormToolResultContent:
         ]
         assert cache.compute_frozen_count(messages) == 1
 
-    def test_swap_tool_result_content_list_form_round_trip(self) -> None:
-        """`_swap_tool_result_content` collapses list-form content down to
-        the replacement string on write (compression always yields a single
-        string); the original message is left untouched."""
+    def test_swap_tool_result_content_pure_text_list_collapses(self) -> None:
+        """For a PURE text-only list (no non-text blocks to lose),
+        `_swap_tool_result_content` collapses to the replacement string on write
+        (compression always yields a single string); the original message is
+        left untouched."""
         msg = {
             "role": "user",
             "content": [
@@ -849,6 +855,68 @@ class TestListFormToolResultContent:
             {"type": "text", "text": "A"},
             {"type": "text", "text": "B"},
         ]
+
+    def test_apply_cached_mixed_content_returned_unchanged(self, cache: CompressionCache) -> None:
+        """END-TO-END data-loss guard: a MIXED [text, image, text] tool_result
+        must pass through `apply_cached` byte-for-byte UNCHANGED — the image is
+        never dropped. Pre-fix, `_join_text_blocks` joined the text to ``"A\\nB"``,
+        `apply_cached` hit the poisoned text-only cache entry, and
+        `_swap_tool_result_content` replaced the ENTIRE block list with the
+        compressed string, silently discarding the image."""
+        mixed_content = [
+            {"type": "text", "text": "A"},
+            {"type": "image", "source": {"type": "base64", "data": "IMG_DATA"}},
+            {"type": "text", "text": "B"},
+        ]
+        # Poison the cache at the text-only hash so the pre-fix path WOULD swap.
+        text_hash = CompressionCache.content_hash("A\nB")
+        cache.store_compressed(text_hash, "COMPRESSED", tokens_saved=5)
+
+        msg = {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": mixed_content}],
+        }
+        result = cache.apply_cached([msg])
+
+        # The image (and every block) is preserved: no collapse to a string.
+        assert result[0]["content"][0]["content"] == mixed_content
+        # Original message also untouched.
+        assert msg["content"][0]["content"] == mixed_content
+
+    def test_mixed_results_identical_text_different_images_do_not_collide(
+        self, cache: CompressionCache
+    ) -> None:
+        """Two mixed tool_results with IDENTICAL text but DIFFERENT images must
+        not collide: extraction returns ``None`` for both, so neither is cached
+        under the (shared) text-only hash and each image is preserved. Pre-fix,
+        both hashed to ``content_hash("same text")`` and would alias."""
+        text_block = {"type": "text", "text": "same text"}
+        img1 = {"type": "image", "source": {"type": "base64", "data": "IMG_ONE"}}
+        img2 = {"type": "image", "source": {"type": "base64", "data": "IMG_TWO"}}
+
+        msg1 = {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": [text_block, img1]}
+            ],
+        }
+        msg2 = {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t2", "content": [text_block, img2]}
+            ],
+        }
+
+        # Neither extracts to text → both unstable, neither enters the cache.
+        assert _extract_tool_result_content(msg1) is None
+        assert _extract_tool_result_content(msg2) is None
+
+        out1 = cache.apply_cached([msg1])[0]
+        out2 = cache.apply_cached([msg2])[0]
+        # Distinct images preserved end-to-end (no aliasing on shared text hash).
+        assert out1["content"][0]["content"][-1] == img1
+        assert out2["content"][0]["content"][-1] == img2
+        assert out1["content"][0]["content"][-1] != out2["content"][0]["content"][-1]
 
     def test_openai_format_unchanged(self, cache: CompressionCache) -> None:
         """OpenAI `role: tool` path must be unaffected by the list-form

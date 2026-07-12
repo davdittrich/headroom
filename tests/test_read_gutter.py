@@ -30,6 +30,9 @@ from headroom.transforms.read_gutter import (
 
 _GUTTER_LINE = re.compile(r"^\s*\d+[\t→]")
 _GUTTER_SIG = re.compile(r"^\s*\d+[\t→](?:async def |def |class )")
+# A signature-shaped line WITH or WITHOUT a leading gutter. Used to detect a
+# kept signature that LOST its gutter (matches ``_SIG_ANY`` but not ``_GUTTER_SIG``).
+_SIG_ANY = re.compile(r"^(?:\s*\d+[\t→])?(?:async def |def |class )")
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PAYLOAD_FILE = _REPO_ROOT / "headroom" / "proxy" / "handlers" / "anthropic.py"
 
@@ -194,6 +197,26 @@ def test_reanchor_is_monotonic_forward_scan():
     assert out == "1\ta\n3\ta\n5\ta"
 
 
+def test_reanchor_is_order_independent_across_reordered_buckets():
+    """``reanchor`` must be ORDER-INDEPENDENT. The compressor emits kept lines
+    in FIXED BUCKET ORDER (imports → type_definitions → class_definitions →
+    function_signatures → top_level_code), NOT source order. A signature that
+    bucketing moves EARLIER in the output than it sat in source (e.g. a
+    top-level ``def foo`` emitted after a ``class Bar`` that follows it in
+    source) must still receive its ORIGINAL gutter. The old monotonic
+    never-rewind forward scan skipped past it and dropped the gutter.
+    """
+    # stripped: ``def foo`` at idx 1, ``class Bar`` at idx 5 (foo BEFORE Bar).
+    stripped = "import os\ndef foo():\n    pass\n\nx = 1\nclass Bar:\n    pass"
+    prefixes = ["1\t", "2\t", "3\t", "4\t", "5\t", "6\t", "7\t"]
+    # compressed lists ``class Bar`` (later source line) BEFORE ``def foo``
+    # (earlier source line) — the bucketing reorder.
+    compressed = "class Bar:\ndef foo():"
+    out = reanchor(compressed, stripped, prefixes)
+    # BOTH keep their correct original gutters (6 for Bar, 2 for foo).
+    assert out == "6\tclass Bar:\n2\tdef foo():"
+
+
 def test_reanchor_is_deterministic():
     clean = _load_valid_python_prefix()
     guttered = _add_gutter(clean)
@@ -227,6 +250,73 @@ def test_code_compressor_compresses_guttered_python():
     sig_lines = [line for line in result.compressed.split("\n") if _GUTTER_SIG.match(line)]
     assert sig_lines, "expected at least one guttered signature line in output"
     assert all(line in guttered_line_set for line in sig_lines)
+
+
+def test_code_compressor_reordered_signatures_all_keep_gutters():
+    """END-TO-END reorder regression: a top-level ``def foo`` BEFORE a
+    ``class Bar`` in source, both with long bodies so both are kept as
+    signatures. ``_assemble_compressed`` emits the class block
+    (class_definitions bucket) BEFORE ``def foo`` (function_signatures bucket),
+    reversing source order. EVERY kept signature line in the output must still
+    carry its correct original gutter — the count of gutter-bearing signature
+    lines must equal the number of kept signatures (not merely "the ones that
+    kept a gutter are valid").
+    """
+    source = (
+        "def foo(alpha, beta):\n"
+        "    total = 0\n"
+        "    total += alpha\n"
+        "    total += beta\n"
+        "    total += alpha * beta\n"
+        "    total += alpha - beta\n"
+        "    total += alpha // 3\n"
+        "    total += beta // 2\n"
+        "    total += alpha % 4\n"
+        "    total -= beta % 5\n"
+        "    total += alpha + beta + 1\n"
+        "    total += alpha + beta + 2\n"
+        "    total += alpha + beta + 3\n"
+        "    return total\n"
+        "\n"
+        "\n"
+        "class Bar:\n"
+        '    NAME = "bar the first configuration entry"\n'
+        "    VALUE = 1234567\n"
+        "    ITEMS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]\n"
+        '    OTHER = {"alpha": 1, "beta": 2, "gamma": 3}\n'
+        "    FLAG = True\n"
+        '    EXTRA = "padding entry number one here"\n'
+        '    MORE = "padding entry number two here"\n'
+        '    EVEN_MORE = "padding entry number three"\n'
+        '    STILL_MORE = "padding entry number four"\n'
+    )
+    # Sanity: def foo genuinely precedes class Bar in the SOURCE.
+    assert source.index("def foo") < source.index("class Bar")
+
+    guttered = _add_gutter(source, sep="\t")
+    result = _compressor().compress(guttered, language="python")
+
+    assert result.syntax_valid is True
+    assert result.compression_ratio < 1.0
+
+    guttered_lines = guttered.split("\n")
+    guttered_line_set = set(guttered_lines)
+    out_lines = result.compressed.split("\n")
+    # Every signature-shaped line, whether or not it carries a gutter.
+    sig_any = [ln for ln in out_lines if _SIG_ANY.match(ln)]
+    # The subset that actually carries a gutter.
+    guttered_sigs = [ln for ln in sig_any if _GUTTER_SIG.match(ln)]
+
+    # Both ``def foo`` and ``class Bar`` survive as kept signatures.
+    assert len(sig_any) >= 2, f"expected >=2 kept signatures, got {sig_any!r}"
+    # The reorder must not cost ANY signature its gutter.
+    assert len(guttered_sigs) == len(sig_any), (
+        f"a kept signature lost its gutter: sig_any={sig_any!r} guttered_sigs={guttered_sigs!r}"
+    )
+    # Each retained gutter is the ORIGINAL source line, verbatim.
+    assert all(ln in guttered_line_set for ln in guttered_sigs)
+    # Explicitly: the out-of-order ``def foo`` kept its original line number.
+    assert guttered_lines[0] in guttered_sigs
 
 
 def test_code_compressor_guttered_arrow_payload_compresses():

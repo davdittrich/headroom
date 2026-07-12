@@ -18,6 +18,7 @@ deterministic so the transformed output is byte-stable (prompt-prefix-cache safe
 from __future__ import annotations
 
 import re
+from collections import deque
 
 # A gutter is leading whitespace, one or more digits, then a single separator:
 # a TAB or a U+2192 arrow. Anchored at the start of a line.
@@ -78,29 +79,38 @@ def detect_and_strip_gutter(text: str) -> tuple[str, list[str], bool]:
 
 
 def reanchor(compressed: str, stripped: str, prefixes: list[str]) -> str:
-    """Re-attach original gutters to kept lines via a monotonic forward scan.
+    """Re-attach original gutters to kept lines via an order-independent lookup.
 
     ``stripped``/``prefixes`` come from :func:`detect_and_strip_gutter`.
-    Maintains a pointer ``p`` into ``stripped``; for each line ``cl`` of
-    ``compressed`` it finds the smallest ``j >= p`` with
-    ``stripped_lines[j] == cl``. If found, it emits ``prefixes[j] + cl`` and
-    advances ``p`` to ``j + 1`` (so repeated identical lines map to successive
-    source occurrences). Lines with no match — headers, elision markers, CCR
-    footers, reflowed text — pass through unchanged. Deterministic; pure;
-    preserves original line numbers on kept (verbatim) lines.
+
+    The compressed output does NOT preserve source order: ``code_compressor``
+    emits kept content in FIXED BUCKET ORDER (imports → type_definitions →
+    class_definitions → function_signatures → top_level_code), so a kept
+    signature that bucketing moves earlier than it sat in source (e.g. a
+    top-level ``def`` after a later ``class``) would be scanned-past by a
+    monotonic never-rewind pointer and emitted WITHOUT its gutter. To be robust
+    to that, this builds ``occ``: a map from each stripped line's content to a
+    :class:`~collections.deque` of its ``(index, prefix)`` occurrences in source
+    order. For each compressed line ``cl``, if ``occ[cl]`` is non-empty it
+    ``popleft()``s the next source occurrence and emits ``prefix + cl``;
+    otherwise the line passes through unchanged (headers, elision markers, CCR
+    footers, reflowed text). Global (position-independent) lookup handles the
+    reordered buckets; the deque makes successive identical lines map to
+    successive source occurrences. O(n) overall. Deterministic; pure; preserves
+    original line numbers on kept (verbatim) lines.
     """
     stripped_lines = stripped.split("\n")
-    n = len(stripped_lines)
+    occ: dict[str, deque[tuple[int, str]]] = {}
+    for idx, sl in enumerate(stripped_lines):
+        prefix = prefixes[idx] if idx < len(prefixes) else ""
+        occ.setdefault(sl, deque()).append((idx, prefix))
+
     out: list[str] = []
-    p = 0
     for cl in compressed.split("\n"):
-        j = p
-        while j < n and stripped_lines[j] != cl:
-            j += 1
-        if j < n:
-            prefix = prefixes[j] if j < len(prefixes) else ""
+        bucket = occ.get(cl)
+        if bucket:
+            _, prefix = bucket.popleft()
             out.append(prefix + cl)
-            p = j + 1
         else:
             out.append(cl)
     return "\n".join(out)
