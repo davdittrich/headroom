@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
 from headroom.audit.reads import audit_reads, render_text
 
 CONTENT = "     1\tdef foo():\n     2\t    return 42\n" * 30  # >512B
+ARROW_CONTENT = "     1→def foo():\n     2→    return 42\n" * 30  # >512B, arrow gutter
 
 
 def _line(role: str, content, ts: str = "2026-06-09T10:00:00Z") -> str:
@@ -63,6 +65,25 @@ def transcript_dir(tmp_path):
     return tmp_path / "projects"
 
 
+@pytest.fixture
+def arrow_transcript_dir(tmp_path):
+    """Synthetic session with a single Read whose line-number gutters use
+    the U+2192 arrow separator (not tab), to exercise the canonical
+    arrow-aware gutter pattern shared with headroom.transforms.read_gutter."""
+    lines = [
+        _line(
+            "assistant",
+            [_tool_use("r1", "Read", {"file_path": "/x/arrow.py"})],
+            "2026-06-09T10:00:01Z",
+        ),
+        _line("user", [_tool_result("r1", ARROW_CONTENT)], "2026-06-09T10:00:02Z"),
+    ]
+    proj = tmp_path / "projects" / "-x-demo"
+    proj.mkdir(parents=True)
+    (proj / "session1.jsonl").write_text("\n".join(lines))
+    return tmp_path / "projects"
+
+
 class TestAuditReads:
     def test_metrics(self, transcript_dir):
         r = audit_reads(transcript_dir)
@@ -105,6 +126,31 @@ class TestAuditReads:
     def test_empty_dir(self, tmp_path):
         r = audit_reads(tmp_path)
         assert r.sessions == 0
+
+
+class TestAuditReadsArrowGutter:
+    """Regression coverage: the audit reuses the canonical arrow-aware
+    gutter pattern (headroom.transforms.read_gutter.GUTTER_PATTERN) and
+    counts overhead in UTF-8 bytes, not characters."""
+
+    def test_linenum_overhead_bytes_byte_accurate_for_arrow_gutters(self, arrow_transcript_dir):
+        r = audit_reads(arrow_transcript_dir)
+
+        assert r.read_calls == 1
+
+        # Derive the expected overhead directly from the fixture using the
+        # same canonical pattern (tab OR U+2192 arrow), rather than a
+        # hardcoded magic number that a \s*-eats-\n fold could skew.
+        gutter_re = re.compile(r"^(\s*\d+[\t→])", re.M)
+        matched_gutters = gutter_re.findall(ARROW_CONTENT)
+        assert matched_gutters, "fixture must actually contain arrow gutters"
+
+        expected_bytes = sum(len(g.encode("utf-8")) for g in matched_gutters)
+        expected_chars = sum(len(g) for g in matched_gutters)
+
+        assert r.linenum_overhead_bytes == expected_bytes
+        assert r.linenum_overhead_bytes > expected_chars
+        assert r.linenum_overhead_bytes > 0
 
 
 class TestMaturationSim:

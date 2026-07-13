@@ -22,7 +22,8 @@ from collections import deque
 
 # A gutter is leading whitespace, one or more digits, then a single separator:
 # a TAB or a U+2192 arrow. Anchored at the start of a line.
-_GUTTER_RE = re.compile(r"^(\s*\d+[\t→])")
+GUTTER_PATTERN = r"^(\s*\d+[\t→])"  # tab OR U+2192 arrow gutter separator
+_GUTTER_RE = re.compile(GUTTER_PATTERN)
 
 
 def strip_line_gutter(line: str) -> str:
