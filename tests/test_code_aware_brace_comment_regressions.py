@@ -81,7 +81,7 @@ func Greet(name string) string {
 
 def _compress_ast(code: str, language: CodeLanguage):
     compressor = CodeAwareCompressor(CodeCompressorConfig())
-    compressed, _, _ = compressor._compress_with_ast(code, language, "", None)
+    compressed, _, _, _ = compressor._compress_with_ast(code, language, "", None)
     return compressor, compressed
 
 

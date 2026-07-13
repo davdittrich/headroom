@@ -40,6 +40,27 @@ def _is_tool_result_message(msg: dict) -> bool:
     return False
 
 
+def _join_text_blocks(blocks: list) -> str | None:
+    """Join the `text` fields of a PURE text-only Anthropic content block list.
+
+    Returns ``None`` when the list contains ANY non-text block (e.g. an image).
+    Collapsing a mixed list to a text-only string is lossy: the downstream
+    `_swap_tool_result_content` replaces the entire block list with the joined
+    string, silently DROPPING the non-text blocks, and the text-only
+    `content_hash` would collide for two results with identical text but
+    different images. Returning ``None`` marks the message unstable so it passes
+    through UNTOUCHED — the pre-PR guarantee.
+
+    Returns ``None`` (not "") for a list with no text blocks at all, so callers
+    treat it as unstable rather than empty-but-valid content.
+    """
+    typed = [b for b in blocks if isinstance(b, dict)]
+    if any(b.get("type") != "text" for b in typed):
+        return None  # mixed content: collapsing to text would drop non-text blocks
+    texts = [b.get("text", "") for b in typed if b.get("type") == "text"]
+    return "\n".join(texts) if texts else None
+
+
 def _extract_tool_result_content(msg: dict) -> str | None:
     """Extract text content from a tool result message (both formats)."""
     # OpenAI format
@@ -54,6 +75,12 @@ def _extract_tool_result_content(msg: dict) -> str | None:
                 inner = block.get("content")
                 if isinstance(inner, str):
                     return inner
+                if isinstance(inner, list):
+                    # Anthropic-native tool_result blocks emitted by MCP
+                    # tools / modern Claude Code carry a list of typed
+                    # blocks (e.g. [{"type": "text", "text": "..."}])
+                    # instead of a plain string.
+                    return _join_text_blocks(inner)
     return None
 
 
@@ -69,6 +96,10 @@ def _swap_tool_result_content(msg: dict, new_content: str) -> dict:
     if isinstance(content, list):
         for block in content:
             if isinstance(block, dict) and block.get("type") == "tool_result":
+                # Compression always yields a single string, so this
+                # unconditionally collapses list-form `content` (see
+                # `_join_text_blocks`) down to `new_content` on write —
+                # intentional, not a round-trip of the original blocks.
                 block["content"] = new_content
                 break
     return new_msg

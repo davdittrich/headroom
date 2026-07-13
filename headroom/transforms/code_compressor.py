@@ -52,6 +52,7 @@ from typing import Any
 from ..config import TransformResult
 from ..tokenizer import Tokenizer
 from .base import Transform
+from .read_gutter import detect_and_strip_gutter, reanchor_spans
 
 logger = logging.getLogger(__name__)
 
@@ -462,18 +463,25 @@ _LANG_CONFIGS: dict[CodeLanguage, LangConfig] = {
 class CodeStructure:
     """Extracted structure from parsed code."""
 
-    header_code: list[str] = field(default_factory=list)
-    imports: list[str] = field(default_factory=list)
-    type_definitions: list[str] = field(default_factory=list)
-    class_definitions: list[str] = field(default_factory=list)
-    function_signatures: list[str] = field(default_factory=list)
+    # Kept buckets carry each element's source row (node.start_point[0]) as the
+    # single source of truth for exact gutter reanchoring. ``len(...)`` still
+    # yields the preserved_imports / preserved_signatures metric counts.
+    # ``header_code`` (license banners, top-of-file comments, C# ``#region``
+    # blocks) is span-tracked like every other kept bucket so its gutters
+    # reanchor exactly — it MUST NOT be a plain ``list[str]`` (would bypass
+    # span tracking and reintroduce Defect-3 for leading comments).
+    header_code: list[tuple[int, str]] = field(default_factory=list)  # (row, text)
+    imports: list[tuple[int, str]] = field(default_factory=list)  # (row, text)
+    type_definitions: list[tuple[int, str]] = field(default_factory=list)
+    class_definitions: list[tuple[int, str]] = field(default_factory=list)
+    function_signatures: list[tuple[int, str]] = field(default_factory=list)
     function_bodies: list[tuple[str, str, int]] = field(
         default_factory=list
     )  # (signature, body, line)
     decorators: list[str] = field(default_factory=list)
     comments: list[str] = field(default_factory=list)
-    top_level_code: list[str] = field(default_factory=list)
-    other: list[str] = field(default_factory=list)
+    top_level_code: list[tuple[int, str]] = field(default_factory=list)  # (row, text)
+    other: list[str] = field(default_factory=list)  # generic path; row == index
 
 
 @dataclass
@@ -1108,6 +1116,14 @@ class CodeAwareCompressor(Transform):
                 syntax_valid=True,
             )
 
+        # Claude Code's Read tool prefixes each line with a right-aligned
+        # line-number gutter, which is invalid syntax that makes tree-sitter
+        # bail (0% compression). Detect it by shape and parse a gutter-stripped
+        # copy; token counts stay on the ORIGINAL guttered ``code`` so ratios
+        # remain honest, and original line numbers are reattached at the end.
+        stripped_code, gutter_prefixes, had_gutter = detect_and_strip_gutter(code)
+        work_code = stripped_code if had_gutter else code
+
         # Detect or use specified language. An explicit hint or fence tag may be
         # an alias (js/ts/py/...) or something we don't recognize — coerce it
         # instead of constructing CodeLanguage() directly (which raises), and
@@ -1115,17 +1131,17 @@ class CodeAwareCompressor(Transform):
         if language:
             detected_lang = coerce_language(language)
             if detected_lang == CodeLanguage.UNKNOWN:
-                detected_lang, confidence = detect_language(code)
+                detected_lang, confidence = detect_language(work_code)
             else:
                 confidence = 1.0
         elif self.config.language_hint:
             detected_lang = coerce_language(self.config.language_hint)
             if detected_lang == CodeLanguage.UNKNOWN:
-                detected_lang, confidence = detect_language(code)
+                detected_lang, confidence = detect_language(work_code)
             else:
                 confidence = 1.0
         else:
-            detected_lang, confidence = detect_language(code)
+            detected_lang, confidence = detect_language(work_code)
 
         # If language unknown and fallback enabled, try Kompress
         if detected_lang == CodeLanguage.UNKNOWN:
@@ -1161,8 +1177,8 @@ class CodeAwareCompressor(Transform):
 
         # Parse and compress
         try:
-            compressed, structure, symbol_scores = self._compress_with_ast(
-                code, detected_lang, context, tokenizer
+            compressed, structure, symbol_scores, spans = self._compress_with_ast(
+                work_code, detected_lang, context, tokenizer
             )
             compressed_tokens = self._estimate_tokens(compressed, tokenizer)
 
@@ -1229,6 +1245,16 @@ class CodeAwareCompressor(Transform):
                         f" Expires in {ttl_min}m.]"
                     )
 
+            if had_gutter:
+                # Overlay original line-number gutters onto kept element lines
+                # via the per-element spans (source-row-ordered, so identical
+                # lines duplicated across buckets get their EXACT rows). The CCR
+                # footer, separators and elision markers lie outside every span
+                # and pass through un-guttered. Recount on the reanchored output
+                # so the reported ratio reflects what is actually returned.
+                compressed = reanchor_spans(compressed, spans, work_code, gutter_prefixes)
+                compressed_tokens = self._estimate_tokens(compressed, tokenizer)
+                ratio = compressed_tokens / max(original_tokens, 1)
             return CodeCompressionResult(
                 compressed=compressed,
                 original=code,
@@ -1266,7 +1292,7 @@ class CodeAwareCompressor(Transform):
         language: CodeLanguage,
         context: str,
         tokenizer: Tokenizer | None = None,
-    ) -> tuple[str, CodeStructure, dict[str, float]]:
+    ) -> tuple[str, CodeStructure, dict[str, float], list[tuple[int, int, int]]]:
         """Compress code using AST parsing with symbol importance analysis.
 
         Thread-safe: all mutable state is passed through parameters, not
@@ -1279,7 +1305,8 @@ class CodeAwareCompressor(Transform):
             tokenizer: Optional tokenizer for accurate token counting.
 
         Returns:
-            Tuple of (compressed code, extracted structure, symbol scores).
+            Tuple of (compressed code, extracted structure, symbol scores,
+            per-element assembled-line spans for exact gutter reanchoring).
         """
         parser = _get_parser(language.value)
         tree = parser.parse(bytes(code, "utf-8"))
@@ -1298,8 +1325,8 @@ class CodeAwareCompressor(Transform):
         else:
             structure = self._extract_generic_structure(root, code)
 
-        # Assemble compressed code
-        compressed = self._assemble_compressed(structure, language)
+        # Assemble compressed code (also yields per-element line spans)
+        compressed, spans = self._assemble_compressed(structure, language)
 
         # Expose scores with short names for the public API
         symbol_scores: dict[str, float] = {}
@@ -1309,7 +1336,7 @@ class CodeAwareCompressor(Transform):
                 if short not in symbol_scores or score > symbol_scores[short]:
                     symbol_scores[short] = score
 
-        return compressed, structure, symbol_scores
+        return compressed, structure, symbol_scores, spans
 
     # =========================================================================
     # Unified structure extraction (data-driven, replaces per-language methods)
@@ -1338,14 +1365,18 @@ class CodeAwareCompressor(Transform):
             # Package declarations (Go, Java)
             if lang_config.package_node and node_type == lang_config.package_node:
                 leading = _get_leading_comment_text(node, code, captured_byte_ranges)
-                structure.imports.insert(0, leading + _get_node_text(node, code))
+                structure.imports.insert(
+                    0, (node.start_point[0], leading + _get_node_text(node, code))
+                )
                 captured_byte_ranges.append((node.start_byte, node.end_byte))
                 return
 
             # Import statements
             if node_type in lang_config.import_nodes:
                 leading = _get_leading_comment_text(node, code, captured_byte_ranges)
-                structure.imports.append(leading + _get_node_text(node, code))
+                structure.imports.append(
+                    (node.start_point[0], leading + _get_node_text(node, code))
+                )
                 captured_byte_ranges.append((node.start_byte, node.end_byte))
                 return
 
@@ -1368,11 +1399,14 @@ class CodeAwareCompressor(Transform):
                         export_prefix = _slice_code_bytes(code, node.start_byte, child.start_byte)
                         export_suffix = _slice_code_bytes(code, child.end_byte, node.end_byte)
                         structure.function_signatures.append(
-                            leading + export_prefix + compressed + export_suffix
+                            (
+                                node.start_point[0],
+                                leading + export_prefix + compressed + export_suffix,
+                            )
                         )
                         break
                 if not has_func_or_class:
-                    structure.imports.append(leading + text)
+                    structure.imports.append((node.start_point[0], leading + text))
                 captured_byte_ranges.append((node.start_byte, node.end_byte))
                 return
 
@@ -1397,12 +1431,14 @@ class CodeAwareCompressor(Transform):
                     # Route to correct list based on inner definition type
                     for child in node.children:
                         if child.type in lang_config.class_nodes:
-                            structure.class_definitions.append(full_def)
+                            structure.class_definitions.append((node.start_point[0], full_def))
                             break
                     else:
-                        structure.function_signatures.append(full_def)
+                        structure.function_signatures.append((node.start_point[0], full_def))
                 elif definition_compressed:
-                    structure.function_signatures.append(leading + definition_compressed)
+                    structure.function_signatures.append(
+                        (node.start_point[0], leading + definition_compressed)
+                    )
                 captured_byte_ranges.append((node.start_byte, node.end_byte))
                 return
 
@@ -1412,7 +1448,7 @@ class CodeAwareCompressor(Transform):
                 compressed = self._compress_function_ast(
                     node, code, language, lang_config, body_limits, analysis
                 )
-                structure.function_signatures.append(leading + compressed)
+                structure.function_signatures.append((node.start_point[0], leading + compressed))
                 captured_byte_ranges.append((node.start_byte, node.end_byte))
                 return
 
@@ -1420,7 +1456,7 @@ class CodeAwareCompressor(Transform):
                 compressed = self._compress_class_ast(
                     node, code, language, lang_config, body_limits, analysis
                 )
-                structure.class_definitions.append(compressed)
+                structure.class_definitions.append((node.start_point[0], compressed))
                 captured_byte_ranges.append((node.start_byte, node.end_byte))
                 return
 
@@ -1430,7 +1466,7 @@ class CodeAwareCompressor(Transform):
                 compressed = self._compress_class_ast(
                     node, code, language, lang_config, body_limits, analysis
                 )
-                structure.class_definitions.append(leading + compressed)
+                structure.class_definitions.append((node.start_point[0], leading + compressed))
                 captured_byte_ranges.append((node.start_byte, node.end_byte))
                 trailing_semicolon = _get_same_line_trailing_semicolon(node)
                 if trailing_semicolon is not None:
@@ -1442,7 +1478,9 @@ class CodeAwareCompressor(Transform):
             # Type definitions
             if node_type in lang_config.type_nodes:
                 leading = _get_leading_comment_text(node, code, captured_byte_ranges)
-                structure.type_definitions.append(leading + _get_node_text(node, code))
+                structure.type_definitions.append(
+                    (node.start_point[0], leading + _get_node_text(node, code))
+                )
                 captured_byte_ranges.append((node.start_byte, node.end_byte))
                 return
 
@@ -1465,9 +1503,11 @@ class CodeAwareCompressor(Transform):
                     for t in child_types
                 )
                 if has_import and not has_declaration:
-                    structure.imports.append(_get_node_text(node, code))
+                    structure.imports.append((node.start_point[0], _get_node_text(node, code)))
                 else:
-                    structure.top_level_code.append(_get_node_text(node, code))
+                    structure.top_level_code.append(
+                        (node.start_point[0], _get_node_text(node, code))
+                    )
                 captured_byte_ranges.append((node.start_byte, node.end_byte))
                 return
 
@@ -1492,9 +1532,9 @@ class CodeAwareCompressor(Transform):
                 text = _get_node_text(child, code).strip()
                 if text:
                     if first_captured is not None and child.end_byte <= first_captured:
-                        structure.header_code.append(text)
+                        structure.header_code.append((child.start_point[0], text))
                     else:
-                        structure.top_level_code.append(text)
+                        structure.top_level_code.append((child.start_point[0], text))
 
         return structure
 
@@ -1914,49 +1954,81 @@ class CodeAwareCompressor(Transform):
         self,
         structure: CodeStructure,
         language: CodeLanguage,
-    ) -> str:
-        """Assemble compressed code from structure."""
-        parts: list[str] = []
+    ) -> tuple[str, list[tuple[int, int, int]]]:
+        """Assemble compressed code from structure.
 
-        # File header (license banners, top-of-file comments) stays on top
+        Returns ``(assembled_str, spans)``. The STRING is byte-identical to the
+        historical assembler (same bucket order, same ``parts.append("")``
+        separators, same generic-``other`` no-trailing-separator asymmetry, same
+        trailing-empty trim, same ``"\\n".join``). ``spans`` is a per-element
+        list of ``(source_row, line_start, line_end)`` half-open ranges indexing
+        the assembled string's ``split("\\n")``, built during assembly in
+        emission order so the package ``insert(0)`` position is honored; the
+        inter-group ``""`` separators are NOT spans. Consumed by
+        :func:`read_gutter.reanchor_spans` to overlay exact gutters.
+        """
+        parts: list[str] = []
+        spans: list[tuple[int, int, int]] = []
+        lc = 0  # running assembled-line offset (parts hold MULTI-line strings)
+
+        def emit_bucket(bucket: list[tuple[int, str]]) -> None:
+            nonlocal lc
+            for row, text in bucket:
+                parts.append(text)
+                n = text.count("\n") + 1
+                spans.append((row, lc, lc + n))
+                lc += n
+            parts.append("")  # inter-group separator (not a span)
+            lc += 1
+
+        # File header (license banners, top-of-file comments) stays on top.
+        # Span-tracked via emit_bucket so leading-comment gutters reanchor
+        # exactly (emit_bucket also appends the inter-group "" and advances lc).
         if structure.header_code:
-            parts.extend(structure.header_code)
-            parts.append("")
+            emit_bucket(structure.header_code)
 
         # Imports first
         if structure.imports:
-            parts.extend(structure.imports)
-            parts.append("")
+            emit_bucket(structure.imports)
 
         # Type definitions
         if structure.type_definitions:
-            parts.extend(structure.type_definitions)
-            parts.append("")
+            emit_bucket(structure.type_definitions)
 
         # Class definitions
         if structure.class_definitions:
-            parts.extend(structure.class_definitions)
-            parts.append("")
+            emit_bucket(structure.class_definitions)
 
         # Function signatures/definitions
         if structure.function_signatures:
-            parts.extend(structure.function_signatures)
-            parts.append("")
+            emit_bucket(structure.function_signatures)
 
         # Top-level code (global variables, constants, if __name__, etc.)
         if structure.top_level_code:
-            parts.extend(structure.top_level_code)
-            parts.append("")
+            emit_bucket(structure.top_level_code)
 
-        # Other content (used by generic extraction)
+        # Other content (used by generic extraction): one span per line, row ==
+        # line index. No trailing separator (historical asymmetry preserved).
         if structure.other:
-            parts.extend(structure.other)
+            for idx, line in enumerate(structure.other):
+                parts.append(line)
+                spans.append((idx, lc, lc + 1))
+                lc += 1
 
-        # Remove trailing empty lines
+        # Remove trailing empty lines (only ever trailing separators or trailing
+        # generic blank lines — never inside a typed element).
         while parts and not parts[-1].strip():
             parts.pop()
 
-        return "\n".join(parts)
+        assembled = "\n".join(parts)
+        # Clip spans to the assembled LINE count (parts hold multi-line strings,
+        # so len(parts) is NOT the line count). The trim only drops trailing
+        # separators / generic blank lines, so this removes exactly the spans of
+        # trimmed generic blanks while keeping every real element span.
+        n_lines = len(assembled.split("\n"))
+        spans = [(row, ls, min(le, n_lines)) for (row, ls, le) in spans if ls < n_lines]
+
+        return assembled, spans
 
     def _verify_syntax(self, code: str, language: CodeLanguage) -> bool:
         """Verify that code is syntactically valid.

@@ -40,8 +40,10 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from headroom.transforms.read_gutter import GUTTER_PATTERN
+
 MIN_SIZE = 512  # matches ReadLifecycleConfig.min_size_bytes
-_LINE_NUM_RE = re.compile(r"^\s*\d+\t", re.M)
+_LINE_NUM_RE = re.compile(GUTTER_PATTERN, re.M)
 
 _LOCK_GENERATED = (
     "package-lock.json",
@@ -223,7 +225,8 @@ def _audit_session(path: Path, agg: _Agg) -> None:
                         r.read_calls_small += 1
                     agg.class_bytes[_classify_path(fp)] += size
                     r.linenum_overhead_bytes += sum(
-                        len(m.group(0)) for m in _LINE_NUM_RE.finditer(text)
+                        len(m.group(0).encode("utf-8", errors="replace"))
+                        for m in _LINE_NUM_RE.finditer(text)
                     )
 
                     h = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()

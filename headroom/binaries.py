@@ -388,6 +388,13 @@ def _path_lookup(tool: str) -> Path | None:
     sys.prefix/bin (or sys.prefix/Scripts on Windows). That directory is on
     PATH when the venv is activated, but subprocesses started by a non-active
     interpreter can miss it, so we check it explicitly as a fallback.
+
+    Registry tools are pinned, PyPI-installed wheels: resolution must prefer
+    that bundled binary over PATH, otherwise an unrelated same-named binary
+    earlier on PATH (e.g. a system-installed `ast-grep`) would silently
+    shadow the pinned build headroom actually tested against, breaking
+    reproducibility. Non-registry tools have no pinned build to protect, so
+    they keep the original PATH-first order.
     """
     candidates = [tool]
     if _in_registry(tool):
@@ -395,17 +402,25 @@ def _path_lookup(tool: str) -> Path | None:
         if alias and alias != tool:
             candidates.append(alias)
 
-    for name in candidates:
-        found = shutil.which(name)
-        if found:
-            return Path(found)
-
     scripts_dir = Path(sys.prefix) / ("Scripts" if sys.platform.startswith("win") else "bin")
-    for name in candidates:
-        exe = scripts_dir / (name + (".exe" if sys.platform.startswith("win") else ""))
-        if exe.exists():
-            return exe
-    return None
+
+    def _scripts_match() -> Path | None:
+        for name in candidates:
+            exe = scripts_dir / (name + (".exe" if sys.platform.startswith("win") else ""))
+            if exe.exists():
+                return exe
+        return None
+
+    def _path_match() -> Path | None:
+        for name in candidates:
+            found = shutil.which(name)
+            if found:
+                return Path(found)
+        return None
+
+    if _in_registry(tool):
+        return _scripts_match() or _path_match()
+    return _path_match() or _scripts_match()
 
 
 def which(tool: str) -> Path | None:
