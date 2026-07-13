@@ -32,6 +32,24 @@ from headroom.transforms.read_gutter import (
     strip_line_gutter,
 )
 
+# Code-aware compression needs the tree-sitter grammar pack (the ``[code]``
+# extra). CI test shards run offline WITHOUT it (see ci.yml: "test shards run
+# HF_HUB_OFFLINE"), so ``CodeAwareCompressor.compress`` degrades to a no-op /
+# Kompress fallback there. Gate every test that drives ``.compress()`` on
+# availability — matching tests/test_transforms/test_code_compressor.py. The
+# gutter-strip / reanchor / assemble helper tests below are pure-Python and
+# stay ungated (they never touch the tree-sitter parse path).
+try:
+    import tree_sitter_language_pack  # noqa: F401
+
+    TREE_SITTER_INSTALLED = True
+except ImportError:
+    TREE_SITTER_INSTALLED = False
+
+requires_tree_sitter = pytest.mark.skipif(
+    not TREE_SITTER_INSTALLED, reason="tree-sitter grammar pack not installed"
+)
+
 _GUTTER_LINE = re.compile(r"^\s*\d+[\t→]")
 _GUTTER_SIG = re.compile(r"^\s*\d+[\t→](?:async def |def |class )")
 # A signature-shaped line WITH or WITHOUT a leading gutter. Used to detect a
@@ -237,6 +255,7 @@ def _compressor() -> CodeAwareCompressor:
     return CodeAwareCompressor(CodeCompressorConfig(enable_ccr=False))
 
 
+@requires_tree_sitter
 def test_code_compressor_compresses_guttered_python():
     clean = _load_valid_python_prefix()
     guttered = _add_gutter(clean, sep="\t")
@@ -256,6 +275,7 @@ def test_code_compressor_compresses_guttered_python():
     assert all(line in guttered_line_set for line in sig_lines)
 
 
+@requires_tree_sitter
 def test_code_compressor_reordered_signatures_all_keep_gutters():
     """END-TO-END reorder regression: a top-level ``def foo`` BEFORE a
     ``class Bar`` in source, both with long bodies so both are kept as
@@ -323,6 +343,7 @@ def test_code_compressor_reordered_signatures_all_keep_gutters():
     assert guttered_lines[0] in guttered_sigs
 
 
+@requires_tree_sitter
 def test_code_compressor_guttered_arrow_payload_compresses():
     clean = _load_valid_python_prefix()
     guttered = _add_gutter(clean, sep="→")
@@ -389,6 +410,7 @@ def test_astgrep_transform_outlines_guttered_input(monkeypatch):
 # --------------------------------------------------------------------------- #
 # DoD 6 — no-op on clean (non-guttered) code                                  #
 # --------------------------------------------------------------------------- #
+@requires_tree_sitter
 def test_code_compressor_noop_on_clean_code():
     clean = _load_valid_python_prefix()
 
@@ -426,6 +448,7 @@ def test_astgrep_transform_clean_code_has_no_gutters(monkeypatch):
 # --------------------------------------------------------------------------- #
 # DoD 7 — determinism (byte-stable output => prompt-prefix cache safe)        #
 # --------------------------------------------------------------------------- #
+@requires_tree_sitter
 def test_code_compressor_guttered_output_is_byte_stable():
     clean = _load_valid_python_prefix()
     guttered = _add_gutter(clean, sep="\t")
@@ -453,6 +476,7 @@ def test_sub_majority_gutter_is_treated_as_clean():
     assert prefixes == []
 
 
+@requires_tree_sitter
 def test_compress_does_not_crash_on_sub_majority_gutter():
     clean = _load_valid_python_prefix()
     lines = clean.split("\n")
@@ -625,6 +649,7 @@ def test_reanchor_spans_elided_body_duplicate_residual():
 
 
 # ---- End-to-end through compress() ---------------------------------------- #
+@requires_tree_sitter
 def test_compress_cross_bucket_duplicate_exact_rows_end_to_end():
     # def foo BEFORE class Bar; identical kept "    pass" duplicated across the
     # function_signatures and class_definitions buckets (reversed at assembly).
@@ -650,6 +675,7 @@ def test_compress_cross_bucket_duplicate_exact_rows_end_to_end():
     assert lines[foo_i + 1] == "2\t    pass"
 
 
+@requires_tree_sitter
 def test_compress_guttered_content_byte_identical_to_clean_real_payload():
     # DoD: on a REAL payload, degutter(compress(guttered)) == compress(clean).
     clean = _load_valid_python_prefix()
@@ -660,6 +686,7 @@ def test_compress_guttered_content_byte_identical_to_clean_real_payload():
     assert _degutter(guttered_out) == clean_out
 
 
+@requires_tree_sitter
 def test_compress_guttered_ccr_footer_has_no_gutter():
     # DoD: CCR footer survives reanchor_spans and carries NO gutter.
     clean = _load_valid_python_prefix()
@@ -673,6 +700,7 @@ def test_compress_guttered_ccr_footer_has_no_gutter():
         assert strip_line_gutter(ln) == ln
 
 
+@requires_tree_sitter
 def test_compress_guttered_js_export_wrapped_reanchors():
     js = "export function foo() {\n  return 1;\n}\n\nexport function bar() {\n  return 2;\n}\n"
     guttered = _add_gutter(js, sep="\t")
@@ -685,6 +713,7 @@ def test_compress_guttered_js_export_wrapped_reanchors():
     assert all(ln in guttered_set for ln in out.split("\n") if _GUTTER_LINE.match(ln))
 
 
+@requires_tree_sitter
 def test_compress_guttered_go_package_reanchors():
     go = 'package main\n\nimport "fmt"\n\nfunc Foo() int {\n\treturn 1\n}\n'
     guttered = _add_gutter(go, sep="\t")
@@ -698,6 +727,7 @@ def test_compress_guttered_go_package_reanchors():
 
 
 # ---- PR-A/1 merge exit gate: #1926 C# support x span carrier -------------- #
+@requires_tree_sitter
 def test_compress_guttered_csharp_region_header_span_reanchors():
     """Exit gate for merging #1926 (first-class C#) with the span carrier.
 
