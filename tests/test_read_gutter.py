@@ -695,3 +695,74 @@ def test_compress_guttered_go_package_reanchors():
     assert _degutter(out) == clean_out
     guttered_set = set(guttered.split("\n"))
     assert all(ln in guttered_set for ln in out.split("\n") if _GUTTER_LINE.match(ln))
+
+
+# ---- PR-A/1 merge exit gate: #1926 C# support x span carrier -------------- #
+def test_compress_guttered_csharp_region_header_span_reanchors():
+    """Exit gate for merging #1926 (first-class C#) with the span carrier.
+
+    A guttered C# payload whose leading ``#region``/comment banner lands in the
+    ``header_code`` bucket AND whose method body is compressible. Proves the
+    merge kept C# flowing through the span carrier and that ``header_code`` is
+    span-anchored — i.e. retyped from origin's plain ``list[str]`` to
+    ``list[tuple[int, str]]`` and emitted via ``emit_bucket``. If it had stayed
+    ``list[str]`` + ``parts.extend`` (origin's form), the header would either
+    raise ``TypeError`` at ``"\\n".join`` (tuple in a str list) or bypass span
+    tracking and lose its gutter — both caught below. Also guards the three
+    C#-only append sites (namespace container + ``#if`` opaque regions) that
+    origin appended as plain strings; unfixed they crash ``emit_bucket``.
+    """
+    cs = (
+        "#region License\n"
+        "// Copyright (c) 2026 Acme. All rights reserved.\n"
+        "// Licensed under the MIT License.\n"
+        "#endregion\n"
+        "\n"
+        "namespace Acme\n"
+        "{\n"
+        "    public class Calc\n"
+        "    {\n"
+        "        public int Compute(int x)\n"
+        "        {\n"
+        "            int a = x + 1;\n"
+        "            int b = a * 2;\n"
+        "            int c = b - 3;\n"
+        "            int d = c / 4;\n"
+        "            int e = d + 5;\n"
+        "            return e;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+    )
+    guttered = _add_gutter(cs, sep="\t")
+    comp = CodeAwareCompressor(
+        CodeCompressorConfig(min_tokens_for_compression=1, max_body_lines=1, enable_ccr=False)
+    )
+    result = comp.compress(guttered, language="csharp")
+    clean_out = comp.compress(cs, language="csharp").compressed
+
+    # C# genuinely compressed through the span carrier (no crash, ratio < 1).
+    assert result.language == CodeLanguage.CSHARP
+    assert result.syntax_valid is True
+    assert result.compression_ratio < 1.0
+
+    out = result.compressed
+    # Byte-exact overlay: gutters are pure prefixes, so degutter recovers the
+    # clean compression verbatim (retrieval-safe).
+    assert _degutter(out) == clean_out
+
+    # No wrong line numbers: every guttered kept line is an original source line.
+    guttered_set = set(guttered.split("\n"))
+    assert all(ln in guttered_set for ln in out.split("\n") if _GUTTER_LINE.match(ln))
+
+    # THE GATE: the leading ``#region`` header survived compression AND carries
+    # its correct original gutter (source row 0 -> "1\t..."). Proves header_code
+    # is span-anchored, not bypassed.
+    header_out = [ln for ln in out.split("\n") if "#region License" in ln]
+    assert header_out, "header #region must survive compression"
+    # Carries a gutter, recovers the exact source text, and is the ORIGINAL
+    # source-row-0 line verbatim (pad-agnostic vs _add_gutter's right-align).
+    assert _GUTTER_LINE.match(header_out[0])
+    assert strip_line_gutter(header_out[0]) == "#region License"
+    assert header_out[0] == guttered.split("\n")[0]
+    assert header_out[0] in guttered_set
