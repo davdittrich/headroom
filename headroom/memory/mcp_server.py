@@ -76,7 +76,9 @@ _TOOLS = [
         description=(
             "Save information to persistent memory for future sessions. "
             "Use this for decisions, conventions, architecture context, "
-            "user preferences, project facts, or anything worth remembering.\n\n"
+            "user preferences, project facts, or anything worth remembering. "
+            "Saving a similar fact does not replace an existing memory; corrections "
+            "must use an explicit update path with the existing memory ID.\n\n"
             "IMPORTANT: Break information into atomic facts — one fact per "
             "entry in the 'facts' array. Each fact should be a single, "
             "self-contained statement that answers one question. "
@@ -245,6 +247,12 @@ async def _handle_search(
         # Trim to requested top_k
         active_results = active_results[:top_k]
 
+        try:
+            await backend.record_access([r.memory.id for r in active_results])
+        except Exception as e:
+            # Usage metadata must never make a successful retrieval fail.
+            logger.warning(f"Memory MCP: failed to record access: {e}")
+
         lines = []
         for i, r in enumerate(active_results, 1):
             score = f"{r.score:.2f}" if hasattr(r, "score") else "?"
@@ -256,11 +264,6 @@ async def _handle_search(
     except Exception as e:
         logger.error(f"memory_search failed: {e}")
         return [TextContent(type="text", text=f"Search error: {e}")]
-
-
-# Similarity threshold for auto-supersession: if a new memory is this
-# similar to an existing one, it replaces (supersedes) the old one.
-_SUPERSEDE_SIMILARITY = 0.70
 
 
 async def _handle_save(
@@ -288,44 +291,16 @@ async def _handle_save(
             if not fact:
                 continue
 
-            # Check for semantically similar existing memory to auto-supersede
-            superseded_id: str | None = None
-            try:
-                existing = await backend.search_memories(
-                    query=fact,
-                    user_id=user_id,
-                    top_k=3,
-                )
-                for r in existing:
-                    if getattr(r.memory, "superseded_by", None):
-                        continue
-                    if r.score >= _SUPERSEDE_SIMILARITY:
-                        superseded_id = r.memory.id
-                        logger.info(
-                            f"Memory MCP: auto-superseding [{r.memory.id[:8]}] "
-                            f"(similarity={r.score:.2f}): {r.memory.content[:60]}"
-                        )
-                        break
-            except Exception:
-                pass
-
-            if superseded_id:
-                memory = await backend.update_memory(
-                    memory_id=superseded_id,
-                    new_content=fact,
-                )
-                results_lines.append(
-                    f"  updated [{superseded_id[:8]}→{memory.id[:8]}]: {fact[:60]}"
-                )
-                superseded += 1
-            else:
-                memory = await backend.save_memory(
-                    content=fact,
-                    user_id=user_id,
-                    importance=importance,
-                )
-                results_lines.append(f"  saved [{memory.id[:8]}]: {fact[:60]}")
-                saved += 1
+            # Similarity is a retrieval signal, not proof that two memories
+            # represent versions of the same fact. Only explicit update paths
+            # with a caller-supplied memory ID may create a supersession chain.
+            memory = await backend.save_memory(
+                content=fact,
+                user_id=user_id,
+                importance=importance,
+            )
+            results_lines.append(f"  saved [{memory.id[:8]}]: {fact[:60]}")
+            saved += 1
 
         summary = f"Saved {saved} new, updated {superseded} existing ({saved + superseded} total)"
         return [TextContent(type="text", text=summary + "\n" + "\n".join(results_lines))]

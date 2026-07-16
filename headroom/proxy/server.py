@@ -28,8 +28,10 @@ import asyncio
 import concurrent.futures
 import contextlib
 import hmac
+import ipaddress
 import json
 import logging
+import math
 import os
 import sys
 import threading
@@ -39,6 +41,7 @@ from dataclasses import fields, is_dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from ..backends.base import Backend
@@ -138,6 +141,7 @@ from headroom.proxy.helpers import (
     initialize_context_tool_session_baseline,
     is_anthropic_auth,  # noqa: F401
     jitter_delay_ms,
+    resolve_display_provider,
     retry_after_ms,
 )
 from headroom.proxy.loop_callback_failure_policy import is_known_websocket_callback_failure
@@ -145,6 +149,7 @@ from headroom.proxy.loopback_guard import is_loopback_host
 from headroom.proxy.memory_handler import MemoryConfig, MemoryHandler
 
 # Data models (extracted to headroom/proxy/models.py for maintainability)
+from headroom.proxy.model_router import ModelRouter, ModelRouterConfig
 from headroom.proxy.models import CacheEntry, ProxyConfig, RateLimitState, RequestLog  # noqa: F401
 from headroom.proxy.modes import (
     PROXY_MODE_CACHE,
@@ -213,6 +218,7 @@ _AGENT_LABELS: dict[str, str] = {
     "codex": "Codex",
     "codex-cli": "Codex",
     "cursor": "Cursor",
+    "grok_build": "Grok Build",
     "copilot": "GitHub Copilot",
     "github-copilot": "GitHub Copilot",
     "aider": "Aider",
@@ -286,6 +292,23 @@ def _classify_agent_from_log(entry: dict[str, Any]) -> tuple[str, str, str]:
         return key, _agent_label(key), "provider"
 
     return "unknown", _agent_label("unknown"), "unknown"
+
+
+def _remap_provider_counts(counts: dict[str, int], config: ProxyConfig) -> dict[str, int]:
+    """Relabel ``openai`` upstream counts with the configured display provider.
+
+    Display only — the stored metrics key stays ``openai`` (issue #1533).
+    Collisions (none today) are summed defensively.
+    """
+    out: dict[str, int] = {}
+    for provider, count in counts.items():
+        display = resolve_display_provider(
+            provider,
+            openai_api_url=config.openai_api_url,
+            provider_name=config.provider_name,
+        )
+        out[display] = out.get(display, 0) + int(count)
+    return out
 
 
 def _build_agent_usage_summary(
@@ -687,6 +710,10 @@ class HeadroomProxy(
         )
         self.metrics = PrometheusMetrics(cost_tracker=self.cost_tracker, stateless=config.stateless)
 
+        # Cost-aware model routing (issue #1706). Disabled unless configured, so
+        # the default request path is unchanged.
+        self.model_router = ModelRouter(config.model_router)
+
         # Initialize transforms based on routing mode.
         #
         # Phase B PR-B1 retired the IntelligentContextManager / RollingWindow
@@ -761,6 +788,11 @@ class HeadroomProxy(
         if is_token_mode(config.mode):
             router_config.protect_recent_reads_fraction = 0.3
             router_config.search_group_by_file = True
+        # Note: protect_tool_results runs AFTER token mode (ordering matters).
+        # It resets protect_recent_reads_fraction from 0.3→0.0, restoring
+        # full protection for ALL excluded-tool results regardless of age.
+        # This means naming any tool with --protect-tool-results also
+        # protects Read/Glob/Grep/Write/Edit results indefinitely.
         if config.protect_tool_results:
             router_config.protect_recent_reads_fraction = 0.0
         # `--compress-user-messages` flips the router's default skip rule.
@@ -2045,6 +2077,75 @@ def _request_is_loopback(request: Request) -> bool:
     return peer_is_trusted_gateway(client_host, load_trusted_gateway_cidrs())
 
 
+def _request_can_view_dashboard_metadata(
+    request: Request,
+    trusted_dashboard_client_cidrs: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> bool:
+    """Authorize sensitive ``/stats`` metadata without widening admin access."""
+    if _request_is_loopback(request):
+        return True
+
+    from headroom.proxy.forwarded_headers import peer_is_trusted_gateway, resolve_client_ip
+    from headroom.proxy.loopback_guard import is_ip_literal_host_header
+
+    try:
+        host_header = request.headers.get("host")
+    except AttributeError:
+        return False
+    if not is_ip_literal_host_header(host_header):
+        return False
+    # is_ip_literal_host_header() rejects a missing Host, so host_header is a str here.
+    assert host_header is not None
+
+    # CIDR authorization makes this endpoint usable by a remote dashboard, but
+    # it must not let an unrelated site read sensitive metadata through a
+    # victim's browser. Native CLI clients usually send neither header, so
+    # absence remains valid. If either browser provenance header is present,
+    # require it to identify this exact scheme/host/port.
+    if not _request_has_same_origin_or_no_provenance(request, host_header):
+        return False
+
+    return peer_is_trusted_gateway(
+        resolve_client_ip(request),
+        trusted_dashboard_client_cidrs,
+    )
+
+
+def _request_has_same_origin_or_no_provenance(request: Request, host_header: str) -> bool:
+    """Accept no browser provenance, otherwise require same-origin headers."""
+
+    from headroom.proxy.forwarded_headers import trusted_forwarded_headers
+
+    forwarded_proto = trusted_forwarded_headers(request)["proto"]
+    request_scheme = forwarded_proto or request.url.scheme
+    expected_origin = _normalized_http_origin(f"{request_scheme}://{host_header}")
+    if expected_origin is None:
+        return False
+
+    for header_name in ("origin", "referer"):
+        header_value = request.headers.get(header_name)
+        if header_value and _normalized_http_origin(header_value) != expected_origin:
+            return False
+    return True
+
+
+def _normalized_http_origin(value: str) -> tuple[str, str, int] | None:
+    """Return a normalized HTTP(S) origin tuple."""
+
+    try:
+        parsed = urlsplit(value.strip())
+        port = parsed.port
+    except ValueError:
+        return None
+
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    if port is None:
+        port = 80 if scheme == "http" else 443
+    return scheme, parsed.hostname.lower(), port
+
+
 _is_known_websocket_callback_failure = is_known_websocket_callback_failure
 
 
@@ -2056,6 +2157,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     if not FASTAPI_AVAILABLE:
         raise ImportError("FastAPI required. Install: pip install fastapi uvicorn httpx")
 
+    from headroom.proxy.forwarded_headers import load_trusted_dashboard_client_cidrs
+
+    # Parse once at startup so invalid operator configuration fails loudly.
+    trusted_dashboard_client_cidrs = load_trusted_dashboard_client_cidrs()
+
     from contextlib import asynccontextmanager
 
     # Always-on file logging to ~/.headroom/logs/ for `headroom perf` analysis.
@@ -2065,6 +2171,17 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     _setup_file_logging()
 
     config = config or ProxyConfig()
+
+    # Defensive re-apply of file-backed settings for embedded/non-CLI callers
+    # that construct the app without going through the `headroom` CLI entrypoint
+    # (which already applies them before Click parsing). setdefault keeps
+    # explicit env exports authoritative; fail-open so it never blocks startup.
+    try:
+        from headroom import settings_store
+
+        settings_store.apply_to_environ(settings_store.load())
+    except Exception:  # noqa: BLE001 — settings load must never break startup
+        pass
 
     # Air-gap master switch. Propagate config.offline to the env so the
     # env-based egress predicates (telemetry, update check, license) all honor
@@ -2874,6 +2991,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         collect_tasks as _collect_tasks,
     )
     from headroom.proxy.loopback_guard import require_loopback as _require_loopback
+    from headroom.proxy.loopback_guard import require_same_origin as _require_same_origin
 
     @app.get("/admin/upstream", dependencies=[Depends(_require_loopback)])
     async def get_upstream():
@@ -2966,6 +3084,152 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         """Serve the Headroom dashboard UI."""
         return get_dashboard_html()
 
+    # --- Dashboard settings API (loopback-gated, registry-validated) ---------
+    # Read/write the curated HEADROOM_* knobs the settings GUI manages. Writes
+    # reuse the same loopback guard as the /admin and /debug endpoints and only
+    # ever touch keys in the settings_store registry allowlist. All curated
+    # knobs are startup-captured, so a write always requires a restart to apply
+    # (Phase 3's /settings/apply drives that).
+    from headroom import settings_store
+
+    @app.get("/settings/schema", dependencies=[Depends(_require_loopback)])
+    async def settings_schema(_request: Request):
+        """Registry + grouped fields + effective values for the settings form."""
+        schema = settings_store.to_schema()
+        # Tell the UI whether this is a supervised (docker/service) install, where
+        # manifest-baked knobs (HEADROOM_PORT/HEADROOM_HOST) are owned by the
+        # install manifest and must be rendered read-only. Foreground proxies
+        # can edit everything. Fail-open to "not supervised".
+        try:
+            from headroom.install import runtime as install_runtime
+
+            _manifest, mode = install_runtime.detect_current_deployment()
+            schema["supervised"] = mode != "foreground"
+        except Exception:  # noqa: BLE001 — schema must render even if detection fails
+            schema["supervised"] = False
+        return JSONResponse(status_code=200, content=schema)
+
+    @app.get("/settings", dependencies=[Depends(_require_loopback)])
+    async def settings_get(_request: Request):
+        """Return stored (file) values only; secret fields masked."""
+        return JSONResponse(status_code=200, content=settings_store.stored_values())
+
+    @app.post("/settings", dependencies=[Depends(_require_loopback), Depends(_require_same_origin)])
+    async def settings_post(request: Request):
+        """Persist settings. Unknown key -> 400; bad type/enum/range -> 422.
+
+        Loopback-only (mutates process configuration; treated as an admin
+        action). The audit log records which keys changed — never their values,
+        so no secret is leaked.
+        """
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            body = None
+        if not isinstance(body, dict) or not isinstance(body.get("values"), dict):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "expected a JSON object with a `values` object"},
+            )
+        values = body["values"]
+        before = settings_store.load()
+        try:
+            settings_store.save(values)
+        except settings_store.SettingsValidationError as exc:
+            if exc.unknown_keys:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "unknown settings key(s)", "unknown_keys": exc.unknown_keys},
+                )
+            return JSONResponse(
+                status_code=422,
+                content={"error": "invalid settings value(s)", "field_errors": exc.field_errors},
+            )
+        after = settings_store.load()
+        changed_keys = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+        record_admin_action(
+            request=request,
+            action="settings_update",
+            status_code=200,
+            details={"changed_keys": changed_keys},
+        )
+        return JSONResponse(
+            status_code=200,
+            content={"ok": True, "needs_restart": bool(changed_keys), "changed_keys": changed_keys},
+        )
+
+    @app.post(
+        "/settings/apply", dependencies=[Depends(_require_loopback), Depends(_require_same_origin)]
+    )
+    async def settings_apply(request: Request):
+        """Persist settings (optional body) then restart the proxy to apply them.
+
+        Loopback-only. Service deployments self-restart (one-click): we flush a
+        202 BEFORE the detached restarter tears this process down, and the UI
+        polls /health to detect the proxy returning. Docker deployments cannot
+        self-restart (no docker socket in-container), so we surface the host
+        command instead. Foreground `headroom proxy` returns a manual-restart
+        instruction. /health is the single source of truth for "proxy is back".
+        """
+        from starlette.background import BackgroundTask
+
+        from headroom.install import runtime as install_runtime
+
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            body = None
+        # `values` is optional — the UI may have already saved via POST /settings.
+        # When present, persist it under the same validation contract.
+        if isinstance(body, dict) and isinstance(body.get("values"), dict):
+            try:
+                settings_store.save(body["values"])
+            except settings_store.SettingsValidationError as exc:
+                if exc.unknown_keys:
+                    return JSONResponse(
+                        status_code=400,
+                        content={
+                            "error": "unknown settings key(s)",
+                            "unknown_keys": exc.unknown_keys,
+                        },
+                    )
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "error": "invalid settings value(s)",
+                        "field_errors": exc.field_errors,
+                    },
+                )
+        _manifest, mode = install_runtime.detect_current_deployment()
+        record_admin_action(
+            request=request,
+            action="settings_apply",
+            status_code=202 if mode == "service" else 200,
+            details={"mode": mode},
+        )
+        if mode == "service":
+            # Flush the 202 first; run the detached restart only after the
+            # response body is sent (Starlette runs BackgroundTask post-response),
+            # so restarting our own process never drops this response.
+            return JSONResponse(
+                status_code=202,
+                content={"restarted": True, "mode": "service"},
+                background=BackgroundTask(install_runtime.restart_current_deployment),
+            )
+        result = install_runtime.restart_current_deployment()
+        return JSONResponse(status_code=200, content=result)
+
+    @app.get(
+        "/dashboard/settings",
+        response_class=HTMLResponse,
+        dependencies=[Depends(_require_loopback)],
+    )
+    async def dashboard_settings():
+        """Serve the Headroom settings GUI."""
+        from headroom.dashboard import get_settings_html
+
+        return get_settings_html()
+
     @app.get("/favicon.ico")
     async def favicon() -> Response:
         # Registered before register_provider_routes' catch-all passthrough
@@ -2984,29 +3248,67 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
     RECENT_REQUEST_LOG_WINDOW = 100
 
+    def _is_recent_request_number(value: Any) -> bool:
+        return (
+            isinstance(value, int | float)
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+        )
+
+    def _recent_request_optional_number(log: dict[str, Any], key: str) -> int | float | None:
+        value = log.get(key)
+        return value if _is_recent_request_number(value) else None
+
+    def _recent_request_token_accounting_status(log: dict[str, Any]) -> str:
+        token_fields = (
+            "input_tokens_original",
+            "input_tokens_optimized",
+            "tokens_saved",
+            "savings_percent",
+        )
+        present = [_is_recent_request_number(log.get(field)) for field in token_fields]
+        if all(present):
+            return "complete"
+        if any(present):
+            return "partial"
+        return "missing"
+
     def _build_recent_request_payload(limit: int = RECENT_REQUEST_LOG_WINDOW) -> dict[str, Any]:
         recent_request_logs = proxy.logger.get_recent(limit) if proxy.logger else []
-        dashboard_recent_requests = [
-            {
-                "request_id": log.get("request_id"),
-                "timestamp": log.get("timestamp"),
-                "provider": log.get("provider"),
-                "model": log.get("model"),
-                "input_tokens_original": log.get("input_tokens_original"),
-                "input_tokens_optimized": log.get("input_tokens_optimized"),
-                "output_tokens": log.get("output_tokens"),
-                "tokens_saved": log.get("tokens_saved"),
-                "savings_percent": log.get("savings_percent"),
-                "optimization_latency_ms": log.get("optimization_latency_ms"),
-                "total_latency_ms": log.get("total_latency_ms"),
-                "transforms_applied": log.get("transforms_applied", []),
-                "waste_signals": log.get("waste_signals"),
-                "tool_schema_saved_tokens": _tool_schema_saved_from_tags(log.get("tags")),
-            }
-            for log in recent_request_logs
-            if log.get("input_tokens_original") is not None
-            and log.get("input_tokens_optimized") is not None
-        ][-10:]
+        dashboard_recent_requests = []
+        for log in reversed(recent_request_logs):
+            token_accounting_status = _recent_request_token_accounting_status(log)
+            dashboard_recent_requests.append(
+                {
+                    "request_id": log.get("request_id"),
+                    "timestamp": log.get("timestamp"),
+                    "provider": resolve_display_provider(
+                        log.get("provider"),
+                        openai_api_url=proxy.config.openai_api_url,
+                        provider_name=proxy.config.provider_name,
+                    ),
+                    "model": log.get("model"),
+                    "input_tokens_original": _recent_request_optional_number(
+                        log, "input_tokens_original"
+                    ),
+                    "input_tokens_optimized": _recent_request_optional_number(
+                        log, "input_tokens_optimized"
+                    ),
+                    "output_tokens": _recent_request_optional_number(log, "output_tokens"),
+                    "tokens_saved": _recent_request_optional_number(log, "tokens_saved"),
+                    "savings_percent": _recent_request_optional_number(log, "savings_percent"),
+                    "optimization_latency_ms": _recent_request_optional_number(
+                        log, "optimization_latency_ms"
+                    ),
+                    "total_latency_ms": _recent_request_optional_number(log, "total_latency_ms"),
+                    "has_exact_tokens": token_accounting_status == "complete",
+                    "token_accounting_status": token_accounting_status,
+                    "transforms_applied": log.get("transforms_applied", []),
+                    "waste_signals": log.get("waste_signals"),
+                    "tool_schema_saved_tokens": _tool_schema_saved_from_tags(log.get("tags")),
+                }
+            )
+        dashboard_recent_requests = dashboard_recent_requests[:25]
         return {
             "request_logs": recent_request_logs[-10:],
             "recent_requests": dashboard_recent_requests,
@@ -3137,6 +3439,19 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         # schema size. So the savings rate is plain `saved / attempted`
         # — adding `saved` again would double-count.
         attempted_input_tokens = getattr(m, "attempted_input_tokens_total", 0)
+        # New-content denominator: what the provider actually billed as
+        # non-cache-read input (uncached + cache-write tokens, summed
+        # across providers from response usage). Unlike
+        # `proxy_total_before_compression`, this does NOT recount the
+        # full transcript on every turn — a long session's history is
+        # served from prefix cache, not re-billed, so it doesn't belong
+        # in a denominator that claims to measure what compression had
+        # any power over. Tokens Headroom removed never reached the
+        # provider at all, so they're added back to form the baseline.
+        _pc_totals = prefix_cache_stats.get("totals", {})
+        new_input_tokens = int(_pc_totals.get("uncached_input_tokens", 0) or 0) + int(
+            _pc_totals.get("cache_write_tokens", 0) or 0
+        )
 
         # Build human-readable summary
         summary = _build_session_summary(
@@ -3201,7 +3516,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 tool_schema_requests += 1
         agent_usage = _build_agent_usage_summary(
             recent_request_logs,
-            requests_by_provider=dict(m.requests_by_provider),
+            requests_by_provider=_remap_provider_counts(dict(m.requests_by_provider), proxy.config),
             requests_by_model=dict(m.requests_by_model),
             global_before_tokens=proxy_total_before_compression,
             global_after_tokens=m.tokens_input_total,
@@ -3320,7 +3635,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "cached": m.requests_cached,
                 "rate_limited": m.requests_rate_limited,
                 "failed": m.requests_failed,
-                "by_provider": dict(m.requests_by_provider),
+                "by_provider": _remap_provider_counts(dict(m.requests_by_provider), proxy.config),
                 "by_model": dict(m.requests_by_model),
                 "by_stack": dict(m.requests_by_stack),
             },
@@ -3362,6 +3677,27 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "proxy_savings_percent": round(
                     (proxy_compression_tokens / proxy_total_before_compression * 100)
                     if proxy_total_before_compression > 0
+                    else 0,
+                    2,
+                ),
+                # New-content-relative rate: savings as a fraction of the
+                # input that would have newly entered context (provider-
+                # billed uncached + cache-write tokens, plus the tokens
+                # compression removed before they could be billed). The
+                # whole-request ratios above recount the FULL transcript
+                # every turn, so a 200-turn session counts its history
+                # 200x into the denominator and long-running sessions
+                # (1M-context models never compact) read as ~0% no
+                # matter how well compression performs on new content.
+                # Guarded on new_input_tokens > 0 (not the full sum): the
+                # cache accumulators only see requests with cache
+                # activity, so a deployment with no cache metrics (e.g.
+                # Bedrock) would otherwise divide savings by themselves
+                # and report ~100%. No usage data -> report 0, not a lie.
+                "new_input_tokens": new_input_tokens,
+                "new_input_savings_percent": round(
+                    (proxy_compression_tokens / (new_input_tokens + proxy_compression_tokens) * 100)
+                    if new_input_tokens > 0
                     else 0,
                     2,
                 ),
@@ -3619,7 +3955,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         except Exception:  # noqa: BLE001 - never let a drain error break /stats
             pass
 
-        include_sensitive = _request_is_loopback(request)
+        include_sensitive = _request_can_view_dashboard_metadata(
+            request,
+            trusted_dashboard_client_cidrs,
+        )
         if cached:
             payload = dict(await _get_cached_stats_payload())
             if include_sensitive:
@@ -3634,6 +3973,21 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             # _build_stats_payload bakes these in; strip for network callers.
             payload.pop("recent_requests", None)
             payload.pop("request_logs", None)
+        return payload
+
+    @app.get("/stats-lifetime")
+    async def stats_lifetime(request: Request):
+        """Return persisted lifetime aggregates with sensitive fields gated."""
+        payload = dict(proxy.metrics.savings_tracker.lifetime_response())
+        include_sensitive = _request_can_view_dashboard_metadata(
+            request,
+            trusted_dashboard_client_cidrs,
+        )
+        if not include_sensitive:
+            payload.pop("projects", None)
+            persistence = payload.get("persistence")
+            if isinstance(persistence, dict):
+                payload["persistence"] = {**persistence, "error": None}
         return payload
 
     @app.post("/stats/reset", dependencies=[Depends(_require_loopback)])
@@ -3726,7 +4080,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                     {
                         "request_id": log.get("request_id"),
                         "timestamp": log.get("timestamp"),
-                        "provider": log.get("provider"),
+                        "provider": resolve_display_provider(
+                            log.get("provider"),
+                            openai_api_url=proxy.config.openai_api_url,
+                            provider_name=proxy.config.provider_name,
+                        ),
                         "model": log.get("model"),
                         "input_tokens_original": log.get("input_tokens_original"),
                         "input_tokens_optimized": log.get("input_tokens_optimized"),
@@ -4352,6 +4710,7 @@ def _proxy_config_from_env() -> ProxyConfig:
         disable_kompress_openai=_get_env_optional_bool("HEADROOM_DISABLE_KOMPRESS_OPENAI"),
         force_kompress_all=_get_env_bool("HEADROOM_FORCE_KOMPRESS_ALL", False),
         lossless=_get_env_bool("HEADROOM_LOSSLESS", False),
+        compress_passthrough=_get_env_bool("HEADROOM_COMPRESS_PASSTHROUGH", False),
         max_connections=_get_env_int("HEADROOM_MAX_CONNECTIONS", 500),
         max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", 100),
         keepalive_expiry=_get_env_float("HEADROOM_KEEPALIVE_EXPIRY", 90.0),
@@ -4372,6 +4731,10 @@ def _proxy_config_from_env() -> ProxyConfig:
         read_maturation_max_hold_turns=_get_env_int("HEADROOM_READ_MATURATION_MAX_HOLD_TURNS", 25),
         read_maturation_min_size_bytes=_get_env_int(
             "HEADROOM_READ_MATURATION_MIN_SIZE_BYTES", 2048
+        ),
+        model_router=ModelRouterConfig.from_env(
+            os.environ.get("HEADROOM_MODEL_ROUTER_ENABLED"),
+            os.environ.get("HEADROOM_MODEL_ROUTES"),
         ),
     )
 
@@ -4397,6 +4760,27 @@ def _get_code_aware_banner_status(config: ProxyConfig) -> str:
         if is_tree_sitter_available():
             return "DISABLED (--code-aware or HEADROOM_CODE_AWARE_ENABLED=1 to enable)"
         return "DISABLED  (install headroom-ai[code] to enable)"
+
+
+def _configure_windows_uvicorn_loop(uvicorn_kwargs: dict[str, Any]) -> None:
+    """Select a Windows-safe asyncio loop for uvicorn across versions.
+
+    ProactorEventLoop can close the listening socket on transient AcceptEx
+    failures (for example WinError 64 from keep-alive RSTs). SelectorEventLoop
+    keeps accept errors scoped to the connection.
+
+    uvicorn >= 0.36 resolves ``asyncio:SelectorEventLoop`` as a custom loop
+    factory import path. Older uvicorn only accepts built-in loop names and
+    raises KeyError for that value, so we set the selector policy instead.
+    """
+    import uvicorn as _uvicorn
+
+    if hasattr(_uvicorn.config.Config, "get_loop_factory"):
+        uvicorn_kwargs["loop"] = "asyncio:SelectorEventLoop"
+    else:
+        policy_cls = getattr(asyncio, "WindowsSelectorEventLoopPolicy", None)
+        if policy_cls is not None:
+            asyncio.set_event_loop_policy(policy_cls())
 
 
 def run_server(
@@ -4502,10 +4886,7 @@ def run_server(
     app_target: Any
     uvicorn_kwargs: dict[str, Any] = {}
     if sys.platform == "win32":
-        # ProactorEventLoop can close the listening socket on transient
-        # AcceptEx failures (for example WinError 64 from keep-alive RSTs).
-        # The selector loop keeps accept errors scoped to the connection.
-        uvicorn_kwargs["loop"] = "asyncio:SelectorEventLoop"
+        _configure_windows_uvicorn_loop(uvicorn_kwargs)
     if workers > 1:
         # CompressionCache and PrefixTracker are always per-worker instance vars.
         # Python CompressionStore defaults to InMemoryBackend (per-process), so
@@ -4884,6 +5265,18 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--compress-passthrough",
+        action="store_true",
+        help=(
+            "Also compress requests that fall through to the catch-all "
+            "passthrough handler (custom proxy paths not matched by a built-in "
+            "API route, e.g. `/api/codex-proxy/<key>/v1/responses` behind "
+            "another proxy). Applies to OpenAI Responses-shaped bodies (paths "
+            "ending in `/responses`). Off by default; also settable via "
+            "HEADROOM_COMPRESS_PASSTHROUGH=1."
+        ),
+    )
+    parser.add_argument(
         "--exclude-tools",
         default=None,
         help="Comma-separated tool names whose output is never compressed, "
@@ -4965,6 +5358,9 @@ if __name__ == "__main__":
         "HEADROOM_FORCE_KOMPRESS_ALL", False
     )
     lossless = getattr(args, "lossless", False) or _get_env_bool("HEADROOM_LOSSLESS", False)
+    compress_passthrough = args.compress_passthrough or _get_env_bool(
+        "HEADROOM_COMPRESS_PASSTHROUGH", False
+    )
 
     # Set OpenRouter API key from CLI if provided
     if hasattr(args, "openrouter_api_key") and args.openrouter_api_key:
@@ -5021,6 +5417,7 @@ if __name__ == "__main__":
         disable_kompress_openai=disable_kompress_openai,
         force_kompress_all=force_kompress_all,
         lossless=lossless,
+        compress_passthrough=compress_passthrough,
         # Connection pool settings
         max_connections=_get_env_int("HEADROOM_MAX_CONNECTIONS", args.max_connections),
         max_keepalive_connections=_get_env_int("HEADROOM_MAX_KEEPALIVE", args.max_keepalive),

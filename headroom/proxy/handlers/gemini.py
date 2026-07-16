@@ -116,6 +116,8 @@ class GeminiHandlerMixin:
         - fileData: File references (URI + MIME type)
         - functionCall: Function calls from model
         - functionResponse: Responses to function calls
+        - executableCode / codeExecutionResult: Gemini code-execution parts,
+          echoed back in contents[] on later turns
 
         Args:
             content: A single Gemini content entry with 'parts' list.
@@ -127,7 +129,14 @@ class GeminiHandlerMixin:
         for part in parts:
             if any(
                 key in part
-                for key in ("inlineData", "fileData", "functionCall", "functionResponse")
+                for key in (
+                    "inlineData",
+                    "fileData",
+                    "functionCall",
+                    "functionResponse",
+                    "executableCode",
+                    "codeExecutionResult",
+                )
             ):
                 return True
         return False
@@ -385,7 +394,7 @@ class GeminiHandlerMixin:
         # Pre-PR-this Gemini's memory site silently ignored
         # `x-headroom-bypass: true`, mutating request bytes under the
         # user's "don't touch my bytes" signal.
-        from headroom.proxy.helpers import get_memory_injection_mode
+        from headroom.proxy.helpers import get_memory_injection_mode, log_memory_injection
         from headroom.proxy.memory_decision import MemoryDecision
         from headroom.proxy.memory_query import MemoryQuery
 
@@ -623,6 +632,14 @@ class GeminiHandlerMixin:
                                 f"[{request_id}] Memory: Injected {bytes_appended} chars "
                                 f"into latest user message tail for user {memory_user_id} (gemini)"
                             )
+                            log_memory_injection(
+                                request_id=request_id,
+                                session_id=None,
+                                decision="injected_live_zone_tail_gemini",
+                                bytes_injected=bytes_appended,
+                                query=None,
+                                tags=tags,
+                            )
                         else:
                             logger.debug(
                                 f"[{request_id}] Memory: no eligible user message; "
@@ -712,7 +729,15 @@ class GeminiHandlerMixin:
                     # Gemini returns cachedContentTokenCount for context-cached tokens
                     # These are charged at 10-25% of the input price depending on model
                     cache_read_tokens = usage.get("cachedContentTokenCount", 0)
-                except (KeyError, TypeError, AttributeError) as e:
+                except (json.JSONDecodeError, ValueError, KeyError, TypeError, AttributeError) as e:
+                    # A non-JSON upstream body (HTML/empty error page from an
+                    # overloaded Google/Vertex frontend) makes response.json()
+                    # raise JSONDecodeError (a ValueError). Without those in the
+                    # tuple it escaped to the outer `except Exception` and became
+                    # a synthetic 502, discarding the real upstream status/body
+                    # and defeating client retry/backoff. Match the all-non-text
+                    # sibling branch above, which falls through to forward the
+                    # real status/content verbatim.
                     logger.debug(
                         f"[{request_id}] Failed to extract cached tokens from Gemini response: {e}"
                     )
