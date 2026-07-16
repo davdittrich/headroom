@@ -149,7 +149,8 @@ def test_mint_leaf_san(tmp_ca: tuple) -> None:
     cert = x509.load_pem_x509_certificate(cert_pem)
     san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
     dns_names = san.value.get_values_for_type(x509.DNSName)
-    assert "api.example.com" in dns_names
+    # Exact SAN match (not substring/membership) — the leaf carries exactly one dNSName.
+    assert dns_names == ["api.example.com"]
 
 
 def test_mint_leaf_eku_server_auth(tmp_ca: tuple) -> None:
@@ -221,7 +222,8 @@ def test_leaf_cache_bound_evicts(tmp_ca: tuple) -> None:
     cache.get_or_mint("host-a.example.com", ca_key, ca_cert)
     cache.get_or_mint("host-b.example.com", ca_key, ca_cert)
     assert len(cache._cache) == 1
-    assert "host-b.example.com" in cache._cache
+    # After max_size=1 eviction the sole cached key is exactly host-b.
+    assert list(cache._cache) == ["host-b.example.com"]
 
 
 # ---------------------------------------------------------------------------

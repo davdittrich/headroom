@@ -16,6 +16,7 @@ import gzip
 import json
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 import pytest
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -140,7 +141,9 @@ def test_antigravity_routes_to_daily_endpoint(monkeypatch: pytest.MonkeyPatch) -
 
     assert response.status_code == 200
     assert len(captured) == 1
-    assert captured[0].startswith("https://daily-cloudcode-pa.googleapis.com"), (
+    # Parse and compare scheme+host exactly (not a URL-prefix substring check).
+    parsed = urlparse(captured[0])
+    assert (parsed.scheme, parsed.netloc) == ("https", "daily-cloudcode-pa.googleapis.com"), (
         f"Expected daily endpoint, got: {captured[0]}"
     )
 
