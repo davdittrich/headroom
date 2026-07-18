@@ -303,8 +303,11 @@ async def test_start_uses_so_exclusiveaddruse_on_non_posix(
         # went through the (non-posix) elif branch — the `if os.name ==
         # "posix"` branch never ran because we patched os.name to "nt".
         assert calls_on_listener == [(listener, socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)]
-        # The applied option is actually in effect on the real socket.
-        assert listener.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) == 1
+        # The applied option is actually in effect on the real socket. Read
+        # back a *non-zero* value rather than exactly 1: on macOS getsockopt()
+        # reports SO_REUSEADDR's internal bitmask (4) while Linux echoes the 1
+        # we set — both mean "enabled".
+        assert listener.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) != 0
     finally:
         await srv.stop()
 
