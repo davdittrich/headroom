@@ -25,7 +25,6 @@ from .install import (
     build_headroom_spec,
     build_lean_ctx_spec,
     build_serena_spec,
-    build_tokensave_spec,
     get_all_registrars,
     install_everywhere,
 )
@@ -49,7 +48,6 @@ __all__ = [
     "build_lean_ctx_spec",
     "build_serena_spec",
     "build_server_json",
-    "build_tokensave_spec",
     "format_result",
     "format_results",
     "get_all_registrars",

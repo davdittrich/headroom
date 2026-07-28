@@ -98,22 +98,6 @@ def build_serena_spec(context: str) -> ServerSpec:
     )
 
 
-def build_tokensave_spec(binary: str = "tokensave") -> ServerSpec:
-    """Construct the canonical tokensave MCP server spec.
-
-    tokensave (https://github.com/aovestdipaperino/tokensave) is the primary
-    coding-task compressor — a local semantic code-graph server launched as
-    ``tokensave serve`` over stdio. ``binary`` is the command the agent runs;
-    pass an absolute path when tokensave was fetched to ``~/.local/bin`` and
-    is not on the agent's PATH, or leave the default when it is on PATH.
-    """
-    return ServerSpec(
-        name="tokensave",
-        command=binary,
-        args=("serve",),
-    )
-
-
 def build_codegraph_spec(cbm_bin: str) -> ServerSpec:
     """Construct the canonical codebase-memory-mcp server spec for agy.
 
