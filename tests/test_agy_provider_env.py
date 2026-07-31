@@ -34,6 +34,47 @@ class TestBuildAgyEnv:
         )
         assert env["NO_PROXY"] == "127.0.0.1,localhost"
 
+    def test_preserves_inherited_no_proxy_entries(self, tmp_path: Path) -> None:
+        """A corporate NO_PROXY names hosts that must bypass the proxy.
+
+        Replacing it would tunnel them through the terminator; the loopback
+        entries are prepended to what the user already had.
+        """
+        bundle = tmp_path / "bundle.pem"
+        bundle.touch()
+        env = build_agy_env(
+            terminator_url="http://127.0.0.1:54321",
+            bundle_path=bundle,
+            base_env={"NO_PROXY": "internal.corp,10.0.0.0/8"},
+        )
+        assert env["NO_PROXY"] == "127.0.0.1,localhost,internal.corp,10.0.0.0/8"
+
+    def test_session_scoped_savings_vars_are_not_inherited(self, tmp_path: Path) -> None:
+        """The wrapper redirects its OWN funnel to a temp dir deleted at exit.
+
+        The agy child (and the `headroom mcp serve` grandchild it spawns) must
+        not inherit that redirection, or it writes savings into a sink that
+        disappears and marks itself as an inbox emitter.
+        """
+        bundle = tmp_path / "bundle.pem"
+        bundle.touch()
+        env = build_agy_env(
+            terminator_url="http://127.0.0.1:54321",
+            bundle_path=bundle,
+            base_env={
+                "HEADROOM_AGY_INBOX_EMIT": "1",
+                "HEADROOM_SAVINGS_PATH": "/tmp/gone/proxy_savings.json",
+                "HEADROOM_SAVINGS_EVENTS_PATH": "/tmp/gone/savings_events.jsonl",
+                "HEADROOM_OTEL_METRICS_ENABLED": "0",
+                "PATH": "/usr/bin",
+            },
+        )
+        assert "HEADROOM_AGY_INBOX_EMIT" not in env
+        assert "HEADROOM_SAVINGS_PATH" not in env
+        assert "HEADROOM_SAVINGS_EVENTS_PATH" not in env
+        assert "HEADROOM_OTEL_METRICS_ENABLED" not in env
+        assert env["PATH"] == "/usr/bin"
+
     def test_sets_all_three_ca_vars_to_bundle(self, tmp_path: Path) -> None:
         bundle = tmp_path / "bundle.pem"
         bundle.touch()

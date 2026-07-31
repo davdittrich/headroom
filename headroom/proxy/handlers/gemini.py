@@ -110,19 +110,30 @@ class GeminiHandlerMixin:
     def _resolve_cloudcode_base_url(
         self,
         is_antigravity: bool,
-        original_host: str | None = None,  # reserved for T2 MITM dispatch; unused here
+        original_host: str | None = None,
     ) -> str:
         """Resolve upstream base URL for Pi Cloud Code Assist / Antigravity traffic.
 
         Resolution order (first match wins):
-        1. Antigravity path — env HEADROOM_ANTIGRAVITY_API_URL override, else corrected default.
-           ``original_host`` (populated by the MITM CONNECT path in T2) is accepted here so
-           the signature is stable; full host-preserving logic is wired in T2.
+        1. Antigravity path — env HEADROOM_ANTIGRAVITY_API_URL override (an explicit
+           operator escape hatch, honoured verbatim), else the host the client itself
+           chose, else the default backend.
         2. Reverse-proxy path — ``CLOUDCODE_API_URL`` instance attr or DEFAULT_CLOUDCODE_API_URL.
+
+        ``original_host`` carries the MITM CONNECT target (the allowlisted host agy
+        opened the tunnel to). Preserving it matters: the allowlist covers both
+        ``cloudcode-pa`` and ``daily-cloudcode-pa``, so re-originating everything to
+        the default would send a client's request — and its bearer — to a backend it
+        never selected. Requests arriving via the reverse-proxy route have no CONNECT
+        host and fall through to the default.
         """
         if is_antigravity:
             override = os.environ.get("HEADROOM_ANTIGRAVITY_API_URL")
-            return override.rstrip("/") if override else ANTIGRAVITY_DAILY_API_URL
+            if override:
+                return override.rstrip("/")
+            from headroom.providers.proxy_targets import cloudcode_host_base
+
+            return cloudcode_host_base(original_host or "") or ANTIGRAVITY_DAILY_API_URL
         return getattr(self, "CLOUDCODE_API_URL", DEFAULT_CLOUDCODE_API_URL).rstrip("/")
 
     @staticmethod
@@ -1079,7 +1090,11 @@ class GeminiHandlerMixin:
         optimized_tokens += fr_after
         tokens_saved = original_tokens - optimized_tokens
         optimization_latency = (time.time() - start_time) * 1000
-        base_url = self._resolve_cloudcode_base_url(is_antigravity)
+        # On the MITM path the Host header still carries the host agy CONNECTed to;
+        # keep the request on that backend instead of re-originating it.
+        base_url = self._resolve_cloudcode_base_url(
+            is_antigravity, original_host=request.headers.get("host")
+        )
         stream_url = f"{base_url}/v1internal:streamGenerateContent"
         if request.url.query:
             stream_url = f"{stream_url}?{request.url.query}"

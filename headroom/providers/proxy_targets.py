@@ -8,7 +8,7 @@ from typing import Any, cast
 from headroom.providers.codex import resolve_codex_routing
 from headroom.providers.codex.endpoints import CHATGPT_BACKEND_API_URL
 from headroom.providers.vertex import vertex_target_for_location as _vertex_target_for_location
-from headroom.proxy.agy_terminator import DEFAULT_ALLOWLIST
+from headroom.proxy.agy_terminator import DEFAULT_ALLOWLIST, normalize_host
 
 LEGACY_API_TARGET_ATTRS: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_URL",
@@ -42,7 +42,8 @@ def cloudcode_host_base(host: str) -> str | None:
     ``None`` (closing the SSRF) so the caller falls back to the configured
     default.
     """
-    return f"https://{host}" if host in DEFAULT_ALLOWLIST else None
+    normalized = normalize_host(host)
+    return f"https://{normalized}" if normalized in DEFAULT_ALLOWLIST else None
 
 
 def select_passthrough_base_url(proxy: Any, headers: Mapping[str, str]) -> str:

@@ -127,7 +127,11 @@ class AgyRegistrar(MCPRegistrar):
         """
         if not self._config_file.exists():
             return False
-        config = _read_json(self._config_file)
+        try:
+            config = _read_json_for_write(self._config_file)
+        except (_MalformedConfigError, OSError) as exc:
+            logger.debug("agy: refusing to rewrite %s: %s", self._config_file, exc)
+            return False
         servers: dict[str, Any] = config.get("mcpServers", {})
         if server_name not in servers:
             return False
@@ -145,7 +149,13 @@ class AgyRegistrar(MCPRegistrar):
     # ------------------------------------------------------------------
 
     def _write_entry(self, spec: ServerSpec) -> RegisterResult:
-        config = _read_json(self._config_file)
+        try:
+            config = _read_json_for_write(self._config_file)
+        except (_MalformedConfigError, OSError) as exc:
+            return RegisterResult(
+                RegisterStatus.FAILED,
+                f"refusing to overwrite {self._config_file}: {exc}",
+            )
         servers: dict[str, Any] = config.setdefault("mcpServers", {})
         servers[spec.name] = _spec_to_entry(spec)
         try:
@@ -162,8 +172,17 @@ class AgyRegistrar(MCPRegistrar):
 # ----------------------------------------------------------------------
 
 
+class _MalformedConfigError(RuntimeError):
+    """Raised when an existing config cannot be parsed before a full rewrite."""
+
+
 def _read_json(path: Path) -> dict[str, Any]:
-    """Read JSON file, returning empty dict if absent or unparseable."""
+    """Read JSON file, returning empty dict if absent or unparseable.
+
+    Safe for READ-ONLY callers. Do NOT use before a full-file rewrite: an
+    unparseable file returns ``{}`` here, and writing that back destroys the
+    user's config. Use :func:`_read_json_for_write` on the write path instead.
+    """
     if not path.exists():
         return {}
     try:
@@ -173,6 +192,29 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
     if not isinstance(data, dict):
         return {}
+    return data
+
+
+def _read_json_for_write(path: Path) -> dict[str, Any]:
+    """Read a JSON object ahead of a full-file rewrite.
+
+    Returns ``{}`` only when the file is absent or empty (safe to create fresh).
+    When it has content that is not a JSON object, raises
+    :class:`_MalformedConfigError` so the caller aborts instead of overwriting an
+    unrelated user config — agy's ``mcp_config.json`` is shared with the
+    Antigravity IDE and holds the user's own servers alongside ours.
+    """
+    if not path.exists():
+        return {}
+    raw = path.read_text(encoding="utf-8")  # OSError propagates to the caller
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise _MalformedConfigError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise _MalformedConfigError(f"{path} does not contain a JSON object")
     return data
 
 

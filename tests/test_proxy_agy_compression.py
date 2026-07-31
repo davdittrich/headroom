@@ -603,9 +603,5 @@ def test_fail_open_compression_degrades_open(
 #   test_wrap_aider_sets_provider_envs asserts OPENAI_API_BASE + ANTHROPIC_BASE_URL
 #   and agent_type == "aider".
 #
-# test_wrap_agy.py covers _inject_ssl_bypass byte-identity for claude:
-#   TestInjectSslBypassAgentAware.test_claude_sets_node_tls_reject_unauthorized_0 etc.
-#   The aider path uses the same _inject_ssl_bypass code path; adding a separate
-#   aider assertion here would duplicate test_cli/test_wrap_aider.py coverage.
 #   Recorded as: covered: tests/test_cli/test_wrap_aider.py::test_wrap_aider_sets_provider_envs
 # ---------------------------------------------------------------------------

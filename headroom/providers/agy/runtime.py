@@ -51,10 +51,29 @@ def build_agy_env(
     bundle_str = str(bundle_path)
     env = dict(base_env)  # copy — never mutate caller's dict
 
+    # Drop the wrapper's session-scoped savings redirection. Those vars belong to
+    # THIS process's in-proxy funnel (savings written to a temp dir that is
+    # deleted on exit, inbox-emit marker set); the agy child — and the
+    # `headroom mcp serve` grandchild it spawns, which is headroom code — must
+    # not inherit them and write into a sink that disappears.
+    for leaked in (
+        "HEADROOM_AGY_INBOX_EMIT",
+        "HEADROOM_SAVINGS_PATH",
+        "HEADROOM_SAVINGS_EVENTS_PATH",
+        "HEADROOM_OTEL_METRICS_ENABLED",
+    ):
+        env.pop(leaked, None)
+
     # Route all traffic through the CONNECT terminator.
     env["HTTPS_PROXY"] = terminator_url
     env["HTTP_PROXY"] = terminator_url
-    env["NO_PROXY"] = "127.0.0.1,localhost"
+    # Extend, never replace: on a corporate machine the inherited NO_PROXY names
+    # hosts that MUST bypass the proxy, and dropping them would tunnel them
+    # through the terminator.
+    inherited_no_proxy = (env.get("NO_PROXY") or env.get("no_proxy") or "").strip().strip(",")
+    env["NO_PROXY"] = (
+        f"127.0.0.1,localhost,{inherited_no_proxy}" if inherited_no_proxy else "127.0.0.1,localhost"
+    )
 
     # Trust our minted CA bundle — blanking these would break MITM.
     env["SSL_CERT_FILE"] = bundle_str

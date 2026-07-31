@@ -77,6 +77,26 @@ def _isolate(monkeypatch: pytest.MonkeyPatch, record: dict) -> None:
         monkeypatch.delenv(var, raising=False)
 
 
+def _invoke_agy(*extra_args: str) -> Any:
+    """Run `wrap agy` under the isolation harness and assert it got there cleanly.
+
+    ``_fake_ensure_proxy`` short-circuits with ``_StopBeforeLaunch(0)``, so a
+    non-zero exit or any other exception means the command died somewhere else —
+    in which case the recorded assertions below would be checking a run that
+    never happened.
+    """
+    result = CliRunner().invoke(
+        _get_main(), ["wrap", "agy", "--port", _THROWAWAY_PORT, *extra_args]
+    )
+    assert result.exit_code == 0, (
+        f"wrap agy exited {result.exit_code} before the assertion point: "
+        f"{result.exception!r}\n{result.output}"
+    )
+    if result.exception is not None:
+        assert isinstance(result.exception, SystemExit), result.exception
+    return result
+
+
 class _RecordingCleanup:
     def __init__(self) -> None:
         self.calls = 0
@@ -89,7 +109,7 @@ class TestAgyEnsuresSharedProxy:
     def test_ensure_proxy_runs_before_env_poisoning(self, monkeypatch: pytest.MonkeyPatch) -> None:
         record: dict = {}
         _isolate(monkeypatch, record)
-        CliRunner().invoke(_get_main(), ["wrap", "agy", "--port", _THROWAWAY_PORT])
+        _invoke_agy()
 
         assert "env_at_ensure" in record, "agy() never reached _ensure_proxy"
         leaked = [v for v in _POISON_VARS if v in record["env_at_ensure"]]
@@ -100,7 +120,7 @@ class TestAgyEnsuresSharedProxy:
     def test_ensure_proxy_called_with_agy_agent_type(self, monkeypatch: pytest.MonkeyPatch) -> None:
         record: dict = {}
         _isolate(monkeypatch, record)
-        CliRunner().invoke(_get_main(), ["wrap", "agy", "--port", _THROWAWAY_PORT])
+        _invoke_agy()
 
         args = record.get("ensure_args", {})
         assert args.get("port") == int(_THROWAWAY_PORT)
@@ -110,7 +130,7 @@ class TestAgyEnsuresSharedProxy:
     def test_no_proxy_flag_is_passed_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
         record: dict = {}
         _isolate(monkeypatch, record)
-        CliRunner().invoke(_get_main(), ["wrap", "agy", "--port", _THROWAWAY_PORT, "--no-proxy"])
+        _invoke_agy("--no-proxy")
 
         assert record.get("ensure_args", {}).get("no_proxy") is True
 
@@ -125,21 +145,21 @@ class TestAgyEnsuresSharedProxy:
         """
         record: dict = {}
         _isolate(monkeypatch, record)
-        CliRunner().invoke(_get_main(), ["wrap", "agy", "--port", _THROWAWAY_PORT, "--code-graph"])
+        _invoke_agy("--code-graph")
 
         assert record.get("ensure_args", {}).get("kwargs", {}).get("code_graph") is True
 
     def test_code_graph_defaults_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
         record: dict = {}
         _isolate(monkeypatch, record)
-        CliRunner().invoke(_get_main(), ["wrap", "agy", "--port", _THROWAWAY_PORT])
+        _invoke_agy()
 
         assert record.get("ensure_args", {}).get("kwargs", {}).get("code_graph") is False
 
     def test_cleanup_runs_on_teardown(self, monkeypatch: pytest.MonkeyPatch) -> None:
         record: dict = {}
         _isolate(monkeypatch, record)
-        CliRunner().invoke(_get_main(), ["wrap", "agy", "--port", _THROWAWAY_PORT])
+        _invoke_agy()
 
         cleanup = record.get("cleanup")
         assert cleanup is not None, "_make_cleanup was never built"

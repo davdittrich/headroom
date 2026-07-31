@@ -3141,46 +3141,6 @@ def _run_proxy_only_watcher(
         cleanup()
 
 
-def _inject_gemini_md_block(gemini_md: Path, content: str, verbose: bool = False) -> bool:
-    """Inject a Headroom-marked block into GEMINI.md (idempotent).
-
-    If the block is already present it is replaced in-place so re-runs with
-    updated instructions are safe.  User content outside the markers is
-    preserved verbatim.  Returns ``True`` if the file was written.
-    """
-    block = f"{_AGY_GEMINI_BLOCK_START}\n{content}\n{_AGY_GEMINI_BLOCK_END}"
-
-    if gemini_md.exists():
-        existing = gemini_md.read_text(encoding="utf-8")
-        if _AGY_GEMINI_BLOCK_START in existing and _AGY_GEMINI_BLOCK_END in existing:
-            # Replace existing block in-place.
-            start = existing.index(_AGY_GEMINI_BLOCK_START)
-            end = existing.index(_AGY_GEMINI_BLOCK_END) + len(_AGY_GEMINI_BLOCK_END)
-            new_text = (
-                existing[:start].rstrip("\n")
-                + ("\n\n" if existing[:start].rstrip("\n") else "")
-                + block
-                + "\n"
-                + existing[end:].lstrip("\n")
-            )
-            if new_text == existing:
-                if verbose:
-                    click.echo("  GEMINI.md headroom block already up-to-date")
-                return False
-            gemini_md.write_text(new_text, encoding="utf-8")
-        else:
-            # Append after existing user content.
-            sep = "\n\n" if existing.rstrip("\n") else ""
-            gemini_md.write_text(existing.rstrip("\n") + sep + block + "\n", encoding="utf-8")
-    else:
-        gemini_md.parent.mkdir(parents=True, exist_ok=True)
-        gemini_md.write_text(block + "\n", encoding="utf-8")
-
-    if verbose:
-        click.echo(f"  headroom block injected into {gemini_md}")
-    return True
-
-
 def _remove_gemini_md_block(gemini_md: Path, verbose: bool = False) -> bool:
     """Remove the Headroom-marked block from GEMINI.md (idempotent).
 
@@ -4480,7 +4440,6 @@ def _launch_tool(
         if args:
             click.echo(f"  Extra args: {' '.join(args)}")
         _print_telemetry_notice()
-        _inject_ssl_bypass(env, agent_type=agent_type)
         click.echo()
 
         result = subprocess.run([binary, *args], env=env)
@@ -7611,33 +7570,6 @@ def unwrap_codex(port: int, no_stop_proxy: bool) -> None:
     if not no_stop_proxy and status != "noop":
         _echo_unwrap_proxy_stop_status(_stop_local_proxy_for_unwrap(port), port)
     click.echo()
-
-
-def _inject_ssl_bypass(env: dict[str, str], agent_type: str = "unknown") -> None:
-    """Inject environment variables to bypass SSL verification in child processes.
-
-    For ``agent_type="agy"`` the bypass vars are intentionally NOT injected:
-    agy routes through our CONNECT terminator via HTTPS_PROXY and must trust
-    the minted CA bundle.  Blanking SSL_CERT_FILE / CACERT_PATH /
-    NODE_EXTRA_CA_CERTS / CURL_CA_BUNDLE would prevent the terminator's TLS
-    leaf from being verified, defeating the MITM entirely.  The global
-    NODE_TLS_REJECT_UNAUTHORIZED=0 / PYTHONHTTPSVERIFY=0 bypass would also
-    be counterproductive here — agy must verify TLS against our bundle.
-
-    All other agent types keep byte-identical behaviour to the original.
-    """
-    if agent_type == "agy":
-        # agy MUST trust the CA bundle — do NOT blank or disable verification.
-        return
-    ssl_verify = os.environ.get("HEADROOM_SSL_VERIFY", "true").lower()
-    if ssl_verify in ("false", "0", "no", "off"):
-        # Node.js (Claude Code is Node)
-        env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
-        # Python
-        env["PYTHONHTTPSVERIFY"] = "0"
-        # general / some libraries
-        env["CURL_CA_BUNDLE"] = ""
-        env["SSL_CERT_FILE"] = ""
 
 
 # =============================================================================

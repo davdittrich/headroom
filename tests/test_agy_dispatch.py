@@ -910,22 +910,24 @@ async def test_sni_none_and_empty_rejected(
 
 
 @pytest.mark.asyncio
-async def test_sni_trailing_dot_fqdn_rejected(
+async def test_sni_mixed_case_host_is_allowlisted(
     tmp_ca: tuple[RSAPrivateKey, Certificate, bytes],
 ) -> None:
-    """Trailing-dot FQDN 'daily-cloudcode-pa.googleapis.com.' is rejected under exact match."""
+    """A mixed-case SNI names the same host (RFC 6066) and must terminate.
+
+    A spelling one layer accepts and another rejects is worse than a hard
+    failure: traffic silently skips compression with no signal. Every layer
+    normalizes via ``normalize_host``.
+    """
     ca_key, ca_cert, ca_cert_pem = tmp_ca
 
-    # Use a controlled allowlist with only the non-dotted form.
+    # Controlled allowlist holding only the canonical form.
     allowlist = frozenset({"daily-cloudcode-pa.googleapis.com"})
     async with AgyDispatchServer(ca_key=ca_key, ca_cert=ca_cert, allowlist=allowlist) as srv:
         _, port = srv.address
-        # trailing dot form is not in allowlist — must be rejected
-        rejected = not await _try_tls_connect(
-            port, ca_cert_pem, "daily-cloudcode-pa.googleapis.com."
-        )
+        accepted = await _try_tls_connect(port, ca_cert_pem, "Daily-CloudCode-PA.googleapis.com")
 
-    assert rejected, "Trailing-dot FQDN must be rejected under exact match"
+    assert accepted, "mixed-case SNI is the same host as the allowlisted form"
 
 
 @pytest.mark.asyncio

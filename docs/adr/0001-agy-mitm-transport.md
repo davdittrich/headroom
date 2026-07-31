@@ -107,11 +107,11 @@ to chaining** (not documented-unsupported):
   objects with `basicConstraints CA:TRUE` are merged (do not blindly concatenate arbitrary
   user-pointed PEM, which would widen `agy`'s trust beyond intended roots).
 
-If chaining setup fails, fail-fast with a clear message rather than silently clobbering the
-corporate path.
+Chaining failures are reported per connection (`403` for a loopback upstream proxy, `502`
+when it cannot be reached) rather than pre-flighted at launch.
 
 ### Fail-open observability (required)
-Fail-closed (forward original bytes on compression/dispatch error) keeps `agy` working, but
+Failing open (forward original bytes on compression/dispatch error) keeps `agy` working, but
 must never silently nullify the product's value. The design MUST:
 - emit a one-line **stderr warning on the first** fail-open occurrence per session
   (compression degraded to passthrough), and
@@ -129,7 +129,7 @@ signals extend that to the user's normal runtime.
   process-scoped and never in the OS trust store; the **upstream** (Google-facing) leg keeps
   **full** certificate verification against system roots — MITM on the agy-facing side never
   implies trust-anything upstream.
-- **Stability:** fail-closed — any compression/dispatch error forwards the original bytes so
+- **Stability:** fail-open — any compression/dispatch error forwards the original bytes so
   `agy` never breaks; fail-fast on security-critical setup (CA generation, port bind).
 
 ## Alternatives considered
@@ -167,8 +167,9 @@ signals extend that to the user's normal runtime.
   OpenSSL may skip the SNI callback. The dispatch allowlist is the same single value wired
   into the CONNECT terminator (no drift).
 - **Leaf private key handling:** `load_cert_chain_in_memory` (`headroom/proxy/agy_ca.py`) is
-  used at all three `load_cert_chain` call sites (terminator `_build_server_ssl_context`;
-  dispatch placeholder init; dispatch `_sni_callback`). Primary path (Linux, `os.memfd_create`
+  used at both `load_cert_chain` call sites (dispatch placeholder init; dispatch
+  `_sni_callback`). The terminator has none: it byte-splices to the dispatch server and never
+  terminates TLS itself. Primary path (Linux, `os.memfd_create`
   available): combined cert+key PEM is written into an anonymous `memfd_create("hr_leaf")`
   file descriptor and loaded via `/proc/self/fd/{fd}`; the fd is closed after load so no file
   ever exists on a filesystem. Fallback path (`memfd_create` absent or `/proc` inaccessible,
@@ -180,14 +181,11 @@ signals extend that to the user's normal runtime.
   with key `0600`; the combined bundle file is `0600`. All perms asserted after write.
 - Listener bound to `127.0.0.1` only; `NO_PROXY=127.0.0.1,localhost` loop-guard so the
   terminator can never CONNECT to itself.
-- **SSL-bypass interaction:** `_inject_ssl_bypass` (called unconditionally inside
-  `_launch_tool` at `wrap.py:2378`, with no `agent_type` param today) blanks
-  `SSL_CERT_FILE`/`CURL_CA_BUNDLE` and sets `NODE_TLS_REJECT_UNAUTHORIZED=0` when
-  `HEADROOM_SSL_VERIFY=false`. It is made **agent-aware**: for `agy` it must not blank the
-  CA vars and must not set the bypass flags. For the **Go** binary `agy` the concrete
-  downgrade vector is **CA-var blanking** (`SSL_CERT_FILE=""` erases the injected bundle);
-  `NODE_TLS_REJECT_UNAUTHORIZED` is a Node var inert for `agy` but is still exempted for
-  hygiene. Other agents' bypass behavior stays byte-identical (regression-tested).
+- **No TLS-verification bypass:** an earlier revision of this work added an
+  `HEADROOM_SSL_VERIFY=false` switch that blanked `SSL_CERT_FILE`/`CURL_CA_BUNDLE` and set
+  `NODE_TLS_REJECT_UNAUTHORIZED=0` for launched agents, with `agy` exempted so the injected
+  bundle survived. It has been removed: upstream ships no such switch, and a PR that adds
+  TLS interception must not also add a way to turn verification off.
 - Plaintext `Authorization` / `x-goog-api-key` post-termination are routed only through the
   existing `redact_for_wire_debug` redactor (helpers.py — covers both keys); the request auth
   is not persisted in the semantic cache (verified: cache keys on messages+model, stores
@@ -195,8 +193,8 @@ signals extend that to the user's normal runtime.
 
 ## Files touched (regression-audit surface)
 - New: `headroom/proxy/` CA-lifecycle, terminator, dispatch-adapter modules.
-- Edited (shared): `headroom/cli/wrap.py` (`agy()` + `unwrap agy` + agent-aware
-  `_inject_ssl_bypass` + `_launch_tool` threading); `headroom/proxy/handlers/gemini.py:28`
+- Edited (shared): `headroom/cli/wrap.py` (`agy()` + `unwrap agy` +
+  `_launch_tool` threading); `headroom/proxy/handlers/gemini.py:28`
   (host const + resolver, via T4). Handler `gemini.py:740` reused, not modified internally.
 
 ## Consequences
@@ -287,23 +285,24 @@ Resolution (two parts):
   accepted rather than paying for a transactional store. For users who never run agy the
   inbox is empty and the dashboard is byte-identical to before.
 
-## Third-party tool parity (tokensave)
+## Third-party tool parity (code memory)
 
-`headroom wrap agy` now sets up the same code-graph compressor as every other client:
-**tokensave is the primary MCP**, with serena as the backup only when tokensave is
-unavailable (a new `--no-tokensave` flag mirrors `--no-serena`). tokensave is registered
-via `AgyRegistrar` with a verify-then-remove `initialize` handshake and a ledger record so
-`unwrap agy` removes it cleanly; user-managed entries are preserved. Verified live:
-`wrap agy` leaves `mcpServers = {lean-ctx, tokensave}` (serena dropped, tokensave
-handshake-verified).
+`headroom wrap agy` sets up the same code memory as every other client: **Serena is the
+engine**, registered via `AgyRegistrar` with a verify-then-remove `initialize` handshake and
+a ledger record so `unwrap agy` removes it cleanly; user-managed entries are preserved.
+tokensave and the CLI context tools (rtk, lean-ctx) were retired upstream, so `wrap agy`
+installs neither — it only *removes* what earlier releases left behind
+(`_disable_tokensave_mcp`, `headroom.context_tool_cleanup`). `--no-tokensave` survives as a
+hidden no-op flag; `--code-graph` no longer registers an MCP server for agy at all, it
+forwards to the proxy's live code-graph watcher exactly as `wrap claude` does.
 
 **MCP parity in all modes.** An earlier build of agy (~1.0.5) hung indefinitely in
 `--print` mode whenever any MCP server was configured, so print mode used to register no MCP.
-That hang was **fixed in agy 1.0.16** (re-verified 2026-07-05: lean-ctx + tokensave + serena
-all answer in ~4s in print mode). agy therefore now wires MCP tooling **identically in print
-and interactive mode** — tokensave-primary/serena-backup, lean-ctx context tool, the headroom
-retrieve MCP, and `--code-graph` — giving agy first-class MCP parity in every mode, like any
-other client. Live-verified: `wrap agy -p` wires tokensave + lean-ctx + retrieve
+That hang was **fixed in agy 1.0.16** (re-verified 2026-07-05: Serena and the headroom
+retrieve server both answer in ~4s in print mode). agy therefore now wires MCP tooling
+**identically in print and interactive mode** — Serena plus the headroom retrieve MCP —
+giving agy first-class MCP parity in every mode, like any
+other client. Live-verified: `wrap agy -p` wires Serena + retrieve
 (handshake-verified) and completes in ~10s. Because the fix is agy-side, `wrap agy` still
 runs a runtime `agy --version` preflight before wiring print-mode MCP (headroom-37g.37): an
 agy older than 1.0.16, or one whose version can't be detected, is treated as unsafe by

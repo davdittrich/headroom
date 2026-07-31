@@ -1,7 +1,4 @@
-"""Tests for headroom wrap agy / unwrap agy and agent-aware _inject_ssl_bypass.
-
-TDD: written before implementation — tests should FAIL on first run.
-"""
+"""Tests for headroom wrap agy / unwrap agy."""
 
 from __future__ import annotations
 
@@ -16,136 +13,6 @@ from click.testing import CliRunner
 # ---------------------------------------------------------------------------
 
 _WRAP_MODULE = "headroom.cli.wrap"
-
-
-def _import_inject_ssl_bypass():
-    """Import _inject_ssl_bypass fresh (avoids stale module state)."""
-    import importlib
-
-    import headroom.cli.wrap as wrap_mod
-
-    importlib.reload(wrap_mod)
-    return wrap_mod._inject_ssl_bypass  # type: ignore[attr-defined]
-
-
-# ---------------------------------------------------------------------------
-# _inject_ssl_bypass — agent-aware regression guard
-# ---------------------------------------------------------------------------
-
-
-class TestInjectSslBypassAgentAware:
-    """Verify agent-aware behaviour without touching the old path."""
-
-    def _get_fn(self):
-        from headroom.cli.wrap import _inject_ssl_bypass
-
-        return _inject_ssl_bypass
-
-    # ------------------------------------------------------------------
-    # agy: bypass vars MUST NOT be injected even when HEADROOM_SSL_VERIFY=false
-    # ------------------------------------------------------------------
-
-    def test_agy_does_not_set_node_tls_reject_unauthorized(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("HEADROOM_SSL_VERIFY", "false")
-        fn = self._get_fn()
-        env: dict[str, str] = {}
-        fn(env, agent_type="agy")
-        assert "NODE_TLS_REJECT_UNAUTHORIZED" not in env
-
-    def test_agy_does_not_set_pythonhttpsverify(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HEADROOM_SSL_VERIFY", "false")
-        fn = self._get_fn()
-        env: dict[str, str] = {}
-        fn(env, agent_type="agy")
-        assert "PYTHONHTTPSVERIFY" not in env
-
-    def test_agy_does_not_blank_ssl_cert_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HEADROOM_SSL_VERIFY", "false")
-        fn = self._get_fn()
-        env: dict[str, str] = {"SSL_CERT_FILE": "/some/bundle.pem"}
-        fn(env, agent_type="agy")
-        assert env["SSL_CERT_FILE"] == "/some/bundle.pem"
-
-    def test_agy_does_not_blank_cacert_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HEADROOM_SSL_VERIFY", "false")
-        fn = self._get_fn()
-        env: dict[str, str] = {"CACERT_PATH": "/some/bundle.pem"}
-        fn(env, agent_type="agy")
-        assert env["CACERT_PATH"] == "/some/bundle.pem"
-
-    def test_agy_does_not_blank_node_extra_ca_certs(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HEADROOM_SSL_VERIFY", "false")
-        fn = self._get_fn()
-        env: dict[str, str] = {"NODE_EXTRA_CA_CERTS": "/some/bundle.pem"}
-        fn(env, agent_type="agy")
-        assert env["NODE_EXTRA_CA_CERTS"] == "/some/bundle.pem"
-
-    def test_agy_does_not_blank_curl_ca_bundle(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HEADROOM_SSL_VERIFY", "false")
-        fn = self._get_fn()
-        env: dict[str, str] = {"CURL_CA_BUNDLE": "/some/bundle.pem"}
-        fn(env, agent_type="agy")
-        assert env["CURL_CA_BUNDLE"] == "/some/bundle.pem"
-
-    # ------------------------------------------------------------------
-    # REGRESSION: other agent types keep byte-identical old behaviour
-    # ------------------------------------------------------------------
-
-    def test_claude_sets_node_tls_reject_unauthorized_0(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("HEADROOM_SSL_VERIFY", "false")
-        fn = self._get_fn()
-        env: dict[str, str] = {}
-        fn(env, agent_type="claude")
-        assert env["NODE_TLS_REJECT_UNAUTHORIZED"] == "0"
-
-    def test_claude_sets_pythonhttpsverify_0(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HEADROOM_SSL_VERIFY", "false")
-        fn = self._get_fn()
-        env: dict[str, str] = {}
-        fn(env, agent_type="claude")
-        assert env["PYTHONHTTPSVERIFY"] == "0"
-
-    def test_claude_blanks_curl_ca_bundle(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HEADROOM_SSL_VERIFY", "false")
-        fn = self._get_fn()
-        env: dict[str, str] = {}
-        fn(env, agent_type="claude")
-        assert env["CURL_CA_BUNDLE"] == ""
-
-    def test_claude_blanks_ssl_cert_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HEADROOM_SSL_VERIFY", "false")
-        fn = self._get_fn()
-        env: dict[str, str] = {}
-        fn(env, agent_type="claude")
-        assert env["SSL_CERT_FILE"] == ""
-
-    def test_default_unknown_agent_keeps_old_behaviour_when_ssl_bypass(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("HEADROOM_SSL_VERIFY", "false")
-        fn = self._get_fn()
-        env: dict[str, str] = {}
-        fn(env)  # no agent_type -> "unknown"
-        assert env["NODE_TLS_REJECT_UNAUTHORIZED"] == "0"
-        assert env["PYTHONHTTPSVERIFY"] == "0"
-
-    def test_no_mutation_when_ssl_verify_is_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HEADROOM_SSL_VERIFY", "true")
-        fn = self._get_fn()
-        env: dict[str, str] = {}
-        fn(env, agent_type="agy")
-        assert env == {}
-
-    def test_no_mutation_when_ssl_verify_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("HEADROOM_SSL_VERIFY", raising=False)
-        fn = self._get_fn()
-        env: dict[str, str] = {}
-        fn(env, agent_type="agy")
-        assert env == {}
 
 
 # ---------------------------------------------------------------------------
@@ -436,76 +303,39 @@ class TestUnwrapAgy:
 
 
 # ---------------------------------------------------------------------------
-# T9: GEMINI.md block injection / removal
+# T9: GEMINI.md block removal (legacy blocks from pre-2677 installs)
 # ---------------------------------------------------------------------------
 
 
 class TestGeminiMdBlock:
-    """_inject_gemini_md_block and _remove_gemini_md_block preserve user content."""
+    """_remove_gemini_md_block deletes only the Headroom block.
+
+    `wrap agy` no longer writes a GEMINI.md block (the rtk context-tool
+    instructions it carried were removed upstream), but `unwrap agy` must still
+    clean a block an older install left behind.
+    """
 
     def _get_helpers(self):
         from headroom.cli.wrap import (
             _AGY_GEMINI_BLOCK_END,
             _AGY_GEMINI_BLOCK_START,
-            _inject_gemini_md_block,
             _remove_gemini_md_block,
         )
 
-        return (
-            _inject_gemini_md_block,
-            _remove_gemini_md_block,
-            _AGY_GEMINI_BLOCK_START,
-            _AGY_GEMINI_BLOCK_END,
-        )
+        return (_remove_gemini_md_block, _AGY_GEMINI_BLOCK_START, _AGY_GEMINI_BLOCK_END)
 
-    def test_inject_creates_file_when_absent(self, tmp_path: Path) -> None:
-        inject, _, start, end = self._get_helpers()
-        gemini_md = tmp_path / ".gemini" / "GEMINI.md"
-        inject(gemini_md, "## Headroom\nContext instructions.", verbose=False)
-        assert gemini_md.exists()
-        text = gemini_md.read_text()
-        assert start in text
-        assert end in text
-        assert "## Headroom" in text
-
-    def test_inject_preserves_existing_user_content(self, tmp_path: Path) -> None:
-        inject, _, start, end = self._get_helpers()
-        gemini_md = tmp_path / "GEMINI.md"
-        gemini_md.write_text("# User instructions\n\nSome personal notes.\n")
-        inject(gemini_md, "## Headroom\nContext instructions.", verbose=False)
-        text = gemini_md.read_text()
-        assert "# User instructions" in text
-        assert "Some personal notes." in text
-        assert start in text
-        assert end in text
-
-    def test_inject_is_idempotent(self, tmp_path: Path) -> None:
-        inject, _, start, end = self._get_helpers()
-        gemini_md = tmp_path / "GEMINI.md"
-        inject(gemini_md, "## Headroom\nContext instructions.", verbose=False)
-        inject(gemini_md, "## Headroom\nContext instructions.", verbose=False)
-        text = gemini_md.read_text()
-        # Block should appear exactly once
-        assert text.count(start) == 1
-        assert text.count(end) == 1
-
-    def test_inject_replaces_stale_block(self, tmp_path: Path) -> None:
-        inject, _, start, end = self._get_helpers()
-        gemini_md = tmp_path / "GEMINI.md"
-        inject(gemini_md, "old content", verbose=False)
-        inject(gemini_md, "new content", verbose=False)
-        text = gemini_md.read_text()
-        assert "new content" in text
-        assert "old content" not in text
-        assert text.count(start) == 1
+    def _write_legacy(self, gemini_md: Path, user_text: str = "") -> None:
+        """Write a GEMINI.md exactly as an older `wrap agy` left it."""
+        _, start, end = self._get_helpers()
+        block = f"{start}\n## Headroom\nContext.\n{end}\n"
+        gemini_md.parent.mkdir(parents=True, exist_ok=True)
+        gemini_md.write_text(f"{user_text}\n\n{block}" if user_text else block)
 
     def test_remove_deletes_only_headroom_block(self, tmp_path: Path) -> None:
-        inject, remove, start, end = self._get_helpers()
+        remove, start, end = self._get_helpers()
         gemini_md = tmp_path / "GEMINI.md"
-        gemini_md.write_text("# User content\nKeep this.\n")
-        inject(gemini_md, "## Headroom\nContext.", verbose=False)
-        removed = remove(gemini_md, verbose=False)
-        assert removed is True
+        self._write_legacy(gemini_md, "# User content\nKeep this.")
+        assert remove(gemini_md, verbose=False) is True
         text = gemini_md.read_text()
         assert "# User content" in text
         assert "Keep this." in text
@@ -513,19 +343,19 @@ class TestGeminiMdBlock:
         assert end not in text
 
     def test_remove_is_idempotent(self, tmp_path: Path) -> None:
-        inject, remove, start, end = self._get_helpers()
+        remove, _, _ = self._get_helpers()
         gemini_md = tmp_path / "GEMINI.md"
-        inject(gemini_md, "## Headroom\nContext.", verbose=False)
+        self._write_legacy(gemini_md)
         assert remove(gemini_md, verbose=False) is True
         assert remove(gemini_md, verbose=False) is False
 
     def test_remove_returns_false_when_file_absent(self, tmp_path: Path) -> None:
-        _, remove, _, _ = self._get_helpers()
+        remove, _, _ = self._get_helpers()
         gemini_md = tmp_path / "GEMINI.md"
         assert remove(gemini_md, verbose=False) is False
 
     def test_remove_returns_false_when_no_block(self, tmp_path: Path) -> None:
-        _, remove, _, _ = self._get_helpers()
+        remove, _, _ = self._get_helpers()
         gemini_md = tmp_path / "GEMINI.md"
         gemini_md.write_text("# User content only\n")
         assert remove(gemini_md, verbose=False) is False

@@ -35,7 +35,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.x509 import Certificate
 
 from headroom.proxy.agy_ca import ensure_root_ca, load_cert_chain_in_memory
-from headroom.proxy.agy_terminator import DEFAULT_ALLOWLIST, _LeafCache
+from headroom.proxy.agy_terminator import DEFAULT_ALLOWLIST, _LeafCache, normalize_host
 
 logger = logging.getLogger("headroom.proxy.agy_dispatch")
 
@@ -98,12 +98,9 @@ def make_host_guard(app: Any, allowlist: frozenset[str], project: str | None = N
                 logger.warning("event=host_refused host=%r", host_str)
                 await _send_421(send)
                 return
-            # Normalize: strip a single trailing :port; lowercase (RFC 6066/7230).
-            normalized = host_str.lower()
-            if ":" in normalized:
-                left, _, right = normalized.rpartition(":")
-                if right.isdigit():
-                    normalized = left
+            # Same normalization as the CONNECT target and the SNI guard, so no
+            # layer of the allowlist check can disagree with another.
+            normalized = normalize_host(host_str)
             if normalized not in allowlist:
                 logger.warning("event=host_refused host=%s", host_str)
                 await _send_421(send)
@@ -158,9 +155,10 @@ def _build_sni_ssl_context(
         ctx_in: ssl.SSLContext,  # noqa: ARG001
     ) -> int | None:
         """Guard SNI then mint or reuse a leaf cert for *server_name* and swap it in-place."""
-        # Case-insensitive per RFC 6066; lowercase once so the membership check
-        # AND the cache key match the (lowercase) allowlist and the Host guard.
-        host = server_name.lower() if server_name is not None else None
+        # Case-insensitive per RFC 6066; normalize once so the membership check
+        # AND the cache key match the allowlist, the Host guard and the CONNECT
+        # target.
+        host = normalize_host(server_name) if server_name is not None else None
         if host is None or host not in allowlist:
             logger.warning("event=sni_refused host=%s", server_name)
             return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
@@ -190,6 +188,12 @@ class AgyDispatchServer:
     Binds on loopback only; TLS via SNI callback (mints leaf per hostname
     from the headroom root CA).  Hypercorn handles h2/http1.1 + lifespan.
 
+    With ``plain_http=True`` the same plumbing serves the app over PLAIN HTTP:
+    no SSL context, no CA touched, no Host allowlist guard.  That is the
+    retrieve listener (:class:`headroom.proxy.agy_retrieve.AgyRetrieveServer`),
+    which a stdio ``headroom mcp serve`` child must reach over loopback — it
+    cannot speak the Cloud-Code-SNI TLS the dispatch listener requires.
+
     Usage::
 
         server = AgyDispatchServer(ca_key=ca_key, ca_cert=ca_cert)
@@ -211,7 +215,9 @@ class AgyDispatchServer:
         port: int = 0,
         allowlist: frozenset[str] | None = None,
         project: str | None = None,
+        plain_http: bool = False,
     ) -> None:
+        self._plain_http = plain_http
         self._ca_key_init = ca_key
         self._ca_cert_init = ca_cert
         self._base_dir = base_dir
@@ -229,20 +235,22 @@ class AgyDispatchServer:
         self._leaf_cache: _LeafCache | None = None
 
     async def start(self) -> None:
-        """Start the hypercorn server; binds loopback HTTPS on an ephemeral port."""
+        """Start the hypercorn server; binds loopback (HTTPS, or plain HTTP) on a port."""
         from hypercorn.asyncio import wrap_app
         from hypercorn.asyncio.run import Lifespan, TCPServer, WorkerContext
         from hypercorn.config import Config
 
-        # Resolve CA.
-        if self._ca_key_init is not None and self._ca_cert_init is not None:
-            ca_key = self._ca_key_init
-            ca_cert = self._ca_cert_init
-        else:
-            ca_key, ca_cert, _, _ = ensure_root_ca(base_dir=self._base_dir)
+        ssl_ctx: ssl.SSLContext | None = None
+        if not self._plain_http:
+            # Resolve CA.
+            if self._ca_key_init is not None and self._ca_cert_init is not None:
+                ca_key = self._ca_key_init
+                ca_cert = self._ca_cert_init
+            else:
+                ca_key, ca_cert, _, _ = ensure_root_ca(base_dir=self._base_dir)
 
-        self._leaf_cache = _LeafCache(max_size=len(self._allowlist) + 1)
-        ssl_ctx = _build_sni_ssl_context(self._leaf_cache, ca_key, ca_cert, self._allowlist)
+            self._leaf_cache = _LeafCache(max_size=len(self._allowlist) + 1)
+            ssl_ctx = _build_sni_ssl_context(self._leaf_cache, ca_key, ca_cert, self._allowlist)
 
         # Build minimal hypercorn Config (no certfile/keyfile — we supply ssl directly).
         config = Config()
@@ -255,7 +263,11 @@ class AgyDispatchServer:
         # Import and build the FastAPI app.
         from headroom.proxy.server import create_app
 
-        app = make_host_guard(create_app(), self._allowlist, self._project)
+        # Plain HTTP (retrieve listener): no Host allowlist guard — the client is
+        # a stdio child in the same trust boundary, addressing 127.0.0.1 directly.
+        app: Any = create_app()
+        if not self._plain_http:
+            app = make_host_guard(app, self._allowlist, self._project)
 
         # wrap_app accepts the ASGI callable directly; ignore the narrow stub type.
         app_wrapper = wrap_app(app, config.wsgi_max_body_size, mode="asgi")  # type: ignore[arg-type]
@@ -277,7 +289,8 @@ class AgyDispatchServer:
         worker_context = WorkerContext(max_requests=None)
         self._context = worker_context
 
-        # Bind a plain TCP socket on loopback then wrap with our SSL context.
+        # Bind a plain TCP socket on loopback (wrapped with our SSL context
+        # below unless this is the plain-HTTP retrieve listener).
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         # SO_REUSEADDR means fast TIME_WAIT reuse on POSIX, but on Windows it
         # lets a second process bind this same loopback port and intercept the
@@ -303,14 +316,16 @@ class AgyDispatchServer:
                 writer,
             )
 
+        # asyncio rejects ssl_handshake_timeout when ssl is None, so only pass
+        # it on the TLS path.
         self._server = await asyncio.start_server(
             _connection_handler,
             sock=sock,
             ssl=ssl_ctx,
-            ssl_handshake_timeout=config.ssl_handshake_timeout,
+            **({} if ssl_ctx is None else {"ssl_handshake_timeout": config.ssl_handshake_timeout}),
         )
         addr = self._server.sockets[0].getsockname()
-        logger.info("event=dispatch_started address=%s:%d", addr[0], addr[1])
+        logger.info("event=%s_started address=%s:%d", self._event, addr[0], addr[1])
 
     async def stop(self) -> None:
         """Gracefully shut down the server and hypercorn lifespan."""
@@ -334,13 +349,18 @@ class AgyDispatchServer:
                 pass
             self._lifespan_task = None
 
-        logger.info("event=dispatch_stopped")
+        logger.info("event=%s_stopped", self._event)
+
+    @property
+    def _event(self) -> str:
+        """Log event prefix: ``retrieve`` for the plain-HTTP listener."""
+        return "retrieve" if self._plain_http else "dispatch"
 
     @property
     def address(self) -> tuple[str, int]:
         """Return ``(host, port)`` the server is bound to. Requires :meth:`start`."""
         if self._server is None:
-            raise RuntimeError("AgyDispatchServer not started")
+            raise RuntimeError(f"{type(self).__name__} not started")
         sock = self._server.sockets[0]
         host, port = sock.getsockname()[:2]
         return host, port
