@@ -76,6 +76,7 @@ from headroom.proxy.passthrough import (
     custom_base_passthrough_telemetry as _custom_base_passthrough_telemetry,
 )
 from headroom.proxy.project_context import classify_project, set_current_project
+from headroom.proxy.token_counting import gemini_output_tokens
 
 logger = logging.getLogger("headroom.proxy")
 
@@ -332,7 +333,7 @@ def _passthrough_usage_from_json(payload: Any) -> dict[str, int]:
     if isinstance(usage_meta, dict):
         return {
             "input_tokens": _usage_int(usage_meta.get("promptTokenCount")),
-            "output_tokens": _usage_int(usage_meta.get("candidatesTokenCount")),
+            "output_tokens": gemini_output_tokens(usage_meta),
             "cache_read_input_tokens": _usage_int(usage_meta.get("cachedContentTokenCount")),
         }
 

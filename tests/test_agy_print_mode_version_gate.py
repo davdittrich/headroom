@@ -118,20 +118,18 @@ def test_gate_allows_interactive_without_version_check():
 # -- _purge_agy_mcp_entries (load-bearing: all persisted types removed) ------
 
 
-def test_purge_targets_all_five_entry_types():
+def test_purge_targets_all_four_entry_types():
     registrar = mock.Mock()
     with (
         mock.patch.object(wrap, "_disable_tokensave_mcp") as dis_tok,
         mock.patch.object(wrap, "_disable_serena_mcp") as dis_ser,
-        mock.patch.object(wrap, "_remove_headroom_installed_lean_ctx_mcp") as rm_lc,
     ):
         _purge_agy_mcp_entries(registrar)
 
-    # tokensave + serena + lean-ctx removed via the LEDGER-AWARE helpers
+    # tokensave + serena removed via the LEDGER-AWARE helpers
     # (so a user-owned entry is never clobbered).
     dis_tok.assert_called_once_with(registrar)
     dis_ser.assert_called_once()
-    rm_lc.assert_called_once_with(registrar)
     # code-graph + retrieve removed via raw unregister (Headroom-owned names).
     unregistered = {c.args[0] for c in registrar.unregister_server.call_args_list}
     assert wrap._CBM_MCP_SERVER_NAME in unregistered

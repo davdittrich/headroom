@@ -714,9 +714,6 @@ def _stub_agy_mitm_run(
         "headroom.proxy.agy_ca.build_combined_bundle",
         lambda base_dir=None, corp_env_vars=None: Path("/tmp/bundle.pem"),
     )
-    # Force the RTK context-tool path so _setup_lean_ctx_agent (which would shell
-    # out to the real lean-ctx binary) is not invoked.
-    monkeypatch.delenv("HEADROOM_CONTEXT_TOOL", raising=False)
     monkeypatch.setattr("subprocess.run", lambda *a, **kw: MagicMock(returncode=0))
 
 
@@ -848,22 +845,6 @@ class TestAgySerenaCodeMemory:
         assert calls["setup_serena"] == ["ide-assistant"]
         assert not calls["disable_serena"]
 
-    def test_setup_tokensave_mcp_agy_only_retires_stale_entry(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import headroom.cli.wrap as wrap_mod
-
-        calls = []
-        monkeypatch.setattr(
-            wrap_mod,
-            "_disable_tokensave_mcp",
-            lambda registrar, *, verbose=False: calls.append(verbose),
-        )
-
-        ok = wrap_mod._setup_tokensave_mcp_agy(object(), verbose=True)
-        assert ok is False
-        assert calls == [True]
-
 
 # ---------------------------------------------------------------------------
 # T9 Fix 2: unwrap_agy Serena removal is ledger-gated (falsification guard)
@@ -968,7 +949,7 @@ class TestUnwrapAgyTokensave:
 
 
 # ---------------------------------------------------------------------------
-# WU-0: agy print-mode MCP hang fix + lean-ctx context-tool wiring
+# agy print-mode MCP hang fix
 # ---------------------------------------------------------------------------
 
 
@@ -1018,70 +999,6 @@ class TestAgyPrintModeSuppressesMcp:
     (Print mode otherwise wires MCP identically to interactive — see the
     tokensave/retrieve/code-graph parity tests; agy no longer hangs on MCP.)
     """
-
-
-class TestAgyLeanCtxMcpWiring:
-    """Interactive lean-ctx context tool registers a correct, verified MCP entry."""
-
-    def test_registers_correct_spec_and_keeps_on_smoke_pass(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import headroom.cli.wrap as wrap_mod
-        from headroom.mcp_registry.agy import AgyRegistrar
-
-        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
-        monkeypatch.setenv("HEADROOM_CONTEXT_TOOL", "lean-ctx")
-        monkeypatch.setattr(
-            "headroom.lean_ctx.get_lean_ctx_path", lambda: Path("/usr/bin/lean-ctx")
-        )
-        # Smoke handshake passes.
-        monkeypatch.setattr(wrap_mod, "_smoke_verify_mcp_handshake", lambda *a, **kw: True)
-
-        runner = CliRunner()
-        result = runner.invoke(_get_main(), ["wrap", "agy"], catch_exceptions=False)
-        assert result.exit_code == 0
-        spec = AgyRegistrar(home_dir=tmp_path).get_server("lean-ctx")
-        assert spec is not None, "interactive lean-ctx must register an MCP entry"
-        # Path() comparison: command is str(Path(...))-normalized, so it uses OS
-        # separators (backslashes on Windows).
-        assert Path(spec.command) == Path("/usr/bin/lean-ctx")
-        assert spec.args == ("mcp",), "must register 'lean-ctx mcp', not a bare command"
-        assert "LEAN_CTX_DATA_DIR" in spec.env
-
-    def test_removes_entry_when_smoke_fails(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import headroom.cli.wrap as wrap_mod
-        from headroom.mcp_registry.agy import AgyRegistrar
-
-        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
-        monkeypatch.setenv("HEADROOM_CONTEXT_TOOL", "lean-ctx")
-        monkeypatch.setattr(
-            "headroom.lean_ctx.get_lean_ctx_path", lambda: Path("/usr/bin/lean-ctx")
-        )
-        # Smoke handshake FAILS -> entry must be removed (never persist a hanger).
-        monkeypatch.setattr(wrap_mod, "_smoke_verify_mcp_handshake", lambda *a, **kw: False)
-
-        runner = CliRunner()
-        result = runner.invoke(_get_main(), ["wrap", "agy"], catch_exceptions=False)
-        assert result.exit_code == 0
-        assert AgyRegistrar(home_dir=tmp_path).get_server("lean-ctx") is None, (
-            "a lean-ctx entry that fails the handshake must be removed"
-        )
-
-    def test_skips_when_lean_ctx_absent(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from headroom.mcp_registry.agy import AgyRegistrar
-
-        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
-        monkeypatch.setenv("HEADROOM_CONTEXT_TOOL", "lean-ctx")
-        monkeypatch.setattr("headroom.lean_ctx.get_lean_ctx_path", lambda: None)
-
-        runner = CliRunner()
-        result = runner.invoke(_get_main(), ["wrap", "agy"], catch_exceptions=False)
-        assert result.exit_code == 0
-        assert AgyRegistrar(home_dir=tmp_path).get_server("lean-ctx") is None
 
 
 class TestAgyRetrieveMcpWiring:
@@ -1248,88 +1165,8 @@ class TestAgyRetrieveMcpWiring:
         assert AgyRegistrar(home_dir=tmp_path).get_server("headroom") is None
 
 
-class TestAgyRtkGate:
-    """RTK GEMINI.md block is injected only when the rtk binary is present."""
-
-    def test_rtk_block_skipped_when_rtk_absent(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
-        # Default context tool is rtk; _stub sets which() to resolve only agy/uvx,
-        # so shutil.which("rtk") is None.
-        runner = CliRunner()
-        result = runner.invoke(_get_main(), ["wrap", "agy"], catch_exceptions=False)
-        assert result.exit_code == 0
-        gemini_md = tmp_path / ".gemini" / "GEMINI.md"
-        if gemini_md.exists():
-            assert "rtk-instructions" not in gemini_md.read_text(), (
-                "RTK block must not be injected when rtk is not installed"
-            )
-
-    def test_rtk_block_injected_when_rtk_present(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
-
-        def which_with_rtk(name: str):
-            if name in ("agy", "rtk"):
-                return f"/usr/bin/{name}"
-            if name == "uvx":
-                return "/usr/bin/uvx"
-            return None
-
-        monkeypatch.setattr("shutil.which", which_with_rtk)
-        runner = CliRunner()
-        result = runner.invoke(_get_main(), ["wrap", "agy"], catch_exceptions=False)
-        assert result.exit_code == 0
-        gemini_md = tmp_path / ".gemini" / "GEMINI.md"
-        assert gemini_md.exists()
-        assert "rtk-instructions" in gemini_md.read_text()
-
-
-class TestUnwrapAgyLeanCtx:
-    """unwrap agy removes the lean-ctx context-tool MCP entry it left behind."""
-
-    def test_unwrap_removes_headroom_installed_lean_ctx_entry(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from headroom.mcp_registry.agy import AgyRegistrar
-        from headroom.mcp_registry.install import build_lean_ctx_spec
-        from headroom.mcp_registry.ledger import record_install
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        reg = AgyRegistrar(home_dir=tmp_path)
-        spec = build_lean_ctx_spec("/usr/bin/lean-ctx", "/x/data")
-        reg.register_server(spec)
-        record_install("agy", spec)  # mark as Headroom-installed
-
-        runner = CliRunner()
-        result = runner.invoke(_get_main(), ["unwrap", "agy"])
-        assert result.exit_code == 0
-        assert AgyRegistrar(home_dir=tmp_path).get_server("lean-ctx") is None, (
-            "unwrap agy must remove a Headroom-installed lean-ctx MCP entry"
-        )
-
-    def test_unwrap_preserves_user_managed_lean_ctx_entry(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A user's own lean-ctx MCP (not in the Headroom ledger) must survive unwrap."""
-        from headroom.mcp_registry.agy import AgyRegistrar
-        from headroom.mcp_registry.base import ServerSpec
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        reg = AgyRegistrar(home_dir=tmp_path)
-        # Distinct command, NO record_install -> not Headroom-owned.
-        reg.register_server(
-            ServerSpec(name="lean-ctx", command="/home/user/.local/bin/lean-ctx", args=(), env={})
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(_get_main(), ["unwrap", "agy"])
-        assert result.exit_code == 0
-        survived = AgyRegistrar(home_dir=tmp_path).get_server("lean-ctx")
-        assert survived is not None, "user-managed lean-ctx MCP must survive unwrap"
-        assert survived.command == "/home/user/.local/bin/lean-ctx"
+class TestUnwrapAgyUserEntries:
+    """unwrap agy leaves MCP entries Headroom never installed untouched."""
 
     def test_unwrap_preserves_unrelated_user_entry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1383,232 +1220,6 @@ class TestSmokeVerifyMcpHandshake:
 
         ok = _smoke_verify_mcp_handshake(_sys.executable, [str(server)], {}, timeout=2.0)
         assert ok is False
-
-
-# ---------------------------------------------------------------------------
-# WU-B: build_codegraph_spec shape
-# ---------------------------------------------------------------------------
-
-
-class TestBuildCodegraphSpec:
-    """build_codegraph_spec produces a correctly-shaped ServerSpec."""
-
-    def test_name_matches_cbm_server_name_constant(self) -> None:
-        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
-        from headroom.mcp_registry.install import build_codegraph_spec
-
-        spec = build_codegraph_spec("/usr/local/bin/cbm")
-        assert spec.name == _CBM_MCP_SERVER_NAME
-
-    def test_command_is_cbm_bin(self) -> None:
-        from headroom.mcp_registry.install import build_codegraph_spec
-
-        spec = build_codegraph_spec("/usr/local/bin/cbm")
-        assert spec.command == "/usr/local/bin/cbm"
-
-    def test_no_extra_args(self) -> None:
-        from headroom.mcp_registry.install import build_codegraph_spec
-
-        spec = build_codegraph_spec("/usr/local/bin/cbm")
-        assert spec.args == ()
-
-    def test_no_env(self) -> None:
-        from headroom.mcp_registry.install import build_codegraph_spec
-
-        spec = build_codegraph_spec("/usr/local/bin/cbm")
-        assert spec.env == {}
-
-    def test_exported_from_mcp_registry(self) -> None:
-        from headroom.mcp_registry import build_codegraph_spec  # noqa: F401
-
-
-# ---------------------------------------------------------------------------
-# WU-B: --code-graph flag on wrap agy (interactive + print mode + default off)
-# ---------------------------------------------------------------------------
-
-
-def _stub_agy_with_cbm(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    cbm_bin: str = "/usr/local/bin/cbm",
-    cbm_exists: bool = True,
-    smoke_passes: bool = True,
-) -> None:
-    """Extend _stub_agy_mitm_run with cbm binary stubs."""
-    import headroom.cli.wrap as wrap_mod
-
-    _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
-
-    # Stub cbm binary resolution so no network download occurs.
-    from pathlib import Path as _Path
-
-    monkeypatch.setattr(
-        "headroom.graph.installer.get_cbm_path",
-        lambda: _Path(cbm_bin) if cbm_exists else None,
-    )
-    monkeypatch.setattr(
-        "headroom.graph.installer.ensure_cbm",
-        lambda: _Path(cbm_bin) if cbm_exists else None,
-    )
-    # Stub _setup_code_graph so no real indexing runs.
-    monkeypatch.setattr(wrap_mod, "_setup_code_graph", lambda verbose=False: True)
-    # Override smoke verify for code-graph tests.
-    monkeypatch.setattr(wrap_mod, "_smoke_verify_mcp_handshake", lambda *a, **kw: smoke_passes)
-
-
-class TestAgyCodeGraphFlag:
-    """--code-graph flag wiring: both interactive and print mode register cbm MCP."""
-
-    def test_code_graph_interactive_registers_cbm_entry(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Interactive --code-graph: cbm entry registered via AgyRegistrar."""
-        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
-        from headroom.mcp_registry.agy import AgyRegistrar
-
-        _stub_agy_with_cbm(tmp_path, monkeypatch, smoke_passes=True)
-
-        runner = CliRunner()
-        result = runner.invoke(_get_main(), ["wrap", "agy", "--code-graph"], catch_exceptions=False)
-        assert result.exit_code == 0
-        spec = AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME)
-        assert spec is not None, "interactive --code-graph must register the cbm MCP entry"
-        # Path() comparison: command is str(Path(...))-normalized (OS separators).
-        assert Path(spec.command) == Path("/usr/local/bin/cbm")
-
-    def test_code_graph_interactive_calls_smoke_verify(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Interactive --code-graph: _smoke_verify_mcp_handshake is called."""
-        import headroom.cli.wrap as wrap_mod
-
-        _stub_agy_with_cbm(tmp_path, monkeypatch, smoke_passes=True)
-        smoke_calls: list[tuple] = []
-
-        def _spy(*a, **kw):
-            smoke_calls.append(a)
-            return True
-
-        monkeypatch.setattr(wrap_mod, "_smoke_verify_mcp_handshake", _spy)
-
-        runner = CliRunner()
-        result = runner.invoke(_get_main(), ["wrap", "agy", "--code-graph"], catch_exceptions=False)
-        assert result.exit_code == 0
-        # Smoke was called at least once (for cbm).
-        assert len(smoke_calls) >= 1
-
-    def test_code_graph_print_mode_registers_cbm(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """--code-graph + print mode: cbm entry IS registered (parity with interactive)."""
-        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
-        from headroom.mcp_registry.agy import AgyRegistrar
-
-        _stub_agy_with_cbm(tmp_path, monkeypatch, smoke_passes=True)
-
-        runner = CliRunner()
-        result = runner.invoke(
-            _get_main(),
-            ["wrap", "agy", "--code-graph", "--", "--print", "hi"],
-            catch_exceptions=False,
-        )
-        assert result.exit_code == 0
-        spec = AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME)
-        assert spec is not None, (
-            "--code-graph + print mode must register cbm (parity: agy no longer hangs on MCP)"
-        )
-        assert Path(spec.command) == Path("/usr/local/bin/cbm")
-
-    def test_no_code_graph_flag_does_not_register_cbm(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Without --code-graph, no cbm entry registered (default off)."""
-        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
-        from headroom.mcp_registry.agy import AgyRegistrar
-
-        _stub_agy_with_cbm(tmp_path, monkeypatch, smoke_passes=True)
-
-        runner = CliRunner()
-        result = runner.invoke(_get_main(), ["wrap", "agy"], catch_exceptions=False)
-        assert result.exit_code == 0
-        assert AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME) is None, (
-            "omitting --code-graph must NOT register cbm (default off)"
-        )
-
-    def test_failed_smoke_removes_cbm_entry(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Interactive --code-graph: if smoke fails, cbm entry must be removed."""
-        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
-        from headroom.mcp_registry.agy import AgyRegistrar
-
-        _stub_agy_with_cbm(tmp_path, monkeypatch, smoke_passes=False)
-
-        runner = CliRunner()
-        result = runner.invoke(_get_main(), ["wrap", "agy", "--code-graph"], catch_exceptions=False)
-        assert result.exit_code == 0
-        assert AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME) is None, (
-            "a cbm entry that fails the handshake must be removed"
-        )
-
-
-# ---------------------------------------------------------------------------
-# WU-B: unwrap agy removes ledger-owned cbm entry; preserves user-managed one
-# ---------------------------------------------------------------------------
-
-
-class TestUnwrapAgyCbm:
-    """unwrap agy removes only Headroom-installed cbm; preserves user entries."""
-
-    def test_unwrap_removes_headroom_installed_cbm(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
-        from headroom.mcp_registry.agy import AgyRegistrar
-        from headroom.mcp_registry.install import build_codegraph_spec
-        from headroom.mcp_registry.ledger import record_install
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        reg = AgyRegistrar(home_dir=tmp_path)
-        cbm_spec = build_codegraph_spec("/usr/local/bin/cbm")
-        reg.register_server(cbm_spec)
-        record_install("agy", cbm_spec)
-
-        runner = CliRunner()
-        result = runner.invoke(_get_main(), ["unwrap", "agy"])
-        assert result.exit_code == 0
-        assert AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME) is None, (
-            "unwrap agy must remove a Headroom-installed cbm MCP entry"
-        )
-
-    def test_unwrap_preserves_user_managed_cbm(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A user-managed cbm entry (absent from ledger) must survive unwrap."""
-        from headroom.cli.wrap import _CBM_MCP_SERVER_NAME
-        from headroom.mcp_registry.agy import AgyRegistrar
-        from headroom.mcp_registry.base import ServerSpec
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        reg = AgyRegistrar(home_dir=tmp_path)
-        # User-managed entry: different command, NOT recorded in ledger.
-        user_spec = ServerSpec(
-            name=_CBM_MCP_SERVER_NAME,
-            command="/opt/my-cbm/bin/cbm",
-            args=(),
-            env={},
-        )
-        reg.register_server(user_spec)
-
-        runner = CliRunner()
-        result = runner.invoke(_get_main(), ["unwrap", "agy"])
-        assert result.exit_code == 0
-        survived = AgyRegistrar(home_dir=tmp_path).get_server(_CBM_MCP_SERVER_NAME)
-        assert survived is not None, "user-managed cbm entry must not be removed by unwrap"
-        assert survived.command == "/opt/my-cbm/bin/cbm"
 
 
 # ---------------------------------------------------------------------------
@@ -1894,7 +1505,6 @@ class TestUnwrapAgyRemovesAllHeadroomConfig:
         - GEMINI.md containing a headroom-marked block (plus user content)
         - AgyRegistrar config with a ledger-recorded persistent "headroom" retrieve entry
         - AgyRegistrar config with a ledger-recorded serena entry
-        - AgyRegistrar config with a ledger-recorded lean-ctx entry
         - AgyRegistrar config with a user-managed "my-tool" entry (no ledger)
 
         Act: run `unwrap agy` via CliRunner.
@@ -1903,7 +1513,6 @@ class TestUnwrapAgyRemovesAllHeadroomConfig:
         - GEMINI.md headroom block is removed; user content survives
         - "headroom" retrieve entry is gone
         - serena entry is gone (was ledger-recorded)
-        - lean-ctx entry is gone (was ledger-recorded)
         - "my-tool" entry is preserved (never in ledger)
         - ~/.headroom/ca directory is NOT removed (shared CA is headroom state,
           not reverted by unwrap — by design)
@@ -1913,7 +1522,6 @@ class TestUnwrapAgyRemovesAllHeadroomConfig:
         from headroom.mcp_registry.base import ServerSpec
         from headroom.mcp_registry.install import (
             build_headroom_spec,
-            build_lean_ctx_spec,
             build_serena_spec,
         )
         from headroom.mcp_registry.ledger import record_install
@@ -1944,11 +1552,6 @@ class TestUnwrapAgyRemovesAllHeadroomConfig:
         serena_spec = build_serena_spec("ide-assistant")
         reg.register_server(serena_spec)
         record_install("agy", serena_spec)
-
-        # Headroom-installed lean-ctx entry (recorded in ledger).
-        lean_ctx_spec = build_lean_ctx_spec("/usr/bin/lean-ctx", "/x/data")
-        reg.register_server(lean_ctx_spec)
-        record_install("agy", lean_ctx_spec)
 
         # User-managed entry: NOT in ledger — must survive.
         user_spec = ServerSpec(name="my-tool", command="/opt/my-tool", args=(), env={})
@@ -1983,10 +1586,6 @@ class TestUnwrapAgyRemovesAllHeadroomConfig:
         assert reg2.get_server("serena") is None, (
             "the Headroom-installed serena MCP entry must be removed by unwrap"
         )
-        assert reg2.get_server("lean-ctx") is None, (
-            "the Headroom-installed lean-ctx MCP entry must be removed by unwrap"
-        )
-
         # --- Assert: user-managed entry preserved ---
         survived = reg2.get_server("my-tool")
         assert survived is not None, "user-managed 'my-tool' entry must survive unwrap"

@@ -114,6 +114,28 @@ class TestAgyEnsuresSharedProxy:
 
         assert record.get("ensure_args", {}).get("no_proxy") is True
 
+    def test_code_graph_flag_forwards_to_proxy_watcher(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--code-graph drives the proxy-side watcher, not an agy MCP entry.
+
+        Upstream repurposed ``--code-graph``: every wrap subcommand forwards it
+        to ``_ensure_proxy``, which starts the live reindex watcher. agy must
+        follow that contract instead of registering codebase-memory-mcp itself.
+        """
+        record: dict = {}
+        _isolate(monkeypatch, record)
+        CliRunner().invoke(_get_main(), ["wrap", "agy", "--port", _THROWAWAY_PORT, "--code-graph"])
+
+        assert record.get("ensure_args", {}).get("kwargs", {}).get("code_graph") is True
+
+    def test_code_graph_defaults_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        record: dict = {}
+        _isolate(monkeypatch, record)
+        CliRunner().invoke(_get_main(), ["wrap", "agy", "--port", _THROWAWAY_PORT])
+
+        assert record.get("ensure_args", {}).get("kwargs", {}).get("code_graph") is False
+
     def test_cleanup_runs_on_teardown(self, monkeypatch: pytest.MonkeyPatch) -> None:
         record: dict = {}
         _isolate(monkeypatch, record)

@@ -130,7 +130,7 @@ class TestMarkerToolAlignment:
 
         src = inspect.getsource(mcp_server)
         # Description must steer the model to this tool for headroom markers,
-        # disambiguating from lean-ctx ctx_expand.
+        # disambiguating from any other expand/retrieve tool in the session.
         assert "ONLY" in src and "Headroom compression markers" in src
         assert "functionResponse compressed. Call headroom_retrieve" in src
 

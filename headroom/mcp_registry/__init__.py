@@ -21,9 +21,7 @@ from .display import any_succeeded, format_result, format_results
 from .grok import GrokRegistrar
 from .install import (
     DEFAULT_PROXY_URL,
-    build_codegraph_spec,
     build_headroom_spec,
-    build_lean_ctx_spec,
     build_serena_spec,
     get_all_registrars,
     install_everywhere,
@@ -43,9 +41,7 @@ __all__ = [
     "RegisterStatus",
     "ServerSpec",
     "any_succeeded",
-    "build_codegraph_spec",
     "build_headroom_spec",
-    "build_lean_ctx_spec",
     "build_serena_spec",
     "build_server_json",
     "format_result",

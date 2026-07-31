@@ -186,7 +186,6 @@ class TestAgyCallSiteWiring:
                 return False
 
         monkeypatch.setattr("headroom.mcp_registry.agy.AgyRegistrar", _FakeRegistrar)
-        monkeypatch.setattr("headroom.cli.wrap._selected_context_tool", lambda: "__none__")
         monkeypatch.setattr(
             "headroom.cli.wrap._disable_tokensave_mcp", lambda *args, **kwargs: None
         )
