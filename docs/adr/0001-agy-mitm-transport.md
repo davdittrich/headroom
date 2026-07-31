@@ -43,25 +43,50 @@ A loopback (`127.0.0.1`-only) forward-proxy listener — a **separate `asyncio.s
 listener inside the same process** as the FastAPI/uvicorn app (uvicorn does not accept
 `CONNECT`), so "one process" holds.
 
-1. It accepts `CONNECT`. If the target host is in the **cloudcode allowlist**, it mints
-   (and caches) one leaf certificate signed by a local root CA, terminates TLS, negotiates
-   **HTTP/2 via ALPN** (offering `h2` + `http/1.1`) on the **agy-facing** side, parses the
-   decrypted request, and hands it to the dispatch adapter.
+1. It accepts `CONNECT` and normalizes the target host (`normalize_host`: lowercase, strip a
+   trailing root dot and any `:port`). If that host is in the **cloudcode allowlist**, the
+   terminator answers `200 Connection Established` and byte-splices the raw connection to the
+   in-process **hypercorn** dispatch server on loopback. It does not terminate TLS itself.
 2. For **every other** `CONNECT`, it performs a raw bidirectional **byte-splice** — no TLS
    termination, no certificate, no inspection.
 
-### Dispatch via hypercorn (T2 — amendment 2026-06-15)
-Rather than hand-roll server-side HTTP/2 framing, the decrypted allowlist connection is
-served by **hypercorn** running the **existing FastAPI app** in-process on a loopback port.
-hypercorn owns TLS termination via a per-SNI cert callback that mints a leaf from the T7
-root CA (reusing T8's `mint_leaf`), negotiates **h2 or http/1.1** transparently, and streams
-SSE natively. T8's allowlist path therefore **tunnels** the accepted CONNECT to this local
-hypercorn HTTPS port instead of terminating TLS itself; T8's blind-tunnel/chain path is
-unchanged. The decrypted request hits the same `/v1internal:streamGenerateContent` route →
-`handle_google_cloudcode_stream`, so compression + upstream origination are unchanged. This
-removes the h2-vs-http/1.1 unknown (an http/1.1-downgrade live test was inconclusive — agy's
-OAuth token had expired and mitmproxy over-terminates the non-selective auth path). New dep:
+Both paths splice bytes; only the destination differs. `AgyDispatchServer` terminates TLS for
+the allowlisted host, minting a leaf per SNI from the local root CA (`mint_leaf`, cached in
+`_LeafCache`), negotiating **h2 or http/1.1** via ALPN, and serving the **existing FastAPI
+app** — so the decrypted request reaches the same `/v1internal:streamGenerateContent` route →
+`handle_google_cloudcode_stream`, and compression and upstream origination are unchanged.
+Serving the app under hypercorn rather than hand-rolling server-side HTTP/2 framing also
+removes the h2-vs-http/1.1 unknown (an http/1.1-downgrade live test was inconclusive: agy's
+OAuth token had expired, and mitmproxy over-terminates the non-selective auth path). New dep:
 `hypercorn`.
+
+*(Superseded 2026-07-31: earlier revisions had the terminator mint a leaf and terminate TLS
+in-process, with the hypercorn dispatch server recorded here as a later amendment. Production
+always tunnelled to dispatch, so that code path survived only in tests and has been deleted
+along with `_upgrade_to_tls_server`, `_build_server_ssl_context` and `DispatchCallback`.)*
+
+### Host normalization is one invariant, not four checks
+Four places compare a host against the allowlist: the `CONNECT` target, the dispatch SNI
+callback, the post-handshake `Host` guard, and `cloudcode_host_base` on the passthrough path.
+All four compare the output of `normalize_host`. When they disagreed, `CloudCode-PA.googleapis.com`
+passed the SNI and Host guards but failed the exact-match `CONNECT` check, so the connection
+fell through to the blind tunnel: the request still worked, but skipped termination and
+compression with no signal that anything had been bypassed. Silent bypass is worse than a
+hard failure, which is why the normalization belongs in one function that all four call.
+
+### Blind-tunnel targets are restricted
+The terminator is an unauthenticated `CONNECT` proxy on loopback for the life of an agy
+session, so anything running as the user can drive it. `_resolve_tunnel_target` refuses two
+destinations and returns the vetted address the tunnel then dials:
+
+- **the terminator's own port** — `CONNECT 127.0.0.1:<terminator_port>` makes it tunnel into
+  itself, costing two file descriptors per nesting level until they run out;
+- **link-local addresses** — `169.254.0.0/16` carries the cloud instance-metadata service.
+
+The check runs on the resolved addresses rather than the literal, so a name that resolves to
+`127.0.0.1` is caught too, and dialling the vetted address means no second lookup can
+substitute another. Other loopback ports stay reachable on purpose: a local process can open
+them directly, so refusing them would buy nothing and break plain local tunnelling.
 
 ### Upstream-origination ownership (single connection)
 The terminator (A2) is **agy-facing only**. It does **not** dial upstream for the allowlist

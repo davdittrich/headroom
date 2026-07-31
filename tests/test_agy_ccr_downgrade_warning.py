@@ -228,6 +228,7 @@ class TestAgyCallSiteWiring:
                 no_proxy=True,
                 no_intercept=False,
                 backend=None,
+                no_mcp=False,
                 no_serena=True,
                 no_tokensave=True,
                 code_graph=False,
