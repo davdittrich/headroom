@@ -258,8 +258,13 @@ def normalize_host(value: str) -> str:
     through uncompressed with no signal that anything was bypassed.
     """
     host = value.strip()
+    # Strip a trailing ``:port`` only when it IS a port. ``example.com:abc`` is
+    # not a host with a port, so it stays whole and simply fails the allowlist;
+    # requiring exactly one colon leaves IPv6 literals such as ``::1`` alone.
     if host.count(":") == 1:
-        host = host.rsplit(":", 1)[0]
+        left, _, right = host.rpartition(":")
+        if right.isdigit():
+            host = left
     return host.rstrip(".").lower()
 
 

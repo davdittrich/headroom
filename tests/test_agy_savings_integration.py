@@ -89,7 +89,7 @@ def test_emitting_process_never_drains(
     from fastapi.testclient import TestClient
 
     from headroom.proxy import server as server_mod
-    from headroom.proxy.config import ProxyConfig
+    from headroom.proxy.server import ProxyConfig
 
     monkeypatch.setenv("HEADROOM_AGY_INBOX_EMIT", emit_marker)
 
