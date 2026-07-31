@@ -1,12 +1,9 @@
 """Selective TLS-MITM forward-proxy listener for the agy MITM transport.
 
 Binds to 127.0.0.1 ONLY. Accepts HTTP CONNECT:
-- Allowlisted hosts: when a ``dispatch_port`` is configured, ACK the CONNECT
-  and byte-splice the raw connection to the in-process hypercorn HTTPS server
-  at that loopback port (AgyDispatchServer).  The hypercorn server owns TLS
-  termination and ASGI routing.  When no ``dispatch_port`` is set (legacy /
-  test path), self-terminate TLS and hand decrypted streams to the caller-
-  supplied async ``dispatch`` callback.
+- Allowlisted hosts: ACK the CONNECT and byte-splice the raw connection to the
+  in-process hypercorn HTTPS server at ``dispatch_port`` (AgyDispatchServer).
+  The hypercorn server owns TLS termination and ASGI routing.
 - Non-allowlisted hosts: raw bidirectional byte-splice (blind tunnel).
   If HTTPS_PROXY is set, forward CONNECT through that upstream proxy.
   NEVER chain to a loopback address (self-loop guard).
@@ -26,11 +23,9 @@ import datetime
 import ipaddress
 import logging
 import os
-import ssl
+import socket
 import urllib.parse
-from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -39,7 +34,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.x509 import Certificate
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from headroom.proxy.agy_ca import ensure_root_ca, load_cert_chain_in_memory
+from headroom.proxy.agy_ca import ensure_root_ca
 
 logger = logging.getLogger("headroom.proxy.agy_terminator")
 
@@ -59,28 +54,6 @@ DEFAULT_ALLOWLIST: frozenset[str] = frozenset(
         "cloudcode-pa.googleapis.com",
     }
 )
-
-# Callback type: receives (reader, writer, host, port) for terminated TLS connections.
-# Return value is ignored.
-DispatchCallback = Callable[
-    [asyncio.StreamReader, asyncio.StreamWriter, str, int],
-    Awaitable[Any],
-]
-
-
-async def _noop_dispatch(
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-    host: str,
-    port: int,
-) -> None:
-    """Default no-op dispatch: drain and close."""
-    try:
-        writer.close()
-        await writer.wait_closed()
-    except Exception:  # noqa: BLE001
-        pass
-
 
 # ---------------------------------------------------------------------------
 # Leaf certificate minting
@@ -274,6 +247,22 @@ async def _blind_splice(
 # ---------------------------------------------------------------------------
 
 
+def normalize_host(value: str) -> str:
+    """Return *value* as a bare, comparable hostname.
+
+    Strips an optional ``:port``, a trailing root dot, and case. Hostnames are
+    case-insensitive and ``example.com.`` names the same host as ``example.com``,
+    so every exact-match allowlist check in the agy path — CONNECT target, SNI,
+    Host header, passthrough base — must compare this form. Otherwise the layers
+    disagree: ``CloudCode-PA.googleapis.com`` skips TLS termination and passes
+    through uncompressed with no signal that anything was bypassed.
+    """
+    host = value.strip()
+    if host.count(":") == 1:
+        host = host.rsplit(":", 1)[0]
+    return host.rstrip(".").lower()
+
+
 def _parse_connect(line: str) -> tuple[str, int]:
     """Parse 'CONNECT host:port HTTP/1.x' → (host, port). Raises ValueError."""
     parts = line.strip().split()
@@ -283,7 +272,7 @@ def _parse_connect(line: str) -> tuple[str, int]:
     if ":" not in hostport:
         raise ValueError(f"Missing port in CONNECT target: {hostport!r}")
     host, port_str = hostport.rsplit(":", 1)
-    return host, int(port_str)
+    return normalize_host(host), int(port_str)
 
 
 # ---------------------------------------------------------------------------
@@ -329,20 +318,6 @@ async def _connect_via_upstream_proxy(
 
 
 # ---------------------------------------------------------------------------
-# SSL context builder for TLS termination
-# ---------------------------------------------------------------------------
-
-
-def _build_server_ssl_context(cert_pem: bytes, key_pem: bytes) -> ssl.SSLContext:
-    """Build an ssl.SSLContext for server-side TLS with ALPN h2+http/1.1."""
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-    load_cert_chain_in_memory(ctx, cert_pem, key_pem)
-    ctx.set_alpn_protocols(["h2", "http/1.1"])
-    return ctx
-
-
-# ---------------------------------------------------------------------------
 # Main connection handler
 # ---------------------------------------------------------------------------
 
@@ -351,13 +326,14 @@ async def _handle_connect(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
     allowlist: frozenset[str],
-    leaf_cache: _LeafCache,
-    ca_key: RSAPrivateKey,
-    ca_cert: Certificate,
-    dispatch: DispatchCallback,
-    dispatch_port: int | None = None,
+    dispatch_port: int,
+    self_port: int | None = None,
 ) -> None:
-    """Handle one incoming TCP connection carrying an HTTP CONNECT request."""
+    """Handle one incoming TCP connection carrying an HTTP CONNECT request.
+
+    *self_port* is the terminator's own listening port, used to refuse a tunnel
+    that would loop back into this very listener.
+    """
     peer = client_writer.get_extra_info("peername", ("?", 0))
     try:
         first_line_bytes = await asyncio.wait_for(
@@ -402,17 +378,7 @@ async def _handle_connect(
     )
 
     if target_host in allowlist:
-        await _handle_mitm(
-            client_reader,
-            client_writer,
-            target_host,
-            target_port,
-            leaf_cache,
-            ca_key,
-            ca_cert,
-            dispatch,
-            dispatch_port=dispatch_port,
-        )
+        await _handle_mitm(client_reader, client_writer, dispatch_port)
     else:
         await _handle_blind_tunnel(
             client_reader,
@@ -420,125 +386,67 @@ async def _handle_connect(
             target_host,
             target_port,
             proxy_auth,
+            self_port=self_port,
         )
 
 
 async def _handle_mitm(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
-    host: str,
-    port: int,
-    leaf_cache: _LeafCache,
-    ca_key: RSAPrivateKey,
-    ca_cert: Certificate,
-    dispatch: DispatchCallback,
-    dispatch_port: int | None = None,
+    dispatch_port: int,
 ) -> None:
-    """Handle an allowlisted CONNECT: tunnel to hypercorn or TLS-terminate.
+    """Handle an allowlisted CONNECT: ACK it and byte-splice to hypercorn.
 
-    When *dispatch_port* is set (production path with AgyDispatchServer),
-    ACK the CONNECT and byte-splice the raw connection to the loopback
-    hypercorn HTTPS port — the hypercorn server owns TLS termination, ALPN
-    negotiation, and ASGI routing.
-
-    When *dispatch_port* is None (legacy / test path), TLS is terminated
-    here and decrypted streams are forwarded to the *dispatch* callback.
+    The raw connection is spliced to the loopback hypercorn HTTPS port
+    (AgyDispatchServer), which owns TLS termination, ALPN negotiation and
+    ASGI routing.
     """
-    # --- Production path: byte-splice to hypercorn loopback HTTPS port ---
-    if dispatch_port is not None:
-        # ACK the CONNECT so the client believes the tunnel is up.
-        client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        await client_writer.drain()
-        try:
-            dispatch_reader, dispatch_writer = await asyncio.wait_for(
-                asyncio.open_connection("127.0.0.1", dispatch_port),
-                timeout=_CONNECT_TIMEOUT,
-            )
-        except (OSError, asyncio.TimeoutError) as exc:
-            logger.error("event=dispatch_connect_failed port=%d err=%s", dispatch_port, exc)
-            try:
-                client_writer.close()
-            except Exception:  # noqa: BLE001
-                pass
-            return
-        await _blind_splice(client_reader, client_writer, dispatch_reader, dispatch_writer)
-        return
-
-    # --- Legacy path: self-terminate TLS + dispatch callback ---
-    # Acknowledge the CONNECT.
+    # ACK the CONNECT so the client believes the tunnel is up.
     client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
     await client_writer.drain()
-
-    # Mint/reuse leaf cert.
-    cert_pem, key_pem = leaf_cache.get_or_mint(host, ca_key, ca_cert)
-    ssl_ctx = _build_server_ssl_context(cert_pem, key_pem)
-
-    # Upgrade the existing raw TCP connection to TLS.
-    loop = asyncio.get_event_loop()
-    transport = client_writer.transport
-    raw_sock = transport.get_extra_info("socket")
-    if raw_sock is None:
-        logger.error("event=mitm_no_socket host=%s", host)
-        client_writer.close()
-        return
-
-    # Use start_tls on the existing transport.
-    # We need to drain and then do TLS upgrade via StreamReader/Writer wrap.
     try:
-        tls_reader, tls_writer = await asyncio.wait_for(
-            _upgrade_to_tls_server(client_reader, client_writer, ssl_ctx, loop),
-            timeout=15.0,
+        dispatch_reader, dispatch_writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", dispatch_port),
+            timeout=_CONNECT_TIMEOUT,
         )
-    except (ssl.SSLError, asyncio.TimeoutError, OSError) as exc:
-        logger.debug("event=tls_handshake_failed host=%s err=%s", host, exc)
+    except (OSError, asyncio.TimeoutError) as exc:
+        logger.error("event=dispatch_connect_failed port=%d err=%s", dispatch_port, exc)
         try:
             client_writer.close()
         except Exception:  # noqa: BLE001
             pass
         return
-
-    logger.debug(
-        "event=tls_terminated host=%s alpn=%s",
-        host,
-        tls_writer.get_extra_info("ssl_object")
-        and tls_writer.get_extra_info("ssl_object").selected_alpn_protocol(),
-    )
-
-    try:
-        await dispatch(tls_reader, tls_writer, host, port)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("event=dispatch_error host=%s err=%s", host, exc)
-    finally:
-        try:
-            tls_writer.close()
-            await tls_writer.wait_closed()
-        except Exception:  # noqa: BLE001
-            pass
+    await _blind_splice(client_reader, client_writer, dispatch_reader, dispatch_writer)
 
 
-async def _upgrade_to_tls_server(
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-    ssl_ctx: ssl.SSLContext,
-    loop: asyncio.AbstractEventLoop,
-) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    """Perform server-side TLS handshake on an existing plain connection.
+async def _resolve_tunnel_target(host: str, port: int, self_port: int | None) -> str:
+    """Return an address for *host* that is safe to tunnel to, else raise ValueError.
 
-    Uses asyncio.StreamReaderProtocol + start_tls to upgrade in-place.
+    The terminator is an unauthenticated CONNECT proxy on loopback for the life of
+    an agy session, so anything running as the user can drive it. Two targets must
+    never be reachable through it:
+
+    * itself — ``CONNECT 127.0.0.1:<terminator_port>`` makes the terminator tunnel
+      into itself, burning two fds per nesting level until they run out;
+    * link-local — 169.254.0.0/16 carries the cloud instance-metadata service.
+
+    Other loopback ports are deliberately still reachable: a local process could
+    open them directly, so refusing them buys no security and would break plain
+    local tunnelling. The check runs on the *resolved* addresses, not the literal
+    (a name resolving to 127.0.0.1 is the same self-connect), and the vetted
+    address is what we connect to, so no second lookup can substitute another.
     """
-    transport = writer.transport
-    protocol = transport.get_protocol()
-
-    new_transport = await loop.start_tls(
-        transport,
-        protocol,
-        ssl_ctx,
-        server_side=True,
-    )
-    # Rebind writer's transport reference so subsequent writes go through TLS.
-    writer._transport = new_transport  # type: ignore[attr-defined]
-
-    return reader, writer
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not infos:
+        raise ValueError(f"no address for {host}")
+    for info in infos:
+        addr = ipaddress.ip_address(info[4][0])
+        if addr.is_link_local:
+            raise ValueError(f"{host} resolves to link-local {addr}")
+        if addr.is_loopback and self_port is not None and port == self_port:
+            raise ValueError("self-connect to the terminator's own port")
+    return str(ipaddress.ip_address(infos[0][4][0]))
 
 
 async def _handle_blind_tunnel(
@@ -547,6 +455,7 @@ async def _handle_blind_tunnel(
     target_host: str,
     target_port: int,
     proxy_auth: str | None,
+    self_port: int | None = None,
 ) -> None:
     """Byte-splice tunnel for non-allowlisted targets."""
     upstream_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
@@ -555,7 +464,9 @@ async def _handle_blind_tunnel(
         if upstream_proxy:
             parsed = urllib.parse.urlparse(upstream_proxy)
             proxy_host = parsed.hostname or ""
-            proxy_port = parsed.port or 443
+            # Default per scheme: a scheme-less-port HTTPS_PROXY like
+            # "http://proxy.corp" speaks plain HTTP on :80, not :443.
+            proxy_port = parsed.port or (443 if parsed.scheme == "https" else 80)
 
             # Self-loop guard: never chain through a loopback upstream proxy.
             if _is_loopback(proxy_host):
@@ -579,10 +490,25 @@ async def _handle_blind_tunnel(
                 proxy_auth,
             )
         else:
-            target_reader, target_writer = await asyncio.wait_for(
-                asyncio.open_connection(target_host, target_port),
+            target_addr = await asyncio.wait_for(
+                _resolve_tunnel_target(target_host, target_port, self_port),
                 timeout=_CONNECT_TIMEOUT,
             )
+            target_reader, target_writer = await asyncio.wait_for(
+                asyncio.open_connection(target_addr, target_port),
+                timeout=_CONNECT_TIMEOUT,
+            )
+    except ValueError as exc:
+        logger.warning(
+            "event=tunnel_target_refused target=%s:%d reason=%s",
+            target_host,
+            target_port,
+            exc,
+        )
+        client_writer.write(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+        await client_writer.drain()
+        client_writer.close()
+        return
     except (OSError, asyncio.TimeoutError) as exc:
         logger.debug(
             "event=tunnel_connect_failed target=%s:%d err=%s",
@@ -615,17 +541,11 @@ class AgyCONNECTTerminator:
 
     Parameters
     ----------
+    dispatch_port:
+        Allowlisted CONNECT connections are ACK-ed and byte-spliced raw to
+        ``127.0.0.1:<dispatch_port>`` (the in-process AgyDispatchServer).
     allowlist:
         Set of hostnames to TLS-terminate. Defaults to ``DEFAULT_ALLOWLIST``.
-    dispatch:
-        Async callback invoked for each terminated connection (legacy path,
-        used when *dispatch_port* is None).
-        Signature: ``async (reader, writer, host, port) -> None``.
-        Default: no-op.
-    dispatch_port:
-        When set, allowlisted CONNECT connections are ACK-ed and byte-spliced
-        raw to ``127.0.0.1:<dispatch_port>`` (the in-process AgyDispatchServer).
-        When None, the old TLS-terminate + dispatch-callback path is used.
     base_dir:
         Headroom state directory (for CA; defaults to ~/.headroom).
         Inject a ``tmp_path``-derived path in tests.
@@ -641,16 +561,14 @@ class AgyCONNECTTerminator:
 
     def __init__(
         self,
+        dispatch_port: int,
         allowlist: frozenset[str] | None = None,
-        dispatch: DispatchCallback | None = None,
         base_dir: Path | None = None,
         ca_key: RSAPrivateKey | None = None,
         ca_cert: Certificate | None = None,
         port: int = 0,
-        dispatch_port: int | None = None,
     ) -> None:
         self._allowlist = allowlist if allowlist is not None else DEFAULT_ALLOWLIST
-        self._dispatch: DispatchCallback = dispatch or _noop_dispatch
         self._dispatch_port = dispatch_port
         self._base_dir = base_dir
         self._ca_key_init = ca_key
@@ -686,18 +604,12 @@ class AgyCONNECTTerminator:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        assert self._ca_key is not None
-        assert self._ca_cert is not None
-        assert self._leaf_cache is not None
         await _handle_connect(
             reader,
             writer,
             self._allowlist,
-            self._leaf_cache,
-            self._ca_key,
-            self._ca_cert,
-            self._dispatch,
-            dispatch_port=self._dispatch_port,
+            self._dispatch_port,
+            self_port=self.address[1],
         )
 
     @property

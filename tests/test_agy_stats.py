@@ -267,7 +267,8 @@ class TestFormatSummary:
         assert "3 entries compressed" in summary
         assert "1,000" in summary
         assert "400" in summary
-        assert "0.40x" in summary
+        # Share of the original that survived — unambiguous in a way "0.40x" is not.
+        assert "40% of original" in summary
 
     def test_divide_by_zero_guard_no_compression(self) -> None:
         start = self._make_stats()

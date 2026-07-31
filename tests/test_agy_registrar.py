@@ -123,6 +123,32 @@ class TestGetServer:
 
 
 class TestRegisterServer:
+    def test_malformed_config_is_not_overwritten(self, tmp_path: Path) -> None:
+        """A config we cannot parse must abort the write, not get replaced.
+
+        ``mcp_config.json`` is shared with the Antigravity IDE and holds the
+        user's own servers; treating an unreadable file as ``{}`` and writing our
+        single entry back would delete all of them.
+        """
+        p = _config_path(tmp_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        original = '{"mcpServers": {"user-server": {"command": "x"}}, TRUNCATED'
+        p.write_text(original)
+
+        result = _make_reg(tmp_path).register_server(_SPEC)
+
+        assert result.status == RegisterStatus.FAILED
+        assert p.read_text() == original
+
+    def test_unregister_leaves_malformed_config_untouched(self, tmp_path: Path) -> None:
+        p = _config_path(tmp_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        original = "{not valid json"
+        p.write_text(original)
+
+        assert _make_reg(tmp_path).unregister_server("headroom") is False
+        assert p.read_text() == original
+
     def test_registers_new_server(self, tmp_path: Path) -> None:
         reg = _make_reg(tmp_path)
         result = reg.register_server(_SPEC)
@@ -277,4 +303,3 @@ class TestUnregisterServer:
         reg.register_server(_SPEC)
         assert reg.unregister_server("headroom") is True
         assert reg.unregister_server("headroom") is False
-

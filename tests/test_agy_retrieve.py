@@ -1,9 +1,11 @@
 """Tests for headroom.proxy.agy_retrieve.AgyRetrieveServer.
 
 The retrieve server is a PLAIN-HTTP loopback listener that serves the same
-FastAPI app (``create_app()``) as the HTTPS dispatch server.  Its load-bearing
-property: it shares the *process-global* compression store, so a marker stored
-on the dispatch side resolves via ``GET /v1/retrieve/{hash}`` on this side.
+FastAPI app (``create_app()``) as the HTTPS dispatch server — it *is*
+``AgyDispatchServer(plain_http=True)``, so the hypercorn plumbing under test
+here lives in :mod:`headroom.proxy.agy_dispatch`.  Its load-bearing property:
+it shares the *process-global* compression store, so a marker stored on the
+dispatch side resolves via ``GET /v1/retrieve/{hash}`` on this side.
 
 All tests use ephemeral loopback ports; no TLS, no real network, no
 ``~/.headroom`` mutation beyond the in-memory process-global store (which is
@@ -22,7 +24,7 @@ from headroom.cache.compression_store import (
     get_compression_store,
     reset_compression_store,
 )
-from headroom.proxy import agy_retrieve
+from headroom.proxy import agy_dispatch
 from headroom.proxy.agy_retrieve import AgyRetrieveServer
 
 
@@ -241,9 +243,9 @@ async def test_start_uses_so_exclusiveaddruse_on_non_posix(
         We can't monkeypatch the real ``os.name`` attribute directly: pathlib
         (used transitively by ``create_app()``/hypercorn ``Config()`` during
         ``start()``) also reads ``os.name`` to pick ``WindowsPath`` vs.
-        ``PosixPath`` and would break. Instead we rebind agy_retrieve's own
-        module-level ``os`` reference to this shim, leaving the real ``os``
-        module (and everyone else importing it) untouched.
+        ``PosixPath`` and would break. Instead we rebind agy_dispatch's own
+        module-level ``os`` reference (the shared plumbing this listener runs
+        on) to this shim, leaving the real ``os`` module untouched.
         """
 
         def __init__(self, real_os: object, forced_name: str) -> None:
@@ -253,12 +255,12 @@ async def test_start_uses_so_exclusiveaddruse_on_non_posix(
         def __getattr__(self, item: str) -> object:
             return getattr(self._real_os, item)
 
-    monkeypatch.setattr(agy_retrieve, "os", _OsNameShim(agy_retrieve.os, "nt"))
+    monkeypatch.setattr(agy_dispatch, "os", _OsNameShim(agy_dispatch.os, "nt"))
     # Real SO_EXCLUSIVEADDRUSE only exists on Windows; alias it to
     # SO_REUSEADDR's numeric value so the real setsockopt() syscall below
     # succeeds on this (POSIX) test host.
     monkeypatch.setattr(
-        agy_retrieve.socket, "SO_EXCLUSIVEADDRUSE", socket.SO_REUSEADDR, raising=False
+        agy_dispatch.socket, "SO_EXCLUSIVEADDRUSE", socket.SO_REUSEADDR, raising=False
     )
 
     setsockopt_calls: list[tuple[socket.socket, int, int, int]] = []
@@ -292,7 +294,7 @@ async def test_start_uses_so_exclusiveaddruse_on_non_posix(
         assert sock is not None
         return _FakeStartedServer(sock)
 
-    monkeypatch.setattr(agy_retrieve.asyncio, "start_server", _fake_start_server)
+    monkeypatch.setattr(agy_dispatch.asyncio, "start_server", _fake_start_server)
 
     srv = AgyRetrieveServer(port=0)
     await srv.start()
@@ -321,7 +323,7 @@ async def test_start_skips_sockopt_when_neither_posix_nor_exclusiveaddruse(
 
     class _OsNameShim:
         # See test_start_uses_so_exclusiveaddruse_on_non_posix for rationale:
-        # we rebind agy_retrieve's own module-level `os` reference rather
+        # we rebind agy_dispatch's own module-level `os` reference rather
         # than mutating the real `os` module (which pathlib etc. also read).
         def __init__(self, real_os: object, forced_name: str) -> None:
             self._real_os = real_os
@@ -330,7 +332,7 @@ async def test_start_skips_sockopt_when_neither_posix_nor_exclusiveaddruse(
         def __getattr__(self, item: str) -> object:
             return getattr(self._real_os, item)
 
-    monkeypatch.setattr(agy_retrieve, "os", _OsNameShim(agy_retrieve.os, "nt"))
+    monkeypatch.setattr(agy_dispatch, "os", _OsNameShim(agy_dispatch.os, "nt"))
     monkeypatch.delattr(socket, "SO_EXCLUSIVEADDRUSE", raising=False)
 
     setsockopt_calls: list[tuple[socket.socket, int, int, int]] = []

@@ -2508,7 +2508,18 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 # Periodically drain the agy cross-process savings inbox so
                 # agy sessions' savings surface on the shared dashboard.
                 # Tracked so it is cancelled on shutdown (no leaked task).
-                agy_drain_task = asyncio.create_task(_drain_agy_savings_periodically(proxy.metrics))
+                #
+                # A process that EMITS must never DRAIN: `wrap agy` builds
+                # create_app() in-process (twice — dispatch + retrieve) with its
+                # own savings paths redirected to a temp dir deleted at exit, so
+                # a drain loop here would consume events into a sink that is
+                # thrown away, and race the shared proxy for them.
+                from headroom.proxy.agy_savings_inbox import agy_emit_enabled
+
+                if not agy_emit_enabled():
+                    agy_drain_task = asyncio.create_task(
+                        _drain_agy_savings_periodically(proxy.metrics)
+                    )
                 if proxy.usage_reporter:
                     await proxy.usage_reporter.start(proxy)
                 if proxy.traffic_learner:

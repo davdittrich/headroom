@@ -7,7 +7,7 @@ Public surface
 --------------
 FailOpenWarnHandler    logging.Handler that emits a one-time stderr notice on
                        the first Cloud-Code-Assist fail-open log record.
-AgySesssionStats       Snapshot + delta + summary formatting; idempotent print.
+AgySessionStats        Snapshot + delta + summary formatting; idempotent print.
 
 Ref: headroom-30y.15
 """
@@ -176,15 +176,16 @@ def _format_summary(
     orig = max(0, end.get("total_original_tokens", 0) - start.get("total_original_tokens", 0))
     comp = max(0, end.get("total_compressed_tokens", 0) - start.get("total_compressed_tokens", 0))
 
+    # Report the share of the original that survived. "0.30x ratio" alone reads
+    # like a 30% expansion; "30% of original" cannot be misread.
     if orig > 0:
-        ratio = comp / orig
-        ratio_str = f"{ratio:.2f}x"
+        ratio_str = f"{comp / orig:.0%} of original"
     else:
         ratio_str = "n/a (no compression)"
 
     parts = [
         f"Headroom agy session: {entries} entries compressed,",
-        f"{orig:,} → {comp:,} tokens ({ratio_str} ratio)",
+        f"{orig:,} → {comp:,} tokens ({ratio_str})",
     ]
     if fail_open_count is not None:
         parts.append(f"| {fail_open_count} fail-open request(s)")

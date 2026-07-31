@@ -69,6 +69,44 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+@pytest.mark.parametrize(
+    ("emit_marker", "expect_drain"),
+    [("1", False), ("", True)],
+)
+def test_emitting_process_never_drains(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    emit_marker: str,
+    expect_drain: bool,
+) -> None:
+    """A process that emits inbox events must not also drain them.
+
+    ``wrap agy`` builds ``create_app()`` in-process (dispatch + retrieve) with its
+    savings paths redirected to a temp dir that is deleted at exit. A drain loop
+    there would consume events into that throwaway sink — and race the shared
+    proxy, which is the only process allowed to replay them.
+    """
+    from fastapi.testclient import TestClient
+
+    from headroom.proxy import server as server_mod
+    from headroom.proxy.config import ProxyConfig
+
+    monkeypatch.setenv("HEADROOM_AGY_INBOX_EMIT", emit_marker)
+
+    started = False
+
+    async def _record(metrics: object, interval_seconds: int = 5) -> None:
+        nonlocal started
+        started = True
+
+    monkeypatch.setattr(server_mod, "_drain_agy_savings_periodically", _record)
+
+    with TestClient(server_mod.create_app(ProxyConfig(optimize=False))):
+        pass
+
+    assert started is expect_drain
+
+
 async def test_drain_moves_token_hero_and_per_project(isolated_home: Path) -> None:
     tracker = SavingsTracker(path=str(isolated_home / "proxy_savings.json"))
     metrics = PrometheusMetrics(savings_tracker=tracker)

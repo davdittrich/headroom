@@ -110,19 +110,17 @@ def _secure_dir(path: Path) -> None:
 def _write_secure(path: Path, data: bytes) -> None:
     """Write *data* to *path* atomically with 0600; assert afterwards.
 
-    The temp file is created with mode 0o600 from the start via ``os.open``
-    so there is never a world-readable window while data is on disk.
+    ``mkstemp`` gives a fresh, exclusively-created name in the target directory,
+    opened 0600 and in binary mode (so Windows never translates ``\n`` ->
+    ``\r\n`` and corrupts the PEM bytes). There is no world-readable window.
 
-    ``O_BINARY`` (a no-op 0 on POSIX, defined only on Windows) prevents the
-    Windows text-mode ``\n``->``\r\n`` translation that would otherwise corrupt
-    the PEM bytes written here (CA key/cert and the combined trust bundle).
+    A fixed ``<stem>.tmp`` would collide two ways — ``ca.key`` and ``ca.crt``
+    both map to ``ca.tmp``, and two concurrent ``wrap agy`` runs share it — and
+    ``O_CREAT`` without ``O_EXCL`` silently keeps an existing file's mode, so a
+    leftover 0644 temp would carry the private key.
     """
-    tmp = path.with_suffix(".tmp")
-    fd = os.open(
-        str(tmp),
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0),
-        0o600,
-    )
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
     try:
         os.write(fd, data)
     finally:
@@ -133,9 +131,11 @@ def _write_secure(path: Path, data: bytes) -> None:
 
 def _not_in_os_trust(path: Path) -> None:
     """Raise RuntimeError if *path* resides under any known OS trust location."""
-    resolved = str(path.resolve())
+    resolved = path.resolve()
     for trust_path in _OS_TRUST_PATHS:
-        if resolved.startswith(trust_path):
+        # Path-component comparison, not a string prefix: /etc/ssl/certs-mine is
+        # not inside /etc/ssl/certs.
+        if resolved == Path(trust_path) or resolved.is_relative_to(trust_path):
             raise RuntimeError(
                 f"CA file {path} resolves to {resolved}, which is inside OS trust path {trust_path}"
             )

@@ -358,8 +358,9 @@ Headroom does not compress traffic in this mode.
 headroom unwrap agy
 ```
 
-Removes all Headroom-added persistent configuration: the `GEMINI.md` block (markers
-`<!-- headroom:agy-instructions -->` / `<!-- /headroom:agy-instructions -->`),
+Removes all Headroom-added persistent configuration: any leftover `GEMINI.md` block from an
+older install (markers `<!-- headroom:agy-instructions -->` /
+`<!-- /headroom:agy-instructions -->`; current versions write none),
 the Headroom MCP retrieve-tool entry from `~/.gemini/config/mcp_config.json` (agy 1.1.x
 read-path, shared with the Antigravity IDE; if registered via `headroom mcp install`), and
 any Headroom-installed Serena MCP entry. User-managed and IDE `mcp_config.json` entries are preserved.
@@ -374,8 +375,10 @@ overridden value pointing at the Headroom terminator.  Corporate CA certificates
 real internet continues to validate.  Only PEM objects with `basicConstraints CA:TRUE`
 are merged.
 
-If chaining setup fails, `headroom wrap agy` fails fast with a clear error rather than
-silently losing the corporate proxy path.
+Chaining is not pre-flighted: a broken upstream proxy surfaces per connection, as a `403`
+(the upstream proxy is a loopback address — refused, so the terminator cannot chain into
+itself) or a `502` (the upstream proxy could not be reached), logged as
+`event=self_loop_blocked_proxy` / `event=tunnel_connect_failed`.
 
 #### Fail-open and known limits
 
@@ -384,10 +387,10 @@ bytes) so `agy` continues working.  A session-level fail-open warning (first occ
 an end-of-session compression summary are shipped — see the "Compression fail-open
 observability" row in [docs/agy-parity-matrix.md](docs/agy-parity-matrix.md).
 
-The Headroom MCP retrieve tool (persistent, ledger-recorded, resolves markers from the on-disk store) and code-graph
-(`codebase-memory-mcp`, opt-in via `--code-graph`) are wired via `AgyRegistrar`, alongside the
-tokensave code-graph compressor as agy's primary MCP with Serena as the backup
-(`--no-tokensave` / `--no-serena` to disable either). MCP registration in
+The Headroom MCP retrieve tool (persistent, ledger-recorded, resolves markers from the on-disk
+store) and Serena code memory (`--no-serena` to disable) are wired via `AgyRegistrar`.
+`--code-graph` starts the proxy's live code-graph watcher, exactly as it does for every other
+wrapped agent. MCP registration in
 `--print`/`-p`/`--prompt` mode requires agy `>= 1.0.16`; older or undetectable agy versions
 skip registration and purge any stale entries — see
 [docs/agy-parity-matrix.md](docs/agy-parity-matrix.md) for the full parity table.
