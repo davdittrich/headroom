@@ -7787,6 +7787,7 @@ def _stop_agy_servers(servers: _AgyServers | None) -> None:
     default=None,
     help="API backend for the proxy (env: HEADROOM_BACKEND).  NOTE: only Python backend is supported for agy.",
 )
+@click.option("--no-mcp", is_flag=True, help="Skip headroom MCP server registration")
 @click.option("--no-serena", is_flag=True, help="Skip Serena MCP server registration")
 @click.option(
     "--no-tokensave",
@@ -7806,6 +7807,7 @@ def agy(
     port: int,
     no_intercept: bool,
     backend: str | None,
+    no_mcp: bool,
     no_serena: bool,
     no_tokensave: bool,
     code_graph: bool,
@@ -8064,7 +8066,14 @@ def agy(
             # across sessions — it is NOT reverted on teardown.
             # Wired in all print-mode-capable agy versions.
             # ------------------------------------------------------------------
-            if servers is not None and servers.retrieve_port is not None:
+            if no_mcp:
+                # Parity with `wrap claude` / `wrap opencode`: --no-mcp skips
+                # registration entirely. Compression markers then have no tool
+                # that can resolve them, so the handler must not ship any (the
+                # HEADROOM_AGY_RETRIEVE_WIRED gate below stays unset).
+                retrieve_registered = False
+                click.echo("  Skipping MCP retrieve tool (--no-mcp)")
+            elif servers is not None and servers.retrieve_port is not None:
                 retrieve_registered = _setup_headroom_retrieve_mcp_agy(
                     AgyRegistrar(), verbose=False
                 )
