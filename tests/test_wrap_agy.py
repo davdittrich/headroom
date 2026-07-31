@@ -165,6 +165,24 @@ class TestWrapAgyDisclosureBanner:
         assert "unwrap" in result.output.lower()
 
 
+class TestWrapAgyMcpFlagParity:
+    """agy exposes the same MCP opt-out surface as its sibling subcommands."""
+
+    def test_no_mcp_is_offered_like_the_siblings(self) -> None:
+        result = CliRunner().invoke(_get_main(), ["wrap", "agy", "--help"])
+
+        assert result.exit_code == 0
+        assert "--no-mcp" in result.output
+        assert "--no-serena" in result.output
+
+    def test_no_mcp_promises_the_same_thing_as_the_siblings(self) -> None:
+        """Same flag, same promise — drift between siblings is the bug being fixed."""
+        agy_help = " ".join(
+            CliRunner().invoke(_get_main(), ["wrap", "agy", "--help"]).output.split()
+        )
+        assert "--no-mcp Skip headroom MCP server registration" in agy_help
+
+
 class TestWrapAgyNoIntercept:
     """--no-intercept flag must change behavior (no MITM server startup)."""
 
