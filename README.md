@@ -331,10 +331,22 @@ No OS trust store is modified.
 
 #### Compression value and mechanism
 
-The compression value — reduced token count on requests to `daily-cloudcode-pa.googleapis.com` — is
+The compression value — reduced token count on requests to the Cloud Code backend — is
 identical to other supported agents.  The mechanism differs: instead of a base-URL redirect,
-Headroom uses an in-process HTTP CONNECT terminator that negotiates HTTP/2 and SSE natively,
-then routes decrypted requests through the existing `handle_google_cloudcode_stream` handler.
+Headroom uses an in-process HTTP CONNECT terminator that splices the accepted connection to a
+loopback hypercorn server, which terminates TLS, negotiates HTTP/2 and SSE natively, and
+routes decrypted requests through the existing `handle_google_cloudcode_stream` handler.  The
+request is re-originated to the host `agy` opened the tunnel to, not to a fixed default.
+
+A measured session: `agy` reading a 753 KB log file through the transport compressed 21 tool
+results from 23,392 to 567 tokens, with the model's answer unchanged and no fail-open requests.
+
+**Compression of tool output needs the retrieve MCP.**  Gemini carries tool results as
+`functionResponse` parts, which Headroom compresses into `[Retrieve more: hash=…]` markers.
+Those markers are only recoverable when the `headroom` MCP server is registered, so
+`--no-mcp` (and any run where registration fails) downgrades tool-output compression to a
+lossless mode that saves close to nothing rather than shipping a marker nothing can resolve.
+`headroom wrap agy` prints a warning naming the cause whenever that downgrade happens.
 
 Auth headers (`Authorization`, `x-goog-api-key`) are visible to the Headroom process after
 TLS termination.  They pass through the existing `redact_for_wire_debug` redactor and are not
@@ -388,9 +400,10 @@ an end-of-session compression summary are shipped — see the "Compression fail-
 observability" row in [docs/agy-parity-matrix.md](docs/agy-parity-matrix.md).
 
 The Headroom MCP retrieve tool (persistent, ledger-recorded, resolves markers from the on-disk
-store) and Serena code memory (`--no-serena` to disable) are wired via `AgyRegistrar`.
-`--code-graph` starts the proxy's live code-graph watcher, exactly as it does for every other
-wrapped agent. MCP registration in
+store) and Serena code memory are wired via `AgyRegistrar`.  `--no-mcp` skips the retrieve
+server and `--no-serena` skips Serena, matching `wrap claude` and `wrap opencode`; both leave
+MCP entries that Headroom did not install untouched.  `--code-graph` starts the proxy's live
+code-graph watcher, exactly as it does for every other wrapped agent. MCP registration in
 `--print`/`-p`/`--prompt` mode requires agy `>= 1.0.16`; older or undetectable agy versions
 skip registration and purge any stale entries — see
 [docs/agy-parity-matrix.md](docs/agy-parity-matrix.md) for the full parity table.

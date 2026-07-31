@@ -74,6 +74,10 @@ fell through to the blind tunnel: the request still worked, but skipped terminat
 compression with no signal that anything had been bypassed. Silent bypass is worse than a
 hard failure, which is why the normalization belongs in one function that all four call.
 
+`normalize_host` lowercases, strips a trailing root dot, and strips `:port` **only when the
+suffix is all digits**. `example.com:abc` names no port, so it stays whole and fails the
+allowlist as it should; requiring exactly one colon leaves IPv6 literals such as `::1` alone.
+
 ### Blind-tunnel targets are restricted
 The terminator is an unauthenticated `CONNECT` proxy on loopback for the life of an agy
 session, so anything running as the user can drive it. `_resolve_tunnel_target` refuses two
@@ -98,6 +102,14 @@ seam the handler needs, since it reads `_read_request_json(request)`,
 opens the upstream connection via `self.http_client.send(..., stream=True)`). The terminator
 splices the handler's `StreamingResponse` (SSE) back over the terminated socket. Exactly one
 upstream TLS session per request; the OAuth token is sent upstream once.
+
+**The request goes back to the host agy chose.** `_resolve_cloudcode_base_url` takes the
+`CONNECT` host (carried through as the `Host` header) and re-originates to that same host when
+it is allowlisted, falling back to the default backend otherwise. This matters because the
+allowlist holds two hosts: resolving every antigravity request to one default sent a request
+addressed to `cloudcode-pa.googleapis.com` — and the OAuth bearer with it — to
+`daily-cloudcode-pa.googleapis.com` instead. An explicit `HEADROOM_ANTIGRAVITY_API_URL` still
+wins over both, since an operator setting it is choosing the backend deliberately.
 
 ### Module invariant (acyclic)
 `ca-lifecycle (A1) ← terminator (A2) ← dispatch (T2) → existing handler`. Imports point one
@@ -237,8 +249,10 @@ signals extend that to the user's normal runtime.
 
 agy 1.0.10 added `url` support in `mcp_config.json`, allowing an MCP server to be addressed
 by HTTP URL instead of a stdio subprocess. The headroom retrieve server (`AgyRetrieveServer`,
-`headroom/proxy/agy_retrieve.py`) is a **plain-HTTP/REST loopback** server; it does **not**
-implement the MCP-over-HTTP (streamable HTTP) transport. Registering it as a `url`-type entry
+`headroom/proxy/agy_retrieve.py`) is `AgyDispatchServer(plain_http=True)`: the same hypercorn
+lifecycle serving the same FastAPI app, minus the SNI TLS context and the Host guard. It
+answers plain HTTP on loopback and does **not** implement the MCP-over-HTTP (streamable HTTP)
+transport. Registering it as a `url`-type entry
 would require adding an MCP-HTTP transport layer to the retrieve server for **zero added
 capability** — the stdio child (`headroom mcp serve`) already satisfies all retrieve use cases,
 and the per-run ephemeral listener is reverted on teardown with no dead pointer left in
