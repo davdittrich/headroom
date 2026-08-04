@@ -6,7 +6,10 @@ Binds to 127.0.0.1 ONLY. Accepts HTTP CONNECT:
   The hypercorn server owns TLS termination and ASGI routing.
 - Non-allowlisted hosts: raw bidirectional byte-splice (blind tunnel).
   If HTTPS_PROXY is set, forward CONNECT through that upstream proxy, deriving
-  Proxy-Authorization from its userinfo when present.
+  Proxy-Authorization from its userinfo when present. An ``https://`` upstream
+  proxy is dialled over TLS (``ssl.create_default_context()``, default
+  certificate validation, SNI set to the proxy's own hostname, ALPN pinned to
+  ``http/1.1``) instead of plaintext on :443.
   NEVER chain to a loopback address (self-loop guard).
 
 Security invariants:
@@ -34,6 +37,7 @@ import ipaddress
 import logging
 import os
 import socket
+import ssl
 import urllib.parse
 from pathlib import Path
 
@@ -301,10 +305,22 @@ async def _connect_via_upstream_proxy(
     target_host: str,
     target_port: int,
     proxy_auth: str | None,
+    ssl_context: ssl.SSLContext | None = None,
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    """Open a TCP connection through an upstream HTTP proxy using CONNECT."""
+    """Open a TCP connection through an upstream HTTP proxy using CONNECT.
+
+    *ssl_context* is non-None only for an ``https://`` upstream proxy: the
+    CONNECT dial itself is then wrapped in TLS to the proxy (SNI ==
+    ``proxy_host``, the proxy's own name — the tunnelled payload carries the
+    target's TLS handshake and SNI separately, inside the tunnel).
+    """
     reader, writer = await asyncio.wait_for(
-        asyncio.open_connection(proxy_host, proxy_port),
+        asyncio.open_connection(
+            proxy_host,
+            proxy_port,
+            ssl=ssl_context,
+            server_hostname=proxy_host if ssl_context is not None else None,
+        ),
         timeout=_CONNECT_TIMEOUT,
     )
     connect_line = (
@@ -521,12 +537,18 @@ async def _handle_blind_tunnel(
                 client_writer.close()
                 return
 
+            proxy_ssl_context: ssl.SSLContext | None = None
+            if parsed.scheme == "https":
+                proxy_ssl_context = ssl.create_default_context()
+                proxy_ssl_context.set_alpn_protocols(["http/1.1"])
+
             target_reader, target_writer = await _connect_via_upstream_proxy(
                 proxy_host,
                 proxy_port,
                 target_host,
                 target_port,
                 _upstream_proxy_auth(parsed, proxy_auth),
+                proxy_ssl_context,
             )
         else:
             target_addr = await asyncio.wait_for(

@@ -152,6 +152,15 @@ to chaining** (not documented-unsupported):
 Chaining failures are reported per connection (`403` for a loopback upstream proxy, `502`
 when it cannot be reached) rather than pre-flighted at launch.
 
+An `https://` upstream proxy is chained to over TLS — `ssl.create_default_context()`
+(default certificate validation, no bypass knob), SNI set to the proxy's own hostname
+(the tunnelled target's TLS handshake and SNI travel separately, inside the tunnel), and
+ALPN pinned to `http/1.1` so a proxy that would otherwise negotiate `h2` cannot leave the
+terminator writing a CONNECT frame into an HTTP/2 connection. There is deliberately no
+override: an operator whose corporate TLS proxy presents an internal-CA certificate that
+isn't merged into the combined bundle goes from working (accidentally, over plaintext) to
+a `502`, surfaced per connection rather than silently downgraded.
+
 ### Fail-open observability (required)
 Failing open (forward original bytes on compression/dispatch error) keeps `agy` working, but
 must never silently nullify the product's value. The design MUST:

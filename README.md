@@ -449,6 +449,13 @@ Chaining is not pre-flighted: a broken upstream proxy surfaces per connection, a
 itself) or a `502` (the upstream proxy could not be reached), logged as
 `event=self_loop_blocked_proxy` / `event=tunnel_connect_failed`.
 
+An `https://` upstream proxy is dialled over TLS — `ssl.create_default_context()` with
+default certificate validation, SNI set to the proxy's own hostname, and ALPN pinned to
+`http/1.1` — instead of plaintext on `:443`. There is no bypass knob. An operator whose
+corporate TLS proxy presents a certificate from an internal/private CA (not merged via
+`SSL_CERT_FILE`/`NODE_EXTRA_CA_CERTS` above) will see chaining fail closed with a `502`
+instead of the prior silent-plaintext behavior; add that CA to the merged bundle to fix it.
+
 #### Fail-open and known limits
 
 On compression or dispatch errors, the Headroom terminator fails open (forwards original
