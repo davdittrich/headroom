@@ -957,6 +957,35 @@ _AGY_PRINT_FLAGS = ("--print", "-p", "--prompt")
 _AGY_PRINT_MODE_MCP_MIN_VERSION = (1, 0, 16)
 
 
+_PROXY_URL_REDACTED_PLACEHOLDER = "<redacted-proxy-url>"
+
+
+def redact_proxy_url(url: str) -> str:
+    """Render ``scheme://host:port`` for a corporate proxy URL, dropping userinfo.
+
+    Invariant: userinfo (``user:pass@``) is never rendered, and no failure
+    path echoes the raw input — any parse error, a ``ValueError`` from an
+    invalid ``.port``, or a falsy ``.hostname`` (e.g. a schemeless URL where
+    urlparse puts the credentials in ``.path``/``.scheme`` instead) returns a
+    fixed placeholder. Non-printable characters are stripped from the
+    rendered scheme/host so control bytes (e.g. ESC) can never reach output.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.hostname
+        if not host:
+            return _PROXY_URL_REDACTED_PLACEHOLDER
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return _PROXY_URL_REDACTED_PLACEHOLDER
+
+    scheme = "".join(ch for ch in parsed.scheme if ch.isprintable())
+    host = "".join(ch for ch in host if ch.isprintable())
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{scheme}://{host}:{port}"
+
+
 def _agy_print_mode(agy_args: tuple[str, ...] | list[str]) -> bool:
     """Return True if agy is being launched in non-interactive print mode.
 
@@ -8204,7 +8233,9 @@ def agy(
             f"NODE_EXTRA_CA_CERTS={bundle_path}",
         ]
         if corp_proxy:
-            env_vars_display.append(f"chaining non-allowlisted CONNECTs via {corp_proxy}")
+            env_vars_display.append(
+                f"chaining non-allowlisted CONNECTs via {redact_proxy_url(corp_proxy)}"
+            )
 
         click.echo()
         click.echo("  ╔═══════════════════════════════════════════════╗")

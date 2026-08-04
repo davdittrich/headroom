@@ -432,7 +432,8 @@ reads the parent's `HTTPS_PROXY` directly; only the child `agy` process receives
 overridden value pointing at the Headroom terminator.  Corporate CA certificates (from
 `SSL_CERT_FILE` or `NODE_EXTRA_CA_CERTS`) are merged into the combined bundle so the
 real internet continues to validate.  Only PEM objects with `basicConstraints CA:TRUE`
-are merged.
+are merged. The launch banner redacts proxy credentials before printing: it shows only
+`scheme://host:port`, never the `user:pass@` userinfo.
 
 Chaining is not pre-flighted: a broken upstream proxy surfaces per connection, as a `403`
 (the upstream proxy is a loopback address — refused, so the terminator cannot chain into
