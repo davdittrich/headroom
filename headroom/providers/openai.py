@@ -16,6 +16,7 @@ from functools import lru_cache
 from typing import Any, cast
 
 from headroom import paths as _paths
+from headroom.tokenizers.base import count_content_blocks
 
 from .base import Provider, TokenCounter
 
@@ -63,6 +64,10 @@ _MODEL_ENCODINGS: dict[str, str] = {
     "o1-mini": "o200k_base",
     "o3": "o200k_base",
     "o3-mini": "o200k_base",
+    "o4": "o200k_base",
+    "o4-mini": "o200k_base",
+    "gpt-4.1": "o200k_base",
+    "gpt-5": "o200k_base",
     # GPT-4 and GPT-3.5 use cl100k_base
     "gpt-4": "cl100k_base",
     "gpt-4-turbo": "cl100k_base",
@@ -77,6 +82,18 @@ _CONTEXT_LIMITS: dict[str, int] = {
     "gpt-4o-2024-11-20": 128000,
     "gpt-4o-2024-08-06": 128000,
     "gpt-4o-2024-05-13": 128000,
+    # GPT-4.1 series (~1M input). LiteLLM is still consulted first in
+    # get_context_limit; these are the manual fallback for installs without it
+    # (the litellm dep is gated python_version < '3.14').
+    "gpt-4.1": 1_047_576,
+    "gpt-4.1-mini": 1_047_576,
+    "gpt-4.1-nano": 1_047_576,
+    # GPT-5 series. This table is an INPUT budget (get_context_limit returns
+    # litellm's max_input_tokens when available), so these are 272K input --
+    # not the 400K total window, which is 272K in + 128K out.
+    "gpt-5": 272000,
+    "gpt-5-mini": 272000,
+    "gpt-5-nano": 272000,
     # GPT-4 Turbo
     "gpt-4-turbo": 128000,
     "gpt-4-turbo-preview": 128000,
@@ -93,6 +110,7 @@ _CONTEXT_LIMITS: dict[str, int] = {
     "o1-mini": 128000,
     "o3": 200000,
     "o3-mini": 200000,
+    "o4-mini": 200000,
     # DeepSeek (often accessed via OpenAI-compatible API). Values verified
     # against api-docs.deepseek.com (V4) and LiteLLM model_cost (deprecated
     # aliases). LiteLLM lookup is still attempted first in get_context_limit;
@@ -259,8 +277,13 @@ def _get_encoding(encoding_name: str) -> Any:
     return tiktoken.get_encoding(encoding_name)
 
 
-def _get_encoding_name_for_model(model: str, custom_encodings: dict[str, str] | None = None) -> str:
-    """Get the encoding name for a model with fallback support."""
+def _lookup_encoding_name(model: str, custom_encodings: dict[str, str] | None = None) -> str | None:
+    """Resolve the tiktoken encoding for ``model``, or ``None`` if none claims it.
+
+    ``None`` is the "not an OpenAI model" signal: it means no explicit mapping,
+    no known prefix, and no OpenAI family pattern matched. Callers that can
+    reach a better tokenizer should use it rather than guess an encoding.
+    """
     # Check custom encodings first
     if custom_encodings and model in custom_encodings:
         return custom_encodings[model]
@@ -269,18 +292,26 @@ def _get_encoding_name_for_model(model: str, custom_encodings: dict[str, str] | 
     if model in _MODEL_ENCODINGS:
         return _MODEL_ENCODINGS[model]
 
-    # Prefix match for versioned models
-    for prefix, encoding in _MODEL_ENCODINGS.items():
+    # Prefix match for versioned models, longest prefix first. Plain dict order
+    # let a shorter family shadow a longer one: "gpt-4.1" hit the "gpt-4" entry
+    # and got cl100k_base instead of o200k_base, which over-counts CJK by ~33%.
+    for prefix in sorted(_MODEL_ENCODINGS, key=len, reverse=True):
         if model.startswith(prefix):
-            return encoding
+            return _MODEL_ENCODINGS[prefix]
 
     # Pattern-based inference
     family = _infer_model_family(model)
     if family and family in _PATTERN_DEFAULTS:
         return cast(str, _PATTERN_DEFAULTS[family]["encoding"])
 
-    # Default for unknown models
-    return cast(str, _UNKNOWN_OPENAI_DEFAULT["encoding"])
+    return None
+
+
+def _get_encoding_name_for_model(model: str, custom_encodings: dict[str, str] | None = None) -> str:
+    """Get the encoding name for a model with fallback support."""
+    return _lookup_encoding_name(model, custom_encodings) or cast(
+        str, _UNKNOWN_OPENAI_DEFAULT["encoding"]
+    )
 
 
 class OpenAITokenCounter:
@@ -320,8 +351,13 @@ class OpenAITokenCounter:
 
         Accounts for ChatML format overhead.
         """
-        # Base overhead per message (role + delimiters)
-        tokens = 4
+        # Base overhead per message (role + delimiters). OpenAI's counting
+        # guide uses 3 for every model since gpt-3.5-turbo-0613; only the
+        # retired gpt-3.5-turbo-0301 used 4. Staying on 4 over-counted every
+        # message by one token and disagreed with the tokenizer registry, which
+        # already uses 3 — so the same request measured differently depending on
+        # whether the pipeline or the handler counted it.
+        tokens = 3
 
         role = message.get("role", "")
         tokens += self.count_text(role)
@@ -331,14 +367,16 @@ class OpenAITokenCounter:
             if isinstance(content, str):
                 tokens += self.count_text(content)
             elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict):
-                        if part.get("type") == "text":
-                            tokens += self.count_text(part.get("text", ""))
-                        elif part.get("type") == "image_url":
-                            tokens += 85  # Low detail image estimate
-                    elif isinstance(part, str):
-                        tokens += self.count_text(part)
+                # Delegate to the audited shared walker instead of a partial
+                # per-provider one. Each provider counter had grown its own
+                # shortened branch list, so every modern block priced at ~0:
+                # measured on a 6,800-char block this returned 8 tokens for
+                # tool_result, thinking, document, mcp_tool_result — and for
+                # output_text / refusal, which are OpenAI's OWN Responses shapes.
+                # The shared walker is also image-safe: a 200KB base64 image gets
+                # a pixel-based 1600, not the ~50K phantom text tokens a naive
+                # str(block) catch-all would produce.
+                tokens += count_content_blocks(content, self.count_text)
 
         # Name field
         name = message.get("name")
@@ -416,7 +454,9 @@ class OpenAIProvider(Provider):
         if context_limits:
             self._context_limits.update(context_limits)
 
-        self._token_counters: dict[str, OpenAITokenCounter] = {}
+        # Holds OpenAITokenCounter for models with a real tiktoken encoding and
+        # registry tokenizers for everything else (see get_token_counter).
+        self._token_counters: dict[str, TokenCounter] = {}
 
     @property
     def name(self) -> str:
@@ -439,11 +479,25 @@ class OpenAIProvider(Provider):
         )
 
     def get_token_counter(self, model: str) -> TokenCounter:
-        """Get token counter for an OpenAI model."""
+        """Get token counter for ``model``, deferring non-OpenAI models.
+
+        ``/v1/chat/completions`` is a multi-provider passthrough, so Kimi,
+        Gemini, Mistral and Cohere models all reach this provider. Handing them
+        a guessed tiktoken encoding mis-counts by up to ~19% (Kimi), and since
+        the proxy pipeline resolves its tokenizer through this provider while
+        handlers resolve through the tokenizer registry, the two disagree about
+        the same request — savings become a difference of two rulers. Defer to
+        the registry so each model has exactly one tokenizer.
+        """
         if model not in self._token_counters:
-            self._token_counters[model] = OpenAITokenCounter(
-                model=model, custom_encodings=self._encodings
-            )
+            if _lookup_encoding_name(model, self._encodings) is None:
+                from headroom.tokenizers import get_tokenizer
+
+                self._token_counters[model] = cast(Any, get_tokenizer(model))
+            else:
+                self._token_counters[model] = OpenAITokenCounter(
+                    model=model, custom_encodings=self._encodings
+                )
         return self._token_counters[model]
 
     def get_context_limit(self, model: str) -> int:
@@ -490,10 +544,12 @@ class OpenAIProvider(Provider):
         if model in self._context_limits:
             return self._context_limits[model]
 
-        # Prefix match
-        for prefix, limit in self._context_limits.items():
+        # Prefix match, longest prefix first. Plain dict order let a shorter
+        # family shadow a longer one: "gpt-4.1" hit the "gpt-4" entry and got
+        # 8192 instead of ~1M, and "gpt-4-32k-0613" got 8192 instead of 32768.
+        for prefix in sorted(self._context_limits, key=len, reverse=True):
             if model.startswith(prefix):
-                return limit
+                return self._context_limits[prefix]
 
         # Pattern-based inference
         family = _infer_model_family(model)

@@ -113,6 +113,7 @@ from headroom.proxy import runtime_env
 from headroom.proxy.audit import is_auditable_path, record_admin_action
 from headroom.proxy.auth_mode import should_stamp_codex_client
 from headroom.proxy.background_compression import BackgroundCompressor
+from headroom.proxy.budget_basis_policy import resolve_estimated_basis_policy
 
 # =============================================================================
 # Extracted modules (re-exported for backward compatibility)
@@ -797,6 +798,7 @@ class HeadroomProxy(
             CostTracker(
                 budget_limit_usd=config.budget_limit_usd,
                 budget_period=config.budget_period,
+                estimated_basis_policy=config.budget_estimated_basis,
             )
             if config.cost_tracking_enabled
             else None
@@ -1915,11 +1917,13 @@ class HeadroomProxy(
         logger.info(f"Failed:                {m.requests_failed}")
         logger.info(f"Input tokens:          {m.tokens_input_total:,}")
         logger.info(f"Output tokens:         {m.tokens_output_total:,}")
-        logger.info(f"Tokens saved:          {m.tokens_saved_total:,}")
+        # ONE headline: message compression + tool-schema deferral. Deferral can't move
+        # tok_before/after (tool bytes never reach count_messages), so it used to print
+        # as a separate line that read like a side metric rather than savings.
+        logger.info(f"Tokens saved:          {m.tokens_saved_total + m.tool_search_saved_total:,}")
         if m.tool_search_saved_total > 0:
-            # Tool-schema deferral / turn-hook tool shrink — counted apart from
-            # message compression (tool bytes never move tok_before/after).
-            logger.info(f"Tool schemas deferred: {m.tool_search_saved_total:,}")
+            logger.info(f"  messages:            {m.tokens_saved_total:,}")
+            logger.info(f"  tool schemas:        {m.tool_search_saved_total:,}")
         # Active-compression ratio: savings as a fraction of what we
         # *attempted* to compress (extracted units + tool schema),
         # NOT the whole request. The full-request denominator is
@@ -2375,6 +2379,22 @@ _is_known_websocket_callback_failure = is_known_websocket_callback_failure
 _tool_schema_saved_from_tags = tool_schema_saved_from_tags
 
 
+class WebSocketProjectPrefixMiddleware:
+    """Normalize project-prefixed WebSocket paths before route matching."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "websocket":
+            prefix_project = strip_project_path_prefix(scope)
+            headers = {
+                name.decode("latin-1"): value.decode("latin-1") for name, value in scope["headers"]
+            }
+            set_current_project(classify_project(headers) or prefix_project)
+        await self.app(scope, receive, send)
+
+
 def create_app(config: ProxyConfig | None = None) -> FastAPI:
     """Create FastAPI application."""
     if not FASTAPI_AVAILABLE:
@@ -2605,6 +2625,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         version=__version__,
         lifespan=lifespan,
     )
+    app.add_middleware(WebSocketProjectPrefixMiddleware)
     loop_health_state: LoopHealthState = {
         "status": "healthy",
         "known_failures": 0,
@@ -2682,7 +2703,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 continue
             if proxy.warmup.kompress.status == "loaded":
                 return True
-            proxy.warmup.kompress.mark_loaded(handle=compressor, backend=backend)
+            proxy.warmup.kompress.mark_loaded(
+                handle=compressor, backend=backend, source_status="runtime"
+            )
             return True
 
         try:
@@ -2698,7 +2721,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 pass
             else:
                 if backend and proxy.warmup.kompress.status != "loaded":
-                    proxy.warmup.kompress.mark_loaded(handle=model, backend=backend)
+                    proxy.warmup.kompress.mark_loaded(
+                        handle=model, backend=backend, source_status="runtime"
+                    )
         return True
 
     def _health_checks() -> dict[str, dict[str, Any]]:
@@ -3328,6 +3353,13 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
     @app.get("/debug/warmup", dependencies=[Depends(_require_loopback)])
     async def debug_warmup():
+        # Promote a deferred Kompress slot from live runtime state before we
+        # serialize. Without this the registry keeps reporting the startup
+        # snapshot (``status: null`` / ``source_status: deferred``) forever,
+        # even while the model is loaded and compressing, unless somebody
+        # happens to hit /health or /readyz first. Same read-only
+        # reconciliation those endpoints run (issue #2624).
+        _reconcile_kompress_health()
         warmup_registry = getattr(proxy, "warmup", None)
         payload = warmup_registry.to_dict() if warmup_registry is not None else {}
         payload["runtime"] = _runtime_payload()
@@ -3375,6 +3407,20 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             status_code=200,
             content={"applied": applied, "runtime_env": runtime_env.effective_runtime_env()},
         )
+
+    # Vendored dashboard JS (tailwind/htmx/alpine). Mounted before
+    # register_provider_routes' catch-all so it is not tunneled upstream.
+    from starlette.staticfiles import StaticFiles
+
+    from headroom.dashboard import STATIC_DIR
+
+    # check_dir=False keeps a missing assets directory from aborting proxy
+    # startup: the dashboard JS 404s, but proxying itself still works.
+    app.mount(
+        "/dashboard/static",
+        StaticFiles(directory=STATIC_DIR, check_dir=False),
+        name="dashboard-static",
+    )
 
     @app.get("/dashboard", response_class=HTMLResponse)
     async def dashboard():
@@ -3896,9 +3942,18 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 # should show — it answers "are we doing well *when we
                 # have something to compress?*" rather than diluting the
                 # win by frozen-prefix bytes we never touched.
+                # All-layers numerator, matching denominator: `attempted_input_tokens`
+                # already counts tool schemas we COMPACTED, so pairing it with a
+                # compression-only numerator undercounted every tool-heavy session.
+                # Deferred schemas are added to both sides — they were attempted work
+                # that succeeded completely.
                 "active_savings_percent": round(
-                    (proxy_compression_tokens / attempted_input_tokens * 100)
-                    if attempted_input_tokens > 0
+                    (
+                        all_layers_tokens_saved
+                        / (attempted_input_tokens + m.tool_search_saved_total)
+                        * 100
+                    )
+                    if (attempted_input_tokens + m.tool_search_saved_total) > 0
                     else 0,
                     2,
                 ),
@@ -5506,6 +5561,17 @@ if __name__ == "__main__":
     # Cost
     parser.add_argument("--budget", type=float, help="Budget limit in USD")
     parser.add_argument("--budget-period", choices=["hourly", "daily", "monthly"], default="daily")
+    parser.add_argument(
+        "--budget-estimated-basis",
+        choices=["count", "ignore", "block"],
+        default=None,
+        help=(
+            "What spend booked from Headroom's own token estimate (provider returned no "
+            "usage breakdown) does to the budget: count it (default), ignore it, or block "
+            "requests rather than enforce the limit on an estimate. "
+            "Env: HEADROOM_BUDGET_ESTIMATED_BASIS."
+        ),
+    )
 
     # Logging
     parser.add_argument("--log-file", help="Log file path")
@@ -5608,6 +5674,10 @@ if __name__ == "__main__":
         rate_limit_tokens_per_minute=_get_env_int("HEADROOM_TPM", args.tpm),
         budget_limit_usd=args.budget,
         budget_period=args.budget_period,
+        budget_estimated_basis=cast(
+            Literal["count", "ignore", "block"],
+            resolve_estimated_basis_policy(args.budget_estimated_basis, os.environ),
+        ),
         log_file=_get_env_str("HEADROOM_LOG_FILE", args.log_file)
         if args.log_file
         else os.environ.get("HEADROOM_LOG_FILE"),
