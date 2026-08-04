@@ -435,6 +435,15 @@ real internet continues to validate.  Only PEM objects with `basicConstraints CA
 are merged. The launch banner redacts proxy credentials before printing: it shows only
 `scheme://host:port`, never the `user:pass@` userinfo.
 
+If `HTTPS_PROXY` carries `user:pass@` userinfo, it is percent-decoded and sent to the
+corporate proxy as an HTTP Basic `Proxy-Authorization` header on every chained CONNECT —
+only when the proxy scheme is `http`/`https` (never to a `socks5://` proxy). The
+URL-derived credential takes precedence over any `Proxy-Authorization` header the child
+sends inbound; the inbound header is used only when the URL carries no userinfo. This is
+sent in cleartext when the upstream scheme is `http://`, matching curl, Go and requests
+behavior against a plain-HTTP proxy — the credential already lives in an env var every
+tool on the box can read, and refusing to send it would break most corporate proxies.
+
 Chaining is not pre-flighted: a broken upstream proxy surfaces per connection, as a `403`
 (the upstream proxy is a loopback address — refused, so the terminator cannot chain into
 itself) or a `502` (the upstream proxy could not be reached), logged as

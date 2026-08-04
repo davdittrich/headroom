@@ -5,7 +5,8 @@ Binds to 127.0.0.1 ONLY. Accepts HTTP CONNECT:
   in-process hypercorn HTTPS server at ``dispatch_port`` (AgyDispatchServer).
   The hypercorn server owns TLS termination and ASGI routing.
 - Non-allowlisted hosts: raw bidirectional byte-splice (blind tunnel).
-  If HTTPS_PROXY is set, forward CONNECT through that upstream proxy.
+  If HTTPS_PROXY is set, forward CONNECT through that upstream proxy, deriving
+  Proxy-Authorization from its userinfo when present.
   NEVER chain to a loopback address (self-loop guard).
 
 Security invariants:
@@ -13,12 +14,21 @@ Security invariants:
   never touch the filesystem; on platforms without memfd, a 0600 temp file
   is written and unlinked immediately after load (perms asserted).
 - Proxy-Authorization is never logged.
+- Upstream proxy auth: when HTTPS_PROXY carries `user:pass@` userinfo, it is
+  percent-decoded and sent as HTTP Basic auth, only when the proxy scheme is
+  `http`/`https` (never to e.g. `socks5://`), and only the URL-derived
+  credential is used when the URL carries one (it takes precedence over an
+  inbound Proxy-Authorization header). This is sent in cleartext when the
+  upstream scheme is `http://` — same as curl, Go and requests do to a plain
+  HTTP proxy; the credential already lives in an env var every tool on the
+  box can read, and refusing to send it would break most corporate proxies.
 - Listener bind address is 127.0.0.1, never 0.0.0.0.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime
 import ipaddress
 import logging
@@ -454,6 +464,21 @@ async def _resolve_tunnel_target(host: str, port: int, self_port: int | None) ->
     return str(ipaddress.ip_address(infos[0][4][0]))
 
 
+def _upstream_proxy_auth(parsed: urllib.parse.ParseResult, inbound: str | None) -> str | None:
+    """Resolve the Proxy-Authorization value to send to the upstream proxy.
+
+    Only pure string/URL logic — no socket I/O — so this is unit-testable
+    without spinning up a listener.
+    """
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if not parsed.username:
+        return inbound
+    password = urllib.parse.unquote(parsed.password or "")
+    userinfo = f"{urllib.parse.unquote(parsed.username)}:{password}".encode()
+    return "Basic " + base64.b64encode(userinfo).decode()
+
+
 async def _handle_blind_tunnel(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
@@ -462,7 +487,16 @@ async def _handle_blind_tunnel(
     proxy_auth: str | None,
     self_port: int | None = None,
 ) -> None:
-    """Byte-splice tunnel for non-allowlisted targets."""
+    """Byte-splice tunnel for non-allowlisted targets.
+
+    When chaining through an upstream HTTPS_PROXY, Proxy-Authorization is
+    derived from that URL's userinfo (percent-decoded) and takes precedence
+    over any inbound Proxy-Authorization header: the URL is the operator's
+    configuration for this specific upstream proxy and is the only source
+    that can carry a working credential, since the child process is handed a
+    userinfo-free loopback URL and never sends a header of its own. The
+    inbound header remains a fallback for a caller that does supply one.
+    """
     upstream_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
 
     try:
@@ -492,7 +526,7 @@ async def _handle_blind_tunnel(
                 proxy_port,
                 target_host,
                 target_port,
-                proxy_auth,
+                _upstream_proxy_auth(parsed, proxy_auth),
             )
         else:
             target_addr = await asyncio.wait_for(

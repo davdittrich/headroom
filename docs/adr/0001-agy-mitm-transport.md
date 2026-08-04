@@ -137,8 +137,13 @@ base-URL wrapping. Therefore:
 `agy` honors a single `HTTPS_PROXY` and one CA bundle, which Headroom overwrites. **v1 commits
 to chaining** (not documented-unsupported):
 - detect a pre-existing user `HTTPS_PROXY` and **chain** to it — the terminator forwards
-  non-allowlist CONNECTs verbatim through the corporate proxy (preserving its proxy-auth
-  headers, never TLS-terminating the chained leg), instead of dialing direct; and
+  non-allowlist CONNECTs through the corporate proxy (never TLS-terminating the chained
+  leg), instead of dialing direct. The child is handed a userinfo-free loopback URL and
+  sends no `Proxy-Authorization` header of its own, so a chained CONNECT reached `407`
+  until this ADR's v1.1 update: the terminator now derives `Proxy-Authorization` from
+  `HTTPS_PROXY`'s own `user:pass@` userinfo (percent-decoded, `http`/`https` schemes
+  only) and sends it, taking precedence over any inbound header. This is sent in
+  cleartext to an `http://` upstream proxy, matching curl/Go/requests; and
 - merge any pre-existing corporate CA (from the user's `SSL_CERT_FILE`/`NODE_EXTRA_CA_CERTS`
   or system store) into the combined bundle so the real internet still validates. Only x509
   objects with `basicConstraints CA:TRUE` are merged (do not blindly concatenate arbitrary
