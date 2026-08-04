@@ -146,6 +146,40 @@ def test_is_loopback_hostname() -> None:
     assert _is_loopback("example.com") is False
 
 
+def test_is_loopback_ipv4_shorthand_dotted() -> None:
+    """127.1 is a valid inet_aton shorthand for 127.0.0.1."""
+    assert _is_loopback("127.1") is True
+
+
+def test_is_loopback_ipv4_decimal() -> None:
+    """2130706433 is the decimal encoding of 127.0.0.1."""
+    assert _is_loopback("2130706433") is True
+
+
+def test_is_loopback_zero_shorthand() -> None:
+    """0 is inet_aton shorthand for 0.0.0.0 (unspecified, treated as loopback)."""
+    assert _is_loopback("0") is True
+
+
+def test_is_loopback_unspecified() -> None:
+    """0.0.0.0 is is_unspecified, not is_loopback, but Linux connect() reaches localhost."""
+    assert _is_loopback("0.0.0.0") is True
+
+
+def test_is_loopback_localhost_trailing_dot() -> None:
+    assert _is_loopback("localhost.") is True
+
+
+def test_is_loopback_ipv4_mapped_ipv6() -> None:
+    """Must not depend on interpreter version (CPython gh-103365, fixed in 3.13)."""
+    assert _is_loopback("::ffff:127.0.0.1") is True
+
+
+def test_is_loopback_still_no_dns_for_shorthand_lookalike() -> None:
+    """example.com must still return False — the function stays DNS-free."""
+    assert _is_loopback("example.com") is False
+
+
 # ---------------------------------------------------------------------------
 # Unit: mint_leaf
 # ---------------------------------------------------------------------------
@@ -361,6 +395,55 @@ async def test_self_loop_guard_via_https_proxy_env(
         await raw_writer.drain()
         response = await raw_reader.readline()
         assert b"403" in response, f"Expected 403 when HTTPS_PROXY is loopback, got {response!r}"
+    finally:
+        await terminator.stop()
+
+
+@pytest.mark.asyncio
+async def test_non_http_upstream_proxy_scheme_rejected(
+    tmp_ca: tuple, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A non-http(s) HTTPS_PROXY (e.g. socks5://) must be refused before any
+
+    HTTP CONNECT text is written into it, and the refusal must never leak
+    the credential embedded in the proxy URL's userinfo.
+    """
+    import headroom.proxy.agy_terminator as _mod
+
+    ca_key, ca_cert, _ = tmp_ca
+    monkeypatch.setenv("HTTPS_PROXY", "socks5://user:s3cr3t@proxy:1080")
+
+    called = False
+
+    async def _spy(*args: object, **kwargs: object) -> tuple[object, object]:
+        nonlocal called
+        called = True
+        raise AssertionError("_connect_via_upstream_proxy must not be reached")
+
+    monkeypatch.setattr(_mod, "_connect_via_upstream_proxy", _spy)
+
+    terminator = AgyCONNECTTerminator(
+        allowlist=frozenset({ALLOWLIST_HOST}),
+        ca_key=ca_key,
+        ca_cert=ca_cert,
+        dispatch_port=1,
+    )
+    await terminator.start()
+
+    try:
+        with caplog.at_level("WARNING"):
+            proxy_host, proxy_port = terminator.address
+            raw_reader, raw_writer = await asyncio.open_connection(proxy_host, proxy_port)
+            connect_req = (
+                f"CONNECT {NON_ALLOWLIST_HOST}:443 HTTP/1.1\r\n"
+                f"Host: {NON_ALLOWLIST_HOST}:443\r\n\r\n"
+            )
+            raw_writer.write(connect_req.encode())
+            await raw_writer.drain()
+            response = await raw_reader.readline()
+        assert b"403" in response, f"Expected 403 for socks5:// upstream, got {response!r}"
+        assert called is False
+        assert "s3cr3t" not in caplog.text
     finally:
         await terminator.stop()
 

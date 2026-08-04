@@ -188,14 +188,30 @@ class _LeafCache:
 
 
 def _is_loopback(host: str) -> bool:
-    """Return True if *host* resolves to a loopback address."""
-    if host.lower() == "localhost":
+    """Return True if *host* is a loopback address, IP-literal forms only.
+
+    Catches dotted-quad, IPv4-shorthand (``127.1``, decimal ``2130706433``),
+    the unspecified address (``0.0.0.0`` / ``0``, which Linux ``connect()``
+    treats as loopback), IPv6 ``::1``, IPv4-mapped IPv6 (``::ffff:127.0.0.1``,
+    normalised via ``ipv4_mapped`` so the result does not depend on the
+    interpreter version — see CPython gh-103365, fixed in 3.13), and
+    ``localhost``/``localhost.`` case-insensitively. Does NOT resolve DNS: a
+    hostname that resolves to loopback (e.g. an attacker-controlled
+    ``/etc/hosts`` entry) is not detected here and returns False.
+    """
+    if host.lower() in ("localhost", "localhost."):
         return True
     try:
         addr = ipaddress.ip_address(host)
-        return addr.is_loopback
     except ValueError:
-        return False
+        try:
+            packed = socket.inet_aton(host)
+        except (OSError, UnicodeError):
+            return False
+        addr = ipaddress.IPv4Address(packed)
+    if isinstance(addr, ipaddress.IPv6Address):
+        addr = addr.ipv4_mapped or addr
+    return bool(addr.is_loopback or addr.is_unspecified)
 
 
 # ---------------------------------------------------------------------------
@@ -512,12 +528,23 @@ async def _handle_blind_tunnel(
     that can carry a working credential, since the child process is handed a
     userinfo-free loopback URL and never sends a header of its own. The
     inbound header remains a fallback for a caller that does supply one.
+
+    Trust boundary, chaining branch: the target (``target_host``) is NOT
+    vetted here — it is forwarded to the upstream proxy by name, which
+    re-resolves it in its own DNS view, so the upstream proxy's own egress
+    policy is the actual boundary, not anything checked in this process.
+    Only the proxy side is guarded (self-loop, scheme). The self-loop guard
+    (``_is_loopback``) covers IP-literal forms only; a DNS name that
+    resolves to loopback (e.g. a local ``/etc/hosts`` entry) is not detected
+    and is out of scope — see ``_is_loopback``'s docstring.
     """
     upstream_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
 
     try:
         if upstream_proxy:
             parsed = urllib.parse.urlparse(upstream_proxy)
+            if parsed.scheme not in ("http", "https"):
+                raise ValueError(f"unsupported upstream proxy scheme: {parsed.scheme}")
             proxy_host = parsed.hostname or ""
             # Default per scheme: a scheme-less-port HTTPS_PROXY like
             # "http://proxy.corp" speaks plain HTTP on :80, not :443.
