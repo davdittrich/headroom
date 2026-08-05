@@ -24,7 +24,7 @@ import warnings
 from typing import Any, cast
 
 from headroom import paths as _paths
-from headroom.tokenizers.base import count_content_blocks
+from headroom.tokenizers.base import coerce_countable_text, count_content_blocks
 
 from .base import Provider, TokenCounter
 
@@ -411,9 +411,9 @@ class AnthropicTokenCounter(TokenCounter):
         if "tool_calls" in message:
             for tool_call in message.get("tool_calls", []):
                 if isinstance(tool_call, dict):
-                    func = tool_call.get("function", {})
-                    tokens += self.count_text(func.get("name", ""))
-                    tokens += self.count_text(func.get("arguments", ""))
+                    func = tool_call.get("function") or {}
+                    tokens += self.count_text(coerce_countable_text(func.get("name")))
+                    tokens += self.count_text(coerce_countable_text(func.get("arguments")))
 
         return tokens
 

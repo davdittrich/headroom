@@ -16,19 +16,21 @@ from functools import lru_cache
 from typing import Any, cast
 
 from headroom import paths as _paths
-from headroom.tokenizers.base import count_content_blocks
+from headroom.tokenizers.base import coerce_countable_text, count_content_blocks
 
 from .base import Provider, TokenCounter
 
 logger = logging.getLogger(__name__)
 
 # Pricing metadata for transparency
-_PRICING_LAST_UPDATED = date(2025, 1, 14)
+_PRICING_LAST_UPDATED = date(2026, 8, 4)  # every _PRICING entry verified vs litellm
 _PRICING_STALE_DAYS = 60  # Warn if pricing data is older than this
 
 # Warning tracking
 _PRICING_WARNING_SHOWN = False
 _UNKNOWN_MODEL_WARNINGS: set[str] = set()
+# Models whose price came from the built-in table rather than LiteLLM.
+_PRICING_FALLBACK_WARNINGS: set[str] = set()
 
 try:
     import tiktoken
@@ -129,21 +131,35 @@ _CONTEXT_LIMITS: dict[str, int] = {
     "deepseek-coder-v2": 128_000,
 }
 
-# Fallback pricing - LiteLLM is preferred source
-# OpenAI pricing per 1M tokens (input, output)
-# NOTE: These are ESTIMATES. Always verify against actual OpenAI billing.
-# Last updated: 2025-01-14
+# USD per 1M tokens, (input, output). NOTE: these are ESTIMATES -- always verify
+# against actual OpenAI billing.
+#
+# Unlike get_context_limit, _get_pricing has NO litellm lookup in front of it, so
+# this table is authoritative for every consumer (client.py cost_before /
+# cost_after, reporting, evals). Every entry below was checked against litellm's
+# model_cost; keep the newer families explicit, because these are matched by
+# prefix and "gpt-4.1" would otherwise fall into "gpt-4" and be priced at the
+# legacy $30/$60 -- 15x its real rate, and 300x for gpt-4.1-nano.
 _PRICING: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4.1": (2.00, 8.00),
+    "gpt-4.1-mini": (0.40, 1.60),
+    "gpt-4.1-nano": (0.10, 0.40),
+    "gpt-5": (1.25, 10.00),
+    "gpt-5-mini": (0.25, 2.00),
+    "gpt-5-nano": (0.05, 0.40),
     "gpt-4-turbo": (10.00, 30.00),
     "gpt-4": (30.00, 60.00),
     "gpt-3.5-turbo": (0.50, 1.50),
     "o1": (15.00, 60.00),
     "o1-preview": (15.00, 60.00),
     "o1-mini": (3.00, 12.00),
-    "o3": (10.00, 40.00),
+    # o3 was cut from $10/$40 to $2/$8 in June 2025; the old rate
+    # overstated every o3 cost estimate by 5x.
+    "o3": (2.00, 8.00),
     "o3-mini": (1.10, 4.40),
+    "o4-mini": (1.10, 4.40),
 }
 
 # Pattern-based defaults for unknown models
@@ -153,7 +169,7 @@ _PATTERN_DEFAULTS = {
     "gpt-4": {"context": 8192, "encoding": "cl100k_base", "pricing": (30.00, 60.00)},
     "gpt-3.5": {"context": 16385, "encoding": "cl100k_base", "pricing": (0.50, 1.50)},
     "o1": {"context": 200000, "encoding": "o200k_base", "pricing": (15.00, 60.00)},
-    "o3": {"context": 200000, "encoding": "o200k_base", "pricing": (10.00, 40.00)},
+    "o3": {"context": 200000, "encoding": "o200k_base", "pricing": (2.00, 8.00)},
 }
 
 # Default for completely unknown OpenAI models
@@ -387,10 +403,10 @@ class OpenAITokenCounter:
         tool_calls = message.get("tool_calls")
         if tool_calls:
             for tc in tool_calls:
-                func = tc.get("function", {})
-                tokens += self.count_text(func.get("name", ""))
-                tokens += self.count_text(func.get("arguments", ""))
-                tokens += self.count_text(tc.get("id", ""))
+                func = tc.get("function") or {}
+                tokens += self.count_text(coerce_countable_text(func.get("name")))
+                tokens += self.count_text(coerce_countable_text(func.get("arguments")))
+                tokens += self.count_text(coerce_countable_text(tc.get("id")))
                 tokens += 10  # Structural overhead
 
         # Tool call ID for tool responses
@@ -445,10 +461,14 @@ class OpenAIProvider(Provider):
         self._context_limits.update(custom_config["context_limits"])
         self._encodings.update(custom_config["encodings"])
 
-        # Handle pricing (can be tuple or list from JSON)
+        # Handle pricing (can be tuple or list from JSON). Tracked separately as
+        # well: an explicitly configured price is a user decision and must beat
+        # the LiteLLM lookup, whereas the built-in table is only a fallback.
+        self._pricing_overrides: dict[str, tuple[float, float]] = {}
         for model, pricing in custom_config["pricing"].items():
             if isinstance(pricing, list | tuple) and len(pricing) >= 2:
                 self._pricing[model] = (float(pricing[0]), float(pricing[1]))
+                self._pricing_overrides[model] = self._pricing[model]
 
         # Explicit overrides take precedence
         if context_limits:
@@ -646,23 +666,65 @@ class OpenAIProvider(Provider):
         return cached_cost + regular_cost + output_cost
 
     def _get_pricing(self, model: str) -> tuple[float, float] | None:
-        """Get pricing for a model with fallback logic."""
-        # Direct match
+        """Get pricing for a model, preferring LiteLLM over the built-in table.
+
+        Resolution order, mirroring ``get_context_limit`` so the two agree:
+
+        1. **Explicit user config** (``HEADROOM_MODEL_LIMITS`` / ``models.json``)
+           — a configured price is a decision, not a guess.
+        2. **LiteLLM** — the live source of truth. It also resolves gateway forms
+           the built-in table never covered (``azure/``, ``bedrock/``,
+           ``vertex_ai/``, ``groq/``).
+        3. **Built-in table**, then family pattern, then the unknown default.
+
+        The table used to be authoritative, which is how it went ~18 months stale
+        and priced gpt-4.1-nano 300x over (see the entries below). Demoting it to
+        a fallback means that drift only reaches installs with no LiteLLM — the
+        dependency is gated ``python_version < '3.14'``.
+        """
+        # 1. Explicit configuration wins.
+        override = self._pricing_overrides.get(model)
+        if override is not None:
+            return override
+
+        # 2. LiteLLM.
+        from headroom.pricing.litellm_pricing import pricing_per_1m
+
+        live = pricing_per_1m(model)
+        if live is not None:
+            return live
+
+        # 3. Built-in fallback. Only here does the staleness of this table
+        #    matter, so this is the only path that should warn about it.
+        self._warn_pricing_fallback(model)
+
         if model in self._pricing:
             return self._pricing[model]
 
-        # Prefix match
-        for model_prefix, pricing in self._pricing.items():
+        # Longest prefix first -- same shadowing hazard the context-limit and
+        # encoding lookups had: in plain dict order the shorter "gpt-4" entry
+        # claimed "gpt-4.1" and priced it at $30/$60.
+        for model_prefix in sorted(self._pricing, key=len, reverse=True):
             if model.startswith(model_prefix):
-                return pricing
+                return self._pricing[model_prefix]
 
-        # Pattern-based inference
         family = _infer_model_family(model)
         if family and family in _PATTERN_DEFAULTS:
             return cast(tuple[float, float], _PATTERN_DEFAULTS[family]["pricing"])
 
-        # Default for unknown models
         return cast(tuple[float, float], _UNKNOWN_OPENAI_DEFAULT["pricing"])
+
+    def _warn_pricing_fallback(self, model: str) -> None:
+        """Warn once per model that pricing came from the built-in table."""
+        if model in _PRICING_FALLBACK_WARNINGS:
+            return
+        _PRICING_FALLBACK_WARNINGS.add(model)
+        stale = _check_pricing_staleness()
+        logger.debug(
+            "No LiteLLM pricing for '%s'; using built-in estimate.%s",
+            model,
+            f" {stale}" if stale else "",
+        )
 
     def get_output_buffer(self, model: str, default: int = 4000) -> int:
         """Get recommended output buffer."""

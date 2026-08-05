@@ -11,6 +11,40 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
+#: Cap on the serialized form of a non-string tool-call field. A malformed
+#: upstream can put an arbitrarily large object where a JSON string belongs;
+#: serializing it unbounded would turn a token *estimate* into a multi-megabyte
+#: encode. Truncating keeps the estimate finite and the request alive.
+_MAX_COERCED_FIELD_CHARS = 200_000
+
+
+def coerce_countable_text(value: Any) -> str:
+    """Return *value* as text safe to pass to ``count_text``.
+
+    Tool-call fields (``function.name``, ``function.arguments``, ``id``) are
+    strings per the OpenAI spec, but OpenAI-compatible upstreams do emit
+    ``None`` or a raw object there. Passing those straight to
+    ``tiktoken.encode()`` raises ``TypeError: expected string or buffer``, which
+    failed the whole compression with a 503 — and kept failing on every later
+    request, because the malformed message stays in conversation history.
+
+    ``None`` counts as nothing; dicts/lists are JSON-serialized so an object
+    ``arguments`` is priced roughly like the JSON string it should have been;
+    anything else falls back to ``str()``.
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    if isinstance(value, dict | list | tuple):
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            text = str(value)
+    else:
+        text = str(value)
+    return text[:_MAX_COERCED_FIELD_CHARS]
+
 
 @runtime_checkable
 class TokenCounter(Protocol):
@@ -311,20 +345,20 @@ class BaseTokenizer(ABC):
             total += 4  # Tool call overhead
 
             if "function" in call:
-                func = call["function"]
-                total += self.count_text(func.get("name", ""))
-                total += self.count_text(func.get("arguments", ""))
+                func = call["function"] or {}
+                total += self.count_text(coerce_countable_text(func.get("name")))
+                total += self.count_text(coerce_countable_text(func.get("arguments")))
 
             if "id" in call:
-                total += self.count_text(call["id"])
+                total += self.count_text(coerce_countable_text(call["id"]))
 
         return total
 
     def _count_function_call(self, function_call: dict[str, Any]) -> int:
         """Count tokens in legacy function call."""
         total = 4  # Function call overhead
-        total += self.count_text(function_call.get("name", ""))
-        total += self.count_text(function_call.get("arguments", ""))
+        total += self.count_text(coerce_countable_text(function_call.get("name")))
+        total += self.count_text(coerce_countable_text(function_call.get("arguments")))
         return total
 
     def encode(self, text: str) -> list[int]:

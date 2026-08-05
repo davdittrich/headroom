@@ -56,8 +56,24 @@ class RequestOutcome:
 
     # ── Tokens (required — every site has these) ──────────────────────
     # original_tokens: pre-compression request size, for `tok_before`
-    # optimized_tokens: post-compression bytes actually forwarded, for
-    #     ``input_tokens`` and ``tok_after``
+    # optimized_tokens: post-compression size actually forwarded, for
+    #     ``tok_after``. MUST be counted with the SAME tokenizer as
+    #     ``original_tokens`` — every derived quantity is a delta between the
+    #     two (``tokens_saved``, ``tokens_inflated``, ``attempted_input_tokens``,
+    #     and the beacon's ``eligible_pct`` / ``yield_pct``), so mixing scales
+    #     silently corrupts all of them. Handlers used to pass the provider's
+    #     ``usage.prompt_tokens`` here because it also fed billing; that made
+    #     ``tok_after`` a provider count against a locally-estimated
+    #     ``tok_before``. On a gpt-4o-mini turn where our estimator undercounted
+    #     by 2 tokens that shipped as ``eligible_pct: 120`` — a structurally
+    #     impossible ratio — plus a phantom ``tok_inflated``. Provider-reported
+    #     input now lives in ``provider_input_tokens``.
+    # provider_input_tokens: the provider's own prompt-token count for this
+    #     request, when it reported one (0 otherwise). This is the billed
+    #     quantity, so cost and volume totals use it in preference to
+    #     ``optimized_tokens``. Kept separate precisely because it is on the
+    #     provider's tokenizer scale and must never be differenced against
+    #     ``original_tokens``.
     # output_tokens: response tokens from upstream
     # tokens_saved: original - optimized (or 0 if compression bypassed)
     # attempted_input_tokens: denominator for active-savings-percent.
@@ -70,6 +86,10 @@ class RequestOutcome:
     output_tokens: int
     tokens_saved: int
     attempted_input_tokens: int
+    # Optional so the 18 existing emit sites need no change: a handler that has
+    # no provider count (or whose optimized_tokens is already provider-scaled)
+    # leaves it 0 and billing falls back to optimized_tokens, exactly as before.
+    provider_input_tokens: int = 0
 
     # ── Cache (provider-agnostic; unused fields stay 0) ───────────────
     # Anthropic populates all five (read + write + 5m + 1h + uncached).
@@ -438,11 +458,21 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
     # session summary / cost summary / all-layers total can surface the layer.
     tool_search_saved = tool_schema_saved_from_tags(outcome.tags or {})
 
+    # Billed input volume. Prefer the provider's own count where it reported one
+    # — that is what the invoice charges for, and it is the number cache math is
+    # already expressed in. Falls back to our local ``optimized_tokens`` when the
+    # provider stayed silent (streaming without usage, or a non-reporting
+    # backend), which is the pre-split behaviour for every handler.
+    #
+    # Deliberately NOT used for any delta: differencing this against
+    # ``original_tokens`` mixes tokenizer scales. See the field docs.
+    billed_input_tokens = outcome.provider_input_tokens or outcome.optimized_tokens
+
     # 1. Prometheus / SavingsTracker.
     await handler.metrics.record_request(
         provider=outcome.provider,
         model=outcome.model,
-        input_tokens=outcome.optimized_tokens,
+        input_tokens=billed_input_tokens,
         output_tokens=outcome.output_tokens,
         tokens_saved=outcome.tokens_saved,
         latency_ms=outcome.total_latency_ms,
@@ -461,6 +491,7 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
         project=project,
         client=outcome.client,
         tool_search_saved=tool_search_saved,
+        local_input_tokens=outcome.optimized_tokens,
     )
 
     # 1b. agy cross-process emit (best-effort, agy process only). When agy runs
@@ -501,7 +532,7 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
         cost_tracker.record_tokens(
             outcome.model,
             outcome.tokens_saved,
-            outcome.optimized_tokens,
+            billed_input_tokens,
             cache_read_tokens=outcome.cache_read_tokens,
             cache_write_tokens=outcome.cache_write_tokens,
             cache_write_5m_tokens=outcome.cache_write_5m_tokens,
