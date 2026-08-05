@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
+
+from headroom.cli.wrap import _PROXY_URL_REDACTED_PLACEHOLDER, redact_proxy_url
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -24,6 +27,26 @@ def _get_main():
     from headroom.cli.main import main
 
     return main
+
+
+@pytest.fixture(autouse=True)
+def _never_start_a_real_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub ``_ensure_proxy`` for every test in this module.
+
+    ``_ensure_proxy`` -> ``_start_proxy`` calls ``subprocess.Popen`` directly,
+    which none of this file's per-test ``subprocess.run`` stubs touch. Left
+    unstubbed, any test that drives the full ``agy``/``unwrap`` CLI spawns a
+    real ``headroom.cli proxy`` subprocess that binds a real port — on a dev
+    machine with a live proxy already on that port, this evicts it. No test
+    in this file exercises ``_ensure_proxy`` itself (that's covered
+    elsewhere), so stubbing it here is safe for all of them.
+    """
+    import headroom.cli.wrap as wrap_mod
+
+    def _fake_ensure_proxy(port, no_proxy=False, **_kwargs):
+        return None, port
+
+    monkeypatch.setattr(wrap_mod, "_ensure_proxy", _fake_ensure_proxy)
 
 
 class TestWrapAgyBinaryMissing:
@@ -1442,3 +1465,77 @@ class TestUnwrapAgyRemovesAllHeadroomConfig:
         # --- Assert: CA directory intentionally NOT removed (by design) ---
         assert ca_dir.exists(), "unwrap must NOT remove ~/.headroom/ca (shared headroom CA state)"
         assert (ca_dir / "ca.crt").exists(), "CA certificate must remain intact after unwrap"
+
+
+# ---------------------------------------------------------------------------
+# headroom-n0i.7 — corporate proxy credentials must never leak
+# ---------------------------------------------------------------------------
+
+
+class TestWrapAgyCorpProxyRedaction(TestWrapAgyDisclosureBanner):
+    """HTTPS_PROXY / https_proxy userinfo must never reach the launch banner
+    or logs, while the host:port is still surfaced for operator visibility."""
+
+    _CORP_PROXY_USER = "user"
+    _CORP_PROXY_PASS = "s3cr3t-pw"
+    _CORP_PROXY_HOSTPORT = "proxy.example:3128"
+    _CORP_PROXY_USERINFO = f"{_CORP_PROXY_USER}:{_CORP_PROXY_PASS}@"
+    _CORP_PROXY_URL = f"http://{_CORP_PROXY_USERINFO}{_CORP_PROXY_HOSTPORT}"
+
+    def _invoke_with_corp_proxy(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, *, lowercase: bool
+    ):
+        caplog.set_level(logging.DEBUG)
+        monkeypatch.delenv("HTTPS_PROXY", raising=False)
+        monkeypatch.delenv("https_proxy", raising=False)
+        monkeypatch.setenv("https_proxy" if lowercase else "HTTPS_PROXY", self._CORP_PROXY_URL)
+        return self._invoke_agy(monkeypatch)
+
+    def test_uppercase_https_proxy_credentials_absent_from_banner_and_logs(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        result = self._invoke_with_corp_proxy(monkeypatch, caplog, lowercase=False)
+        assert self._CORP_PROXY_USERINFO not in result.output
+        assert self._CORP_PROXY_PASS not in result.output
+        assert self._CORP_PROXY_USERINFO not in caplog.text
+        assert self._CORP_PROXY_PASS not in caplog.text
+        assert self._CORP_PROXY_HOSTPORT in result.output
+
+    def test_lowercase_https_proxy_credentials_absent_from_banner_and_logs(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        result = self._invoke_with_corp_proxy(monkeypatch, caplog, lowercase=True)
+        assert self._CORP_PROXY_USERINFO not in result.output
+        assert self._CORP_PROXY_PASS not in result.output
+        assert self._CORP_PROXY_USERINFO not in caplog.text
+        assert self._CORP_PROXY_PASS not in caplog.text
+        assert self._CORP_PROXY_HOSTPORT in result.output
+
+
+class TestRedactProxyUrl:
+    """Parametrized table over every ``redact_proxy_url`` edge case."""
+
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            (
+                "http://user:secret@proxy.example:3128",
+                "http://proxy.example:3128",
+            ),
+            ("http://proxy.corp", "http://proxy.corp:80"),
+            ("https://proxy.corp", "https://proxy.corp:443"),
+            ("http://proxy.corp:abc", _PROXY_URL_REDACTED_PLACEHOLDER),
+            ("user:pass@proxy.corp:3128", _PROXY_URL_REDACTED_PLACEHOLDER),
+            ("http://u:p@[::1]:8080", "http://[::1]:8080"),
+            ("http://u:p@a@h:80", "http://h:80"),
+            ("http://ho\x1bst:80", "http://host:80"),
+        ],
+    )
+    def test_redact_proxy_url_table(self, url: str, expected: str) -> None:
+        assert redact_proxy_url(url) == expected
+
+    def test_schemeless_url_never_leaks_password(self) -> None:
+        assert "pass" not in redact_proxy_url("user:pass@proxy.corp:3128")
+
+    def test_control_bytes_never_reach_result(self) -> None:
+        assert "\x1b" not in redact_proxy_url("http://ho\x1bst:80")
