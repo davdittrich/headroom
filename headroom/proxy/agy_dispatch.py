@@ -306,16 +306,6 @@ class AgyDispatchServer:
             reader: asyncio.StreamReader,
             writer: asyncio.StreamWriter,
         ) -> None:
-            # TCP_NODELAY on the LISTENING socket does not propagate to
-            # accepted connections — must be set per-connection. Neither
-            # hypercorn nor asyncio.start_server sets it anywhere. Without it,
-            # Nagle's algorithm delays small writes (this server streams SSE
-            # chunks) pending an ACK; Windows' loopback stack adds real
-            # latency here unlike Linux/macOS, where the same delay is
-            # negligible.
-            conn_sock = writer.get_extra_info("socket")
-            if conn_sock is not None:
-                conn_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             await TCPServer(
                 app_wrapper,
                 loop,
