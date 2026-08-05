@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import ssl
 
 import pytest
 from cryptography import x509
@@ -625,7 +626,7 @@ async def test_upstream_proxy_timeout_closes_writer() -> None:
         ):
             try:
                 r, w = await _connect_via_upstream_proxy(
-                    proxy_host, proxy_port, "target.example.com", 443, None
+                    proxy_host, proxy_port, "target.example.com", 443, None, None
                 )
                 w.close()
                 pytest.fail("Expected asyncio.TimeoutError from stalled header drain")
@@ -1232,6 +1233,7 @@ async def test_upstream_proxy_port_defaults_follow_scheme(
         target_host: str,
         target_port: int,
         proxy_auth: str | None,
+        ssl_context: ssl.SSLContext | None,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         dialled.append(proxy_port)
         raise OSError("stop here — the dialled port is what matters")
@@ -1248,3 +1250,375 @@ async def test_upstream_proxy_port_defaults_follow_scheme(
         writer.close()
 
     assert dialled == [expected_port]
+
+
+# ---------------------------------------------------------------------------
+# Coverage: upstream CONNECT wire bytes + https-proxy TLS parameters
+# ---------------------------------------------------------------------------
+
+
+class _SpliceCompatWriter:
+    """client_writer stub satisfying the subset of StreamWriter used by
+    _handle_blind_tunnel and _blind_splice: write/drain/close/wait_closed for
+    the 200-response, write_eof for the splice's finally-block once the
+    target side reaches EOF.
+    """
+
+    def write(self, data: bytes) -> None:
+        pass
+
+    async def drain(self) -> None:
+        pass
+
+    def write_eof(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    async def wait_closed(self) -> None:
+        pass
+
+
+async def _start_fake_upstream_proxy() -> tuple[asyncio.AbstractServer, str, int, list[bytes]]:
+    """Bind a fake upstream proxy on an ephemeral loopback port.
+
+    Records the raw bytes of the CONNECT request it receives, replies
+    200 Connection Established, then closes -- the resulting target-side EOF
+    is what lets _blind_splice's FIRST_COMPLETED race return promptly instead
+    of hanging on an idle tunnel.
+    """
+    received: list[bytes] = []
+
+    async def _handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            data = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5.0)
+        except (asyncio.IncompleteReadError, asyncio.TimeoutError):
+            data = b""
+        received.append(data)
+        writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(_handler, host="127.0.0.1", port=0)
+    host, port = server.sockets[0].getsockname()[:2]
+    return server, host, port, received
+
+
+@pytest.mark.asyncio
+async def test_blind_tunnel_upstream_proxy_url_credential_emitted(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """(a) HTTPS_PROXY URL userinfo is derived into Proxy-Authorization."""
+    import headroom.proxy.agy_terminator as _mod
+    from headroom.proxy.agy_terminator import _handle_blind_tunnel
+
+    server, proxy_host, proxy_port, received = await _start_fake_upstream_proxy()
+    # HARNESS TRAP: a fake proxy on 127.0.0.1 is refused by the self-loop
+    # guard (_is_loopback) before _connect_via_upstream_proxy is ever
+    # reached. This test targets auth-derivation, not the loopback guard
+    # (which has its own dedicated tests), so bypass it explicitly.
+    monkeypatch.setattr(_mod, "_is_loopback", lambda host: False)
+    monkeypatch.setenv("HTTPS_PROXY", f"http://user:secret@{proxy_host}:{proxy_port}")
+    client_reader = asyncio.StreamReader()
+    client_reader.feed_eof()
+
+    try:
+        with caplog.at_level("DEBUG"):
+            await asyncio.wait_for(
+                _handle_blind_tunnel(
+                    client_reader, _SpliceCompatWriter(), "target.example.com", 443, None
+                ),
+                timeout=5.0,
+            )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert received, "fake proxy must have received a CONNECT request"
+    assert b"Proxy-Authorization: Basic dXNlcjpzZWNyZXQ=\r\n" in received[0]
+    assert "secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_blind_tunnel_upstream_proxy_percent_decodes_credential(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """(b) Percent-encoded userinfo in HTTPS_PROXY is decoded before Basic auth."""
+    import headroom.proxy.agy_terminator as _mod
+    from headroom.proxy.agy_terminator import _handle_blind_tunnel
+
+    server, proxy_host, proxy_port, received = await _start_fake_upstream_proxy()
+    monkeypatch.setattr(_mod, "_is_loopback", lambda host: False)
+    # user%40corp:p%40ss decodes to "user@corp:p@ss".
+    monkeypatch.setenv("HTTPS_PROXY", f"http://user%40corp:p%40ss@{proxy_host}:{proxy_port}")
+    client_reader = asyncio.StreamReader()
+    client_reader.feed_eof()
+
+    try:
+        with caplog.at_level("DEBUG"):
+            await asyncio.wait_for(
+                _handle_blind_tunnel(
+                    client_reader, _SpliceCompatWriter(), "target.example.com", 443, None
+                ),
+                timeout=5.0,
+            )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert received, "fake proxy must have received a CONNECT request"
+    assert b"Proxy-Authorization: Basic dXNlckBjb3JwOnBAc3M=\r\n" in received[0]
+    assert "p@ss" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_blind_tunnel_upstream_proxy_url_credential_beats_inbound_header(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """(c) HTTPS_PROXY URL userinfo takes precedence over an inbound header."""
+    import headroom.proxy.agy_terminator as _mod
+    from headroom.proxy.agy_terminator import _handle_blind_tunnel
+
+    server, proxy_host, proxy_port, received = await _start_fake_upstream_proxy()
+    monkeypatch.setattr(_mod, "_is_loopback", lambda host: False)
+    monkeypatch.setenv("HTTPS_PROXY", f"http://user:secret@{proxy_host}:{proxy_port}")
+    client_reader = asyncio.StreamReader()
+    client_reader.feed_eof()
+    inbound = "Basic aW5ib3VuZDpzZWNyZXQ="  # "inbound:secret" -- must be shadowed by the URL cred
+
+    try:
+        with caplog.at_level("DEBUG"):
+            await asyncio.wait_for(
+                _handle_blind_tunnel(
+                    client_reader, _SpliceCompatWriter(), "target.example.com", 443, inbound
+                ),
+                timeout=5.0,
+            )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert received, "fake proxy must have received a CONNECT request"
+    assert b"Proxy-Authorization: Basic dXNlcjpzZWNyZXQ=\r\n" in received[0]
+    assert inbound.encode() not in received[0]
+    assert "secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_blind_tunnel_upstream_proxy_inbound_header_used_when_no_userinfo(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """(d) No userinfo in HTTPS_PROXY -> the inbound header is forwarded as-is."""
+    import headroom.proxy.agy_terminator as _mod
+    from headroom.proxy.agy_terminator import _handle_blind_tunnel
+
+    server, proxy_host, proxy_port, received = await _start_fake_upstream_proxy()
+    monkeypatch.setattr(_mod, "_is_loopback", lambda host: False)
+    monkeypatch.setenv("HTTPS_PROXY", f"http://{proxy_host}:{proxy_port}")
+    client_reader = asyncio.StreamReader()
+    client_reader.feed_eof()
+    inbound = "Basic aW5ib3VuZDpzZWNyZXQ="  # "inbound:secret"
+
+    try:
+        with caplog.at_level("DEBUG"):
+            await asyncio.wait_for(
+                _handle_blind_tunnel(
+                    client_reader, _SpliceCompatWriter(), "target.example.com", 443, inbound
+                ),
+                timeout=5.0,
+            )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert received, "fake proxy must have received a CONNECT request"
+    assert f"Proxy-Authorization: {inbound}\r\n".encode() in received[0]
+    assert "secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_blind_tunnel_upstream_proxy_no_credential_no_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(e) No URL userinfo and no inbound header -> no Proxy-Authorization line at all."""
+    import headroom.proxy.agy_terminator as _mod
+    from headroom.proxy.agy_terminator import _handle_blind_tunnel
+
+    server, proxy_host, proxy_port, received = await _start_fake_upstream_proxy()
+    monkeypatch.setattr(_mod, "_is_loopback", lambda host: False)
+    monkeypatch.setenv("HTTPS_PROXY", f"http://{proxy_host}:{proxy_port}")
+    client_reader = asyncio.StreamReader()
+    client_reader.feed_eof()
+
+    try:
+        await asyncio.wait_for(
+            _handle_blind_tunnel(
+                client_reader, _SpliceCompatWriter(), "target.example.com", 443, None
+            ),
+            timeout=5.0,
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert received, "fake proxy must have received a CONNECT request"
+    assert b"Proxy-Authorization" not in received[0]
+
+
+@pytest.mark.asyncio
+async def test_blind_tunnel_upstream_proxy_empty_password_no_crash(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """(e2) Username with an EMPTY password -> Basic b64("user:"), no crash from `password or ''`."""
+    import headroom.proxy.agy_terminator as _mod
+    from headroom.proxy.agy_terminator import _handle_blind_tunnel
+
+    server, proxy_host, proxy_port, received = await _start_fake_upstream_proxy()
+    monkeypatch.setattr(_mod, "_is_loopback", lambda host: False)
+    monkeypatch.setenv("HTTPS_PROXY", f"http://user:@{proxy_host}:{proxy_port}")
+    client_reader = asyncio.StreamReader()
+    client_reader.feed_eof()
+
+    try:
+        with caplog.at_level("DEBUG"):
+            await asyncio.wait_for(
+                _handle_blind_tunnel(
+                    client_reader, _SpliceCompatWriter(), "target.example.com", 443, None
+                ),
+                timeout=5.0,
+            )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert received, "fake proxy must have received a CONNECT request"
+    assert b"Proxy-Authorization: Basic dXNlcjo=\r\n" in received[0]
+    assert "dXNlcjo=" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_blind_tunnel_https_upstream_proxy_tls_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(f) https:// upstream proxy dials over TLS with verified defaults, SNI to the
+    proxy host, and ALPN pinned to http/1.1.
+
+    ALPN cannot be read back off a real ssl.SSLContext (set_alpn_protocols()
+    forwards to the C layer and stores nothing readable; selected_alpn_protocol()
+    only exists on a post-handshake SSLObject, which a mocked open_connection
+    never produces). So this test proves the two halves separately:
+    verify_mode/check_hostname/server_hostname off a REAL default context
+    (first act), and the ALPN pin via set_alpn_protocols() call-args on a
+    MOCKED context (second act).
+    """
+    import unittest.mock as mock
+
+    import headroom.proxy.agy_terminator as _mod
+    from headroom.proxy.agy_terminator import _handle_blind_tunnel
+
+    monkeypatch.setattr(_mod, "_is_loopback", lambda host: False)
+    monkeypatch.setenv("HTTPS_PROXY", "https://proxy.corp.example:9443")
+
+    # --- act 1: real default context -> verify_mode / check_hostname / SNI ---
+    captured: dict[str, object] = {}
+
+    async def _fake_open_connection_real_ctx(
+        host: str, port: int, *, ssl: object = None, server_hostname: object = None, **_: object
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        captured["ssl"] = ssl
+        captured["server_hostname"] = server_hostname
+        raise OSError("stop before real I/O -- the TLS context passed in is what's under test")
+
+    with mock.patch.object(_mod.asyncio, "open_connection", _fake_open_connection_real_ctx):
+        client_reader = asyncio.StreamReader()
+        client_reader.feed_eof()
+        await asyncio.wait_for(
+            _handle_blind_tunnel(
+                client_reader, _SpliceCompatWriter(), "target.example.com", 443, None
+            ),
+            timeout=5.0,
+        )
+
+    ctx = captured["ssl"]
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+    assert captured["server_hostname"] == "proxy.corp.example"
+
+    # --- act 2: mocked context -> ALPN pin asserted via call-args ---
+    mock_ctx = mock.MagicMock(spec=ssl.SSLContext)
+
+    async def _fake_open_connection_mock_ctx(
+        host: str, port: int, **_: object
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        raise OSError("stop before real I/O -- ALPN pinning is what's under test")
+
+    with (
+        mock.patch.object(_mod.ssl, "create_default_context", lambda: mock_ctx),
+        mock.patch.object(_mod.asyncio, "open_connection", _fake_open_connection_mock_ctx),
+    ):
+        client_reader = asyncio.StreamReader()
+        client_reader.feed_eof()
+        await asyncio.wait_for(
+            _handle_blind_tunnel(
+                client_reader, _SpliceCompatWriter(), "target.example.com", 443, None
+            ),
+            timeout=5.0,
+        )
+
+    mock_ctx.set_alpn_protocols.assert_called_once_with(["http/1.1"])
+
+
+@pytest.mark.asyncio
+async def test_blind_tunnel_http_upstream_proxy_dials_without_tls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(g) http:// upstream proxy dials plaintext -- ssl=None, no server_hostname/SNI."""
+    import unittest.mock as mock
+
+    import headroom.proxy.agy_terminator as _mod
+    from headroom.proxy.agy_terminator import _handle_blind_tunnel
+
+    monkeypatch.setattr(_mod, "_is_loopback", lambda host: False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.corp.example:3128")
+
+    captured: dict[str, object] = {}
+
+    async def _fake_open_connection(
+        host: str, port: int, *, ssl: object = None, server_hostname: object = None, **_: object
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        captured["ssl"] = ssl
+        captured["server_hostname"] = server_hostname
+        raise OSError("stop before real I/O -- the ssl kwarg is what's under test")
+
+    client_reader = asyncio.StreamReader()
+    client_reader.feed_eof()
+
+    with mock.patch.object(_mod.asyncio, "open_connection", _fake_open_connection):
+        await asyncio.wait_for(
+            _handle_blind_tunnel(
+                client_reader, _SpliceCompatWriter(), "target.example.com", 443, None
+            ),
+            timeout=5.0,
+        )
+
+    assert captured["ssl"] is None
+    assert captured["server_hostname"] is None
+
+
+def test_upstream_proxy_auth_rejects_socks5_scheme() -> None:
+    """(h) socks5:// upstream proxy URL never derives a Proxy-Authorization header.
+
+    _upstream_proxy_auth is pure string/URL logic (no socket I/O), per its own
+    docstring, so it is unit-tested directly rather than through
+    _handle_blind_tunnel (which 403s a non-http(s) scheme before this helper's
+    return value would even be used).
+    """
+    import urllib.parse
+
+    from headroom.proxy.agy_terminator import _upstream_proxy_auth
+
+    parsed = urllib.parse.urlparse("socks5://user:secret@proxy.corp.example:1080")
+    assert _upstream_proxy_auth(parsed, None) is None
+    assert _upstream_proxy_auth(parsed, "Basic aW5ib3VuZDpzZWNyZXQ=") is None
