@@ -583,6 +583,17 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - name: Run agy suite on Windows
         shell: bash
+        # This lane has no prefetch-model dependency and no HuggingFace cache
+        # restore, unlike the Linux `test` shards. Without the offline flags
+        # those shards already set, building the proxy app here lazily fetches
+        # the embedding model from the Hub mid-test: the run log showed
+        # `huggingface_hub/file_download.py ... xet_get(` attributed to
+        # test_dispatch_server_tls_and_route, whose 10s guard then tripped
+        # while the same test passed on Linux. None of the agy tests need the
+        # model — verified with a cold HF_HOME plus these flags, 38 passed.
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
         run: |
           uv run --extra proxy --with pytest --with pytest-asyncio python -m pytest \
             tests/test_agy_ca.py tests/test_agy_dispatch.py tests/test_agy_terminator.py \
