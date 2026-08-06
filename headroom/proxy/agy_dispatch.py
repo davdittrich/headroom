@@ -318,12 +318,18 @@ class AgyDispatchServer:
 
         # asyncio rejects ssl_handshake_timeout when ssl is None, so only pass
         # it on the TLS path.
-        self._server = await asyncio.start_server(
-            _connection_handler,
-            sock=sock,
-            ssl=ssl_ctx,
-            **({} if ssl_ctx is None else {"ssl_handshake_timeout": config.ssl_handshake_timeout}),
-        )
+        if ssl_ctx is None:
+            self._server = await asyncio.start_server(
+                _connection_handler,
+                sock=sock,
+            )
+        else:
+            self._server = await asyncio.start_server(
+                _connection_handler,
+                sock=sock,
+                ssl=ssl_ctx,
+                ssl_handshake_timeout=config.ssl_handshake_timeout,
+            )
         addr = self._server.sockets[0].getsockname()
         logger.info("event=%s_started address=%s:%d", self._event, addr[0], addr[1])
 
