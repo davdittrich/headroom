@@ -2134,7 +2134,14 @@ class HeadroomProxy(
                         ):
                             return response
                         retry_after = retry_after_ms(response)
-                        if response.status_code == 429 and retry_after is not None:
+                        # A parsed delay of 0 (or a past HTTP-date, floored to
+                        # 0 by retry_after_ms) is not a usable wait signal —
+                        # sleeping 0ms would re-fire immediately into the same
+                        # rate limit. Treat it like an absent header and fall
+                        # back to jittered backoff, matching the pre-fix
+                        # `retry_after_ms(...) or jitter_delay_ms(...)`.
+                        usable_retry_after = retry_after is not None and retry_after > 0
+                        if response.status_code == 429 and usable_retry_after:
                             if retry_after > self.config.retry_after_budget_ms:
                                 # Demanded wait exceeds what we're willing to
                                 # hold this request for in-loop — hand the
@@ -2142,7 +2149,7 @@ class HeadroomProxy(
                                 # wait we already know is insufficient.
                                 return response
                             delay_ms = retry_after
-                        elif retry_after is not None:
+                        elif usable_retry_after:
                             # 529 Retry-After is not a trustworthy signal;
                             # keep the pre-fix clamp-to-backoff-cap instead
                             # of coupling it to the 429 budget policy.
