@@ -815,13 +815,20 @@ def jitter_delay_ms(base_ms: int, max_ms: int, attempt: int) -> float:
     return capped * (0.5 + random.random())
 
 
-def retry_after_ms(response: httpx.Response, max_ms: int) -> float | None:
-    """Parse an HTTP ``Retry-After`` header into a millisecond delay, capped at ``max_ms``.
+def retry_after_ms(response: httpx.Response) -> float | None:
+    """Parse an HTTP ``Retry-After`` header into an uncapped millisecond delay.
 
     Returns the delay in ms for a numeric ``seconds`` value or an HTTP-date, or
     ``None`` when the header is absent or unparseable so the caller falls back to
     exponential backoff. Anthropic sends integer seconds; the HTTP-date branch
     covers other upstreams. Fails open on any parse error.
+
+    Never shrinks the parsed value — this is a floor, not a cap. Whether a
+    demanded wait is acceptable (and any clamping policy) is the caller's
+    decision, since "how long we're willing to wait" differs by status code
+    (see ``ProxyConfig.retry_after_budget_ms`` for 429; 529 keeps the old
+    backoff-cap clamp inline at its call sites since Anthropic sends no
+    trustworthy ``Retry-After`` on 529 in practice).
     """
     value = response.headers.get("retry-after")
     if not value:
@@ -837,7 +844,7 @@ def retry_after_ms(response: httpx.Response, max_ms: int) -> float | None:
             seconds = (retry_at - datetime.now(retry_at.tzinfo)).total_seconds()
         except (TypeError, ValueError):
             return None
-    return min(max(seconds, 0.0) * 1000.0, float(max_ms))
+    return max(seconds, 0.0) * 1000.0
 
 
 # Transient upstream statuses worth retrying with backoff: 429 (rate limit) and

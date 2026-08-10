@@ -2133,13 +2133,26 @@ class HeadroomProxy(
                             or attempt >= self.config.retry_max_attempts - 1
                         ):
                             return response
-                        delay_ms = retry_after_ms(
-                            response, self.config.retry_max_delay_ms
-                        ) or jitter_delay_ms(
-                            self.config.retry_base_delay_ms,
-                            self.config.retry_max_delay_ms,
-                            attempt,
-                        )
+                        retry_after = retry_after_ms(response)
+                        if response.status_code == 429 and retry_after is not None:
+                            if retry_after > self.config.retry_after_budget_ms:
+                                # Demanded wait exceeds what we're willing to
+                                # hold this request for in-loop — hand the
+                                # 429 back now instead of retrying into a
+                                # wait we already know is insufficient.
+                                return response
+                            delay_ms = retry_after
+                        elif retry_after is not None:
+                            # 529 Retry-After is not a trustworthy signal;
+                            # keep the pre-fix clamp-to-backoff-cap instead
+                            # of coupling it to the 429 budget policy.
+                            delay_ms = min(retry_after, float(self.config.retry_max_delay_ms))
+                        else:
+                            delay_ms = jitter_delay_ms(
+                                self.config.retry_base_delay_ms,
+                                self.config.retry_max_delay_ms,
+                                attempt,
+                            )
                         logger.warning(
                             f"Upstream {response.status_code} (attempt {attempt + 1}), "
                             f"retrying in {delay_ms:.0f}ms"
