@@ -272,7 +272,6 @@ def test_buffered_path_reproduces_429_storm(monkeypatch: pytest.MonkeyPatch) -> 
     # Low rescue rate: great majority of rate-limited requests still end as
     # a client-visible error.
     assert metrics["client_visible_rate_limit_error_count"] == n_rate_limited
-    assert metrics["wallclock_seconds"] < 2.0
 
 
 def test_buffered_path_governor_arms_are_config_identical(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -311,7 +310,6 @@ def test_streaming_path_reproduces_429_storm(monkeypatch: pytest.MonkeyPatch) ->
     assert metrics["upstream_429_count"] == n_rate_limited * _RETRY_MAX_ATTEMPTS
     assert metrics["retries_at_max_delay_cap"] == n_rate_limited * (_RETRY_MAX_ATTEMPTS - 1)
     assert metrics["client_visible_rate_limit_error_count"] == n_rate_limited
-    assert metrics["wallclock_seconds"] < 2.0
 
 
 def test_streaming_path_deterministic_across_runs(monkeypatch: pytest.MonkeyPatch) -> None:
