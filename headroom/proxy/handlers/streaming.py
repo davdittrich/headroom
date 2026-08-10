@@ -1216,13 +1216,27 @@ class StreamingMixin:
                         and self.config.retry_enabled
                         and attempt < retry_attempts - 1
                     ):
-                        delay_with_jitter = retry_after_ms(
-                            upstream_response, self.config.retry_max_delay_ms
-                        ) or jitter_delay_ms(
-                            self.config.retry_base_delay_ms,
-                            self.config.retry_max_delay_ms,
-                            attempt,
-                        )
+                        retry_after = retry_after_ms(upstream_response)
+                        if upstream_response.status_code == 429 and retry_after is not None:
+                            if retry_after > self.config.retry_after_budget_ms:
+                                # Demanded wait exceeds the retry budget —
+                                # fall through and forward this response
+                                # instead of retrying into an insufficient
+                                # wait (mirrors _retry_request).
+                                break
+                            delay_with_jitter = retry_after
+                        elif retry_after is not None:
+                            # 529 Retry-After is not a trustworthy signal;
+                            # keep the pre-fix clamp-to-backoff-cap.
+                            delay_with_jitter = min(
+                                retry_after, float(self.config.retry_max_delay_ms)
+                            )
+                        else:
+                            delay_with_jitter = jitter_delay_ms(
+                                self.config.retry_base_delay_ms,
+                                self.config.retry_max_delay_ms,
+                                attempt,
+                            )
                         await upstream_response.aclose()
                         logger.warning(
                             f"[{request_id}] Upstream {upstream_response.status_code} "

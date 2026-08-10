@@ -5,16 +5,18 @@ Drives N concurrent simulated clients through the real proxy retry path
 (``HeadroomProxy._retry_request`` and the streaming sibling in
 ``handlers/streaming.py``) against a scripted, non-replenishing-capacity mock
 upstream, and reports the metrics every later work unit's before/after claim
-depends on. This module does NOT change proxy behavior — it only proves the
-harness reproduces the CURRENT, BROKEN failure shape:
+depends on.
 
-  * a rate-limited request makes ``retry_max_attempts`` (3) upstream calls,
-  * failing retries wait the ``retry_max_delay_ms`` cap (the upstream
-    ``Retry-After`` in the mock always exceeds the cap, so every retry
-    clamps to it — the same clamp bug that produced the 30000ms figure in
-    the live log, at test-friendly millisecond scale),
-  * the great majority of over-capacity requests still surface as a
-    client-visible ``rate_limit_error`` (low rescue rate).
+Updated by WU1 (headroom-8z2.1) to encode the FIXED behavior: ``retry_after_ms``
+no longer clamps the upstream-demanded wait down to ``retry_max_delay_ms``.
+The mock's ``Retry-After`` (5000ms at test scale) now exceeds
+``retry_after_budget_ms`` (10ms at test scale, mirroring the production
+default's derivation from the pre-fix ``retry_max_delay_ms`` value), so a
+rate-limited request is returned verbatim on its FIRST upstream call instead
+of retrying twice more into a wait the proxy already knows is insufficient.
+Pre-fix baseline (3 calls/429, clamped retries, ~5% rescue) is preserved in
+git history and in the WU1 `bd comment` A/B evidence on headroom-8z2.1 — this
+module encodes only the current, correct behavior.
 
 Deterministic-time: no wall-clock sleeps of real duration. ``retry_base_delay_ms``
 / ``retry_max_delay_ms`` are configured in single-digit milliseconds, so a
@@ -46,9 +48,15 @@ _RATE_LIMIT_STATUS = 429
 _RETRY_MAX_ATTEMPTS = 3
 _RETRY_BASE_DELAY_MS = 2
 _RETRY_MAX_DELAY_MS = 10
-# Mock upstream always asks for more than the cap, so every retry clamps to
-# it deterministically -- this is the harness analog of the live-log figure
-# ("276 of 292 retries logged retrying in 30000ms").
+# Test-scale retry_after_budget_ms, mirroring production's default derivation
+# (retry_after_budget_ms defaults to the same numeric value retry_max_delay_ms
+# used to clamp to pre-fix — see headroom/proxy/models.py, headroom-8z2.1).
+_RETRY_AFTER_BUDGET_MS = _RETRY_MAX_DELAY_MS
+# Mock upstream always asks for more than the budget, so a rate-limited
+# request is now returned verbatim on its first upstream call instead of
+# retrying -- this is the harness analog of the live-log figure ("276 of 292
+# retries logged retrying in 30000ms", pre-fix; post-fix those retries never
+# happen at all).
 _MOCK_RETRY_AFTER_S = 5.0
 
 
@@ -140,6 +148,7 @@ def _proxy_with(transport: _CapacityLimitedTransport, *, governor_enabled: bool 
         retry_max_attempts=_RETRY_MAX_ATTEMPTS,
         retry_base_delay_ms=_RETRY_BASE_DELAY_MS,
         retry_max_delay_ms=_RETRY_MAX_DELAY_MS,
+        retry_after_budget_ms=_RETRY_AFTER_BUDGET_MS,
     )
     proxy = create_app(config).state.proxy
     proxy.http_client = httpx.AsyncClient(transport=transport)
@@ -159,8 +168,8 @@ def _capped_retry_recorder(monkeypatch: pytest.MonkeyPatch, module_path: str) ->
     real = helpers.retry_after_ms
     delays: list[float] = []
 
-    def _wrapped(response: httpx.Response, max_ms: int) -> float | None:
-        result = real(response, max_ms)
+    def _wrapped(response: httpx.Response) -> float | None:
+        result = real(response)
         if result is not None:
             delays.append(result)
         return result
@@ -257,20 +266,23 @@ _N_CLIENTS = 20
 _CAPACITY = 2
 
 
-def test_buffered_path_reproduces_429_storm(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_buffered_path_fix_returns_429_on_first_call(monkeypatch: pytest.MonkeyPatch) -> None:
     metrics = asyncio.run(_run_buffered_storm(_N_CLIENTS, _CAPACITY, monkeypatch))
 
     n_rate_limited = _N_CLIENTS - _CAPACITY
     assert len(metrics["rate_limited_call_counts"]) == n_rate_limited
-    # 3 upstream calls per rate-limited request -- current, unfixed shape.
-    assert all(c == _RETRY_MAX_ATTEMPTS for c in metrics["rate_limited_call_counts"])
-    # Every failing attempt returns 429; every retry it triggers clamps to
-    # the max-delay cap (2 retries per exhausted request: after attempt 0
-    # and attempt 1, none after the final attempt 2).
-    assert metrics["upstream_429_count"] == n_rate_limited * _RETRY_MAX_ATTEMPTS
-    assert metrics["retries_at_max_delay_cap"] == n_rate_limited * (_RETRY_MAX_ATTEMPTS - 1)
-    # Low rescue rate: great majority of rate-limited requests still end as
-    # a client-visible error.
+    # 1 upstream call per rate-limited request post-fix -- the mock's
+    # Retry-After (5000ms) exceeds retry_after_budget_ms (10ms), so
+    # _retry_request returns the 429 verbatim instead of retrying twice
+    # more into a wait it already knows is insufficient. Pre-fix this was 3.
+    assert all(c == 1 for c in metrics["rate_limited_call_counts"])
+    assert metrics["upstream_429_count"] == n_rate_limited * 1
+    # No retries happen at all -- nothing is clamped anymore. Pre-fix this
+    # was n_rate_limited * (_RETRY_MAX_ATTEMPTS - 1).
+    assert metrics["retries_at_max_delay_cap"] == 0
+    # Client-visible outcome is unchanged: every rate-limited request still
+    # surfaces its 429 to the client (the fix removes wasted upstream calls,
+    # not the 429 itself -- rescuing beyond-budget waits is WU2/WU3's job).
     assert metrics["client_visible_rate_limit_error_count"] == n_rate_limited
 
 
@@ -301,14 +313,15 @@ def test_buffered_path_deterministic_across_runs(monkeypatch: pytest.MonkeyPatch
 # --------------------------------------------------------------------------- #
 
 
-def test_streaming_path_reproduces_429_storm(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_streaming_path_fix_returns_429_on_first_call(monkeypatch: pytest.MonkeyPatch) -> None:
     metrics = asyncio.run(_run_streaming_storm(_N_CLIENTS, _CAPACITY, monkeypatch))
 
     n_rate_limited = _N_CLIENTS - _CAPACITY
     assert len(metrics["rate_limited_call_counts"]) == n_rate_limited
-    assert all(c == _RETRY_MAX_ATTEMPTS for c in metrics["rate_limited_call_counts"])
-    assert metrics["upstream_429_count"] == n_rate_limited * _RETRY_MAX_ATTEMPTS
-    assert metrics["retries_at_max_delay_cap"] == n_rate_limited * (_RETRY_MAX_ATTEMPTS - 1)
+    # Streaming overload branch obeys the same budget rule (headroom-8z2.1).
+    assert all(c == 1 for c in metrics["rate_limited_call_counts"])
+    assert metrics["upstream_429_count"] == n_rate_limited * 1
+    assert metrics["retries_at_max_delay_cap"] == 0
     assert metrics["client_visible_rate_limit_error_count"] == n_rate_limited
 
 

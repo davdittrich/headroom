@@ -61,8 +61,13 @@ class _RateLimitTransport(httpx.AsyncBaseTransport):
         )
 
 
-def _proxy_with(transport: _RateLimitTransport, *, max_attempts: int = 3):
-    config = ProxyConfig(
+def _proxy_with(
+    transport: _RateLimitTransport,
+    *,
+    max_attempts: int = 3,
+    retry_after_budget_ms: int | None = None,
+):
+    kwargs = dict(
         optimize=False,
         cache_enabled=False,
         rate_limit_enabled=False,
@@ -77,6 +82,9 @@ def _proxy_with(transport: _RateLimitTransport, *, max_attempts: int = 3):
         retry_base_delay_ms=1,
         retry_max_delay_ms=5000,
     )
+    if retry_after_budget_ms is not None:
+        kwargs["retry_after_budget_ms"] = retry_after_budget_ms
+    config = ProxyConfig(**kwargs)
     proxy = create_app(config).state.proxy
     proxy.http_client = httpx.AsyncClient(transport=transport)
     return proxy
@@ -225,3 +233,91 @@ def test_stream_response_retries_529() -> None:
         )
     )
     assert transport.calls == 2  # streaming 529 retried, not forwarded raw
+
+
+# --- WU1 (headroom-8z2.1): Retry-After is a floor, not clamped down --------
+#
+# Root cause: retry_after_ms used to clamp the upstream-demanded wait DOWN to
+# retry_max_delay_ms, guaranteeing a repeat 429 when a caller asked for more
+# than the cap (measured: 276/292 live retries waited exactly the 30000ms
+# clamp). The fix gives the "how long are we willing to hold this request"
+# budget its own config field (retry_after_budget_ms) and, when the demand
+# exceeds it, returns the 429 verbatim on the first attempt instead of
+# sleeping short and retrying into a wait we already know is insufficient.
+
+
+def test_retry_after_honored_beyond_old_backoff_cap(monkeypatch) -> None:
+    slept: list[float] = []
+
+    async def _fake_wait(self, seconds: float) -> bool:  # type: ignore[no-untyped-def]
+        slept.append(seconds)
+        return False
+
+    monkeypatch.setattr(
+        "headroom.proxy.server.HeadroomProxy._wait_for_retry_delay_or_shutdown", _fake_wait
+    )
+    # retry_max_delay_ms=5000 (from _proxy_with) used to clamp this to 5s;
+    # retry_after_budget_ms=90000 is the new, separate "willing to wait" cap.
+    transport = _RateLimitTransport(fail_status=429, fail_times=1, retry_after="60")
+    proxy = _proxy_with(transport, retry_after_budget_ms=90000)
+    asyncio.run(proxy._retry_request("POST", "https://up/v1/messages", {}, {"messages": []}))
+    assert slept and abs(slept[0] - 60.0) < 0.01
+
+
+def test_retry_after_beyond_budget_returns_429_verbatim_single_call(monkeypatch) -> None:
+    async def _fail_if_called(self, seconds: float) -> bool:  # type: ignore[no-untyped-def]
+        raise AssertionError("must not sleep when Retry-After exceeds the retry budget")
+
+    monkeypatch.setattr(
+        "headroom.proxy.server.HeadroomProxy._wait_for_retry_delay_or_shutdown", _fail_if_called
+    )
+    # Subscription-style 429s commonly carry Retry-After well beyond any
+    # sane in-loop budget; default retry_after_budget_ms is 30000ms.
+    transport = _RateLimitTransport(fail_status=429, fail_times=99, retry_after="3600")
+    proxy = _proxy_with(transport)
+    resp = asyncio.run(proxy._retry_request("POST", "https://up/v1/messages", {}, {"messages": []}))
+    assert resp.status_code == 429
+    assert resp.headers.get("retry-after") == "3600"
+    assert transport.calls == 1  # no retry attempted — budget exceeded on the first look
+
+
+def test_retry_after_absent_still_uses_jitter_backoff() -> None:
+    transport = _RateLimitTransport(fail_status=429, fail_times=1, retry_after=None)
+    proxy = _proxy_with(transport)
+    resp = asyncio.run(proxy._retry_request("POST", "https://up/v1/messages", {}, {"messages": []}))
+    assert resp.status_code == 200
+    assert transport.calls == 2  # jittered backoff fallback unchanged, retry still happens
+
+
+def test_retry_after_529_not_bound_by_429_budget() -> None:
+    # 529 keeps its pre-fix behavior (clamped to retry_max_delay_ms, not the
+    # 429 budget) because Anthropic's overloaded_error carries no trustworthy
+    # Retry-After. budget=1000ms would short-circuit a 429 demanding 3s, but
+    # 529 must still retry since 3000ms <= retry_max_delay_ms=5000.
+    transport = _RateLimitTransport(fail_status=529, fail_times=1, retry_after="3")
+    proxy = _proxy_with(transport, retry_after_budget_ms=1000)
+    resp = asyncio.run(proxy._retry_request("POST", "https://up/v1/messages", {}, {"messages": []}))
+    assert resp.status_code == 200
+    assert transport.calls == 2  # 529 retried despite exceeding the 429 budget
+
+
+def test_stream_response_429_beyond_budget_forwards_without_retry() -> None:
+    transport = _RateLimitTransport(fail_status=429, fail_times=99, retry_after="3600", sse=True)
+    proxy = _proxy_with(transport)
+    asyncio.run(
+        proxy._stream_response(
+            "https://up/v1/messages",
+            {},
+            {"messages": []},
+            "anthropic",
+            "claude-3",
+            "r1",
+            0,
+            0,
+            0,
+            [],
+            {},
+            0.0,
+        )
+    )
+    assert transport.calls == 1  # budget exceeded — forwarded on first attempt, no retry
