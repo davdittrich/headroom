@@ -398,6 +398,17 @@ def dashboard(port: int, no_open: bool) -> None:
     ),
 )
 @click.option(
+    "--retry-after-budget-ms",
+    type=click.IntRange(min=0),
+    default=None,
+    envvar="HEADROOM_RETRY_AFTER_BUDGET_MS",
+    help=(
+        "Longest upstream-supplied Retry-After a 429 is allowed to hold this "
+        "request for before it is returned to the caller instead of retried "
+        "(minimum: 0, default: 30000). Env: HEADROOM_RETRY_AFTER_BUDGET_MS."
+    ),
+)
+@click.option(
     "--request-timeout-seconds",
     type=int,
     default=None,
@@ -942,6 +953,7 @@ def proxy(
     retry_max_attempts: int | None,
     retry_base_delay_ms: int | None,
     retry_max_delay_ms: int | None,
+    retry_after_budget_ms: int | None,
     request_timeout_seconds: int | None,
     connect_timeout_seconds: int | None,
     anthropic_buffered_request_timeout_seconds: int | None,
@@ -1229,6 +1241,9 @@ def proxy(
         retry_max_attempts=retry_max_attempts if retry_max_attempts is not None else 3,
         retry_base_delay_ms=retry_base_delay_ms if retry_base_delay_ms is not None else 1000,
         retry_max_delay_ms=retry_max_delay_ms if retry_max_delay_ms is not None else 30000,
+        retry_after_budget_ms=retry_after_budget_ms
+        if retry_after_budget_ms is not None
+        else 30000,
         request_timeout_seconds=request_timeout_seconds
         if request_timeout_seconds is not None and request_timeout_seconds > 0
         else 300,

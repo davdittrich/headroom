@@ -67,21 +67,21 @@ def _proxy_with(
     max_attempts: int = 3,
     retry_after_budget_ms: int | None = None,
 ):
-    kwargs = dict(
-        optimize=False,
-        cache_enabled=False,
-        rate_limit_enabled=False,
-        cost_tracking_enabled=False,
-        log_requests=False,
-        ccr_inject_tool=False,
-        ccr_handle_responses=False,
-        ccr_context_tracking=False,
-        image_optimize=False,
-        retry_enabled=True,
-        retry_max_attempts=max_attempts,
-        retry_base_delay_ms=1,
-        retry_max_delay_ms=5000,
-    )
+    kwargs: dict[str, object] = {
+        "optimize": False,
+        "cache_enabled": False,
+        "rate_limit_enabled": False,
+        "cost_tracking_enabled": False,
+        "log_requests": False,
+        "ccr_inject_tool": False,
+        "ccr_handle_responses": False,
+        "ccr_context_tracking": False,
+        "image_optimize": False,
+        "retry_enabled": True,
+        "retry_max_attempts": max_attempts,
+        "retry_base_delay_ms": 1,
+        "retry_max_delay_ms": 5000,
+    }
     if retry_after_budget_ms is not None:
         kwargs["retry_after_budget_ms"] = retry_after_budget_ms
     config = ProxyConfig(**kwargs)
@@ -279,6 +279,46 @@ def test_retry_after_beyond_budget_returns_429_verbatim_single_call(monkeypatch)
     assert resp.status_code == 429
     assert resp.headers.get("retry-after") == "3600"
     assert transport.calls == 1  # no retry attempted — budget exceeded on the first look
+
+
+def test_retry_after_zero_does_not_produce_a_zero_wait(monkeypatch) -> None:
+    # Retry-After: 0 parses to 0.0, which is a valid ("not None") delay but
+    # not a *usable* one -- sleeping 0ms would immediately re-fire into the
+    # same rate limit. It must fall back to jittered backoff instead, same
+    # as an absent header.
+    slept: list[float] = []
+
+    async def _fake_wait(self, seconds: float) -> bool:  # type: ignore[no-untyped-def]
+        slept.append(seconds)
+        return False
+
+    monkeypatch.setattr(
+        "headroom.proxy.server.HeadroomProxy._wait_for_retry_delay_or_shutdown", _fake_wait
+    )
+    transport = _RateLimitTransport(fail_status=429, fail_times=1, retry_after="0")
+    proxy = _proxy_with(transport)
+    asyncio.run(proxy._retry_request("POST", "https://up/v1/messages", {}, {"messages": []}))
+    assert slept and slept[0] > 0.0
+
+
+def test_retry_after_past_http_date_does_not_produce_a_zero_wait(monkeypatch) -> None:
+    slept: list[float] = []
+
+    async def _fake_wait(self, seconds: float) -> bool:  # type: ignore[no-untyped-def]
+        slept.append(seconds)
+        return False
+
+    monkeypatch.setattr(
+        "headroom.proxy.server.HeadroomProxy._wait_for_retry_delay_or_shutdown", _fake_wait
+    )
+    # Any date in the past parses to a negative delta, floored to 0.0 by
+    # retry_after_ms -- same "not usable" case as Retry-After: 0.
+    transport = _RateLimitTransport(
+        fail_status=429, fail_times=1, retry_after="Mon, 01 Jan 2001 00:00:00 GMT"
+    )
+    proxy = _proxy_with(transport)
+    asyncio.run(proxy._retry_request("POST", "https://up/v1/messages", {}, {"messages": []}))
+    assert slept and slept[0] > 0.0
 
 
 def test_retry_after_absent_still_uses_jitter_backoff() -> None:

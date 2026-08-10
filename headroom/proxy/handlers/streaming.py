@@ -1217,7 +1217,11 @@ class StreamingMixin:
                         and attempt < retry_attempts - 1
                     ):
                         retry_after = retry_after_ms(upstream_response)
-                        if upstream_response.status_code == 429 and retry_after is not None:
+                        # See the matching comment in _retry_request: a
+                        # parsed delay of 0 (or a past HTTP-date) is not a
+                        # usable wait signal, fall back to jittered backoff.
+                        usable_retry_after = retry_after is not None and retry_after > 0
+                        if upstream_response.status_code == 429 and usable_retry_after:
                             if retry_after > self.config.retry_after_budget_ms:
                                 # Demanded wait exceeds the retry budget —
                                 # fall through and forward this response
@@ -1225,7 +1229,7 @@ class StreamingMixin:
                                 # wait (mirrors _retry_request).
                                 break
                             delay_with_jitter = retry_after
-                        elif retry_after is not None:
+                        elif usable_retry_after:
                             # 529 Retry-After is not a trustworthy signal;
                             # keep the pre-fix clamp-to-backoff-cap.
                             delay_with_jitter = min(
