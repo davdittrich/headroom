@@ -201,35 +201,44 @@ def _capped_retry_recorder(monkeypatch: pytest.MonkeyPatch, module_path: str) ->
     return delays
 
 
-def _stub_buffered_retry_wait(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make the buffered path's retry wait return instantly.
+def _stub_buffered_retry_wait(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Make the buffered path's retry wait return instantly, recording the
+    ``seconds`` the caller actually applied.
 
     Under the retry-exercised arm the recorded delay is a realistic 5000ms
     (the mock's true ``Retry-After``), which the harness must never actually
-    sleep for -- only the computed/recorded delay value is under test, not
-    wall-clock time. Inert under the fail-fast arm, which returns before
-    ever calling this.
+    sleep for -- but the applied value itself IS the thing under test: it is
+    what ``server.py`` computed as ``delay_ms`` after any clamp/budget logic,
+    not the raw ``retry_after_ms`` return (see ``_capped_retry_recorder``,
+    which only observes the pre-clamp value). Inert under the fail-fast arm,
+    which returns before ever calling this.
     """
+    applied_seconds: list[float] = []
 
-    async def _instant_wait(self: Any, seconds: float) -> bool:  # noqa: ARG001
+    async def _instant_wait(self: Any, seconds: float) -> bool:
+        applied_seconds.append(seconds)
         return False
 
     monkeypatch.setattr(
         "headroom.proxy.server.HeadroomProxy._wait_for_retry_delay_or_shutdown", _instant_wait
     )
+    return applied_seconds
 
 
-def _stub_streaming_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make the streaming path's retry ``asyncio.sleep`` return instantly.
+def _stub_streaming_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Make the streaming path's retry ``asyncio.sleep`` return instantly,
+    recording the ``seconds`` the caller actually applied.
 
     Same rationale as ``_stub_buffered_retry_wait``, for the streaming
     overload branch's bare ``await asyncio.sleep(...)`` call.
     """
+    applied_seconds: list[float] = []
 
-    async def _instant_sleep(seconds: float) -> None:  # noqa: ARG001
-        return None
+    async def _instant_sleep(seconds: float) -> None:
+        applied_seconds.append(seconds)
 
     monkeypatch.setattr("headroom.proxy.handlers.streaming.asyncio.sleep", _instant_sleep)
+    return applied_seconds
 
 
 async def _run_buffered_storm(
@@ -245,7 +254,7 @@ async def _run_buffered_storm(
         transport, governor_enabled=governor_enabled, retry_after_budget_ms=retry_after_budget_ms
     )
     delays_ms = _capped_retry_recorder(monkeypatch, "headroom.proxy.server")
-    _stub_buffered_retry_wait(monkeypatch)
+    applied_wait_seconds = _stub_buffered_retry_wait(monkeypatch)
 
     start = time.perf_counter()
     responses = await asyncio.gather(
@@ -258,7 +267,9 @@ async def _run_buffered_storm(
     )
     wallclock = time.perf_counter() - start
 
-    return _summarize(responses, transport, delays_ms, wallclock, n_clients, capacity)
+    return _summarize(
+        responses, transport, delays_ms, applied_wait_seconds, wallclock, n_clients, capacity
+    )
 
 
 async def _run_streaming_storm(
@@ -274,7 +285,7 @@ async def _run_streaming_storm(
         transport, governor_enabled=governor_enabled, retry_after_budget_ms=retry_after_budget_ms
     )
     delays_ms = _capped_retry_recorder(monkeypatch, "headroom.proxy.handlers.streaming")
-    _stub_streaming_retry_sleep(monkeypatch)
+    applied_wait_seconds = _stub_streaming_retry_sleep(monkeypatch)
 
     async def _one(i: int) -> httpx.Response | Any:
         return await proxy._stream_response(
@@ -296,13 +307,16 @@ async def _run_streaming_storm(
     responses = await asyncio.gather(*(_one(i) for i in range(n_clients)))
     wallclock = time.perf_counter() - start
 
-    return _summarize(responses, transport, delays_ms, wallclock, n_clients, capacity)
+    return _summarize(
+        responses, transport, delays_ms, applied_wait_seconds, wallclock, n_clients, capacity
+    )
 
 
 def _summarize(
     responses: list[Any],
     transport: _CapacityLimitedTransport,
     delays_ms: list[float],
+    applied_wait_seconds: list[float],
     wallclock: float,
     n_clients: int,
     capacity: int,
@@ -324,6 +338,11 @@ def _summarize(
         "client_visible_rate_limit_error_count": client_visible_errors,
         "rate_limited_call_counts": rate_limited_call_counts,
         "retries_at_max_delay_cap": retries_at_cap,
+        # The delay the caller (server.py/streaming.py) actually applied to
+        # its wait, in seconds -- as opposed to delays_ms/retries_at_max_delay_cap,
+        # which only observe retry_after_ms's raw (pre-clamp) return. This is
+        # the value a caller-side clamp regression would corrupt.
+        "applied_wait_seconds": sorted(applied_wait_seconds),
         "wallclock_seconds": wallclock,
     }
 
@@ -350,6 +369,9 @@ def test_buffered_path_fix_returns_429_on_first_call(monkeypatch: pytest.MonkeyP
     # No retries happen at all -- nothing is clamped anymore. Pre-fix this
     # was n_rate_limited * (_RETRY_MAX_ATTEMPTS - 1).
     assert metrics["retries_at_max_delay_cap"] == 0
+    # No wait is ever applied -- the request returns before the retry loop
+    # computes or sleeps on a delay at all.
+    assert metrics["applied_wait_seconds"] == []
     # Client-visible outcome is unchanged: every rate-limited request still
     # surfaces its 429 to the client (the fix removes wasted upstream calls,
     # not the 429 itself -- rescuing beyond-budget waits is WU2/WU3's job).
@@ -380,6 +402,13 @@ def test_buffered_path_retries_when_budget_exceeds_retry_after(monkeypatch: pyte
     # removed even on the path that is actually exercised, not just the one
     # that now fails fast.
     assert metrics["retries_at_max_delay_cap"] == 0
+    # This is the assertion that actually catches a caller-side clamp
+    # regression: the delay APPLIED to the wait (not retry_after_ms's raw
+    # pre-clamp return) is the true 5.0s on both of the two retries every
+    # rate-limited client makes (attempt 0 and 1; attempt 2 exhausts without
+    # retrying). If a future change reintroduced `min(retry_after, cap)` in
+    # server.py's delay_ms computation, this would go red.
+    assert metrics["applied_wait_seconds"] == [5.0] * (n_rate_limited * (_RETRY_MAX_ATTEMPTS - 1))
     assert metrics["client_visible_rate_limit_error_count"] == n_rate_limited
 
 
@@ -419,6 +448,7 @@ def test_streaming_path_fix_returns_429_on_first_call(monkeypatch: pytest.Monkey
     assert all(c == 1 for c in metrics["rate_limited_call_counts"])
     assert metrics["upstream_429_count"] == n_rate_limited * 1
     assert metrics["retries_at_max_delay_cap"] == 0
+    assert metrics["applied_wait_seconds"] == []
     assert metrics["client_visible_rate_limit_error_count"] == n_rate_limited
 
 
@@ -438,6 +468,7 @@ def test_streaming_path_retries_when_budget_exceeds_retry_after(monkeypatch: pyt
     assert all(c == _RETRY_MAX_ATTEMPTS for c in metrics["rate_limited_call_counts"])
     assert metrics["upstream_429_count"] == n_rate_limited * _RETRY_MAX_ATTEMPTS
     assert metrics["retries_at_max_delay_cap"] == 0
+    assert metrics["applied_wait_seconds"] == [5.0] * (n_rate_limited * (_RETRY_MAX_ATTEMPTS - 1))
     assert metrics["client_visible_rate_limit_error_count"] == n_rate_limited
 
 
