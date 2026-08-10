@@ -321,6 +321,68 @@ def test_retry_after_past_http_date_does_not_produce_a_zero_wait(monkeypatch) ->
     assert slept and slept[0] > 0.0
 
 
+def test_stream_response_retry_after_zero_does_not_produce_a_zero_wait(monkeypatch) -> None:
+    slept: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:  # type: ignore[no-untyped-def]
+        slept.append(seconds)
+
+    monkeypatch.setattr("headroom.proxy.handlers.streaming.asyncio.sleep", _fake_sleep)
+    transport = _RateLimitTransport(fail_status=429, fail_times=1, retry_after="0", sse=True)
+    proxy = _proxy_with(transport)
+    asyncio.run(
+        proxy._stream_response(
+            "https://up/v1/messages",
+            {},
+            {"messages": []},
+            "anthropic",
+            "claude-3",
+            "r1",
+            0,
+            0,
+            0,
+            [],
+            {},
+            0.0,
+        )
+    )
+    assert slept and slept[0] > 0.0
+
+
+def test_stream_response_retry_after_past_http_date_does_not_produce_a_zero_wait(
+    monkeypatch,
+) -> None:
+    slept: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:  # type: ignore[no-untyped-def]
+        slept.append(seconds)
+
+    monkeypatch.setattr("headroom.proxy.handlers.streaming.asyncio.sleep", _fake_sleep)
+    # Same "not usable" case as Retry-After: 0 -- streaming-path counterpart
+    # of test_retry_after_past_http_date_does_not_produce_a_zero_wait.
+    transport = _RateLimitTransport(
+        fail_status=429, fail_times=1, retry_after="Mon, 01 Jan 2001 00:00:00 GMT", sse=True
+    )
+    proxy = _proxy_with(transport)
+    asyncio.run(
+        proxy._stream_response(
+            "https://up/v1/messages",
+            {},
+            {"messages": []},
+            "anthropic",
+            "claude-3",
+            "r1",
+            0,
+            0,
+            0,
+            [],
+            {},
+            0.0,
+        )
+    )
+    assert slept and slept[0] > 0.0
+
+
 def test_retry_after_absent_still_uses_jitter_backoff() -> None:
     transport = _RateLimitTransport(fail_status=429, fail_times=1, retry_after=None)
     proxy = _proxy_with(transport)
