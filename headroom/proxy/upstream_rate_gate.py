@@ -96,6 +96,29 @@ Policy, and why:
   ``Retry-After`` counts as unusable and takes the same fallback.
 * **529 does not open the gate**: upstream overload, not account quota
   (``helpers.py``, ``RETRYABLE_OVERLOAD_STATUSES``).
+* **AIMD concurrency limiter, the proactive half.** Everything above is
+  reactive: it can only act once a 429 has been spent, and above half the
+  budget it declines to act at all -- which is where the measured traffic
+  lives (276 of 292 retries demanded >= 30s against a 30s budget). So
+  :meth:`UpstreamRateGate.admit` also bounds how many requests this process
+  has IN FLIGHT to a host at once, additive-increase/multiplicative-decrease:
+  a 429 halves the limit (first 429 halves the in-flight count that earned it,
+  so no initial limit is guessed), ``ceil(limit)`` consecutive successes buy
+  one more slot, the floor is 1 and 529 moves nothing. Until a host has either
+  429'd or reported a quota there is NO limit, so a solo agent is a no-op and
+  pays nothing. Where the gate parks a request because the upstream said to
+  wait, the limiter holds it because this process already has enough
+  outstanding; both spend the SAME per-attempt budget, so the limiter adds no
+  term to the worst-case latency (``3*B + 2*30s``, unchanged).
+* **Header seeding, for API-key auth.** API-key responses carry
+  ``anthropic-ratelimit-requests-remaining``/``-reset`` on every status;
+  subscription/OAuth carries neither. When present, ``remaining`` is a hard
+  upper bound on useful concurrency -- issuing more simultaneous requests than
+  the quota has left guarantees a 429 -- so it is combined with the AIMD limit
+  as a MINIMUM: a generous quota cannot erase what a 429 taught, a scarce one
+  still binds, and neither half ratchets. The seed expires at ``-reset``, so a
+  stale scarce reading cannot pin a host. ``remaining: 0`` is ignored: it is a
+  deadline statement, which the 429 path already owns.
 
 Limitations, deliberate:
 
@@ -105,6 +128,24 @@ Limitations, deliberate:
   host that is 429'd once and never contacted again does not leak an entry.
 * Requests already in flight when the gate opens are NOT cancelled. The gate
   governs dispatch only.
+* A streaming request frees its concurrency slot when the response HEADERS
+  arrive, not when the body finishes: the alternative is wrapping the byte
+  stream, which is exactly the buffering this transport promises not to do. A
+  long SSE response therefore counts as in-flight for less time than it really
+  occupies upstream. ponytail: upgrade path is an ``aclose``-hooked stream
+  wrapper, the day the transparency guarantee can afford one.
+* The limiter fails OPEN once a request's share of the budget is spent, so
+  under a tight limit many waiters can expire in the same tick and dispatch
+  together. Dispersing that (each waiter drawing its own fail-open instant)
+  was implemented and measured: it costs more in shortened holds than the herd
+  costs, 9 -> 17 wasted upstream 429s (median of 5 reps), so it is not shipped.
+* The limiter cannot prevent the FIRST burst on subscription/OAuth auth: with
+  no quota headers there is nothing to learn from until a 429 has been spent.
+  It bounds every burst after that. API-key auth is seeded from the headers and
+  can be bounded before the first 429.
+* Against a per-window RATE limit whose offered load exceeds capacity, a
+  CONCURRENCY limiter cannot help at all -- only waiting past the window does,
+  which is the gate's job. Measured: unchanged 24/48 -> 2/26 in that harness.
 * Above the budget there is no throttling at all (see the fail-fast bullet):
   the herd re-tries into the limit and each member spends its own 429. That is
   the accepted cost of never holding a request past the point where the retry
@@ -134,9 +175,12 @@ Limitations, deliberate:
 from __future__ import annotations
 
 import asyncio
+import math
 import random
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import httpx
 
@@ -144,6 +188,71 @@ from .helpers import jitter_delay_ms, retry_after_ms
 from .models import ProxyConfig
 
 RATE_LIMIT_STATUS = 429
+
+# Request-quota headers, sent by API-key auth on EVERY response including 200s
+# (tests/test_proxy_streaming_ratelimit_headers.py). Subscription/OAuth sends
+# none, which is why they may only ever tighten a limit AIMD already found.
+REQUESTS_REMAINING_HEADER = "anthropic-ratelimit-requests-remaining"
+REQUESTS_RESET_HEADER = "anthropic-ratelimit-requests-reset"
+
+# AIMD parameters. Each is derived, none is tuned:
+#
+# * ``_DECREASE_FACTOR = 0.5`` -- Chiu & Jain: a distributed control loop with no
+#   coordination converges to a fair, stable allocation only with multiplicative
+#   decrease, and 1/2 is the standard factor (TCP congestion avoidance) because
+#   it reaches the safe region in log2(overshoot) steps. The ticket sets it here;
+#   0.7-0.8 is the documented fallback if halving is measured to cost throughput.
+# * ``_INCREASE_STEP = 1.0`` -- one in-flight slot is the smallest quantum of
+#   concurrency there is. Any larger step is multiplicative growth wearing an
+#   additive mask, which breaks the AI half of AIMD.
+# * Success threshold ``ceil(limit)`` successes per step -- one full round at the
+#   CURRENT limit, i.e. TCP's "+1 per RTT". It is a function of the limit rather
+#   than a constant, so there is no third number to tune, and it makes probing
+#   automatically gentler the higher the limit already is.
+# * ``_MIN_LIMIT = 1.0`` -- the floor is one because zero is a deadlock, and a
+#   solo request must always be admitted (see :meth:`UpstreamRateGate.admit`).
+_DECREASE_FACTOR = 0.5
+_INCREASE_STEP = 1.0
+_MIN_LIMIT = 1.0
+
+
+def _reset_seconds(raw: str | None) -> float | None:
+    """Seconds until an ``anthropic-ratelimit-*-reset`` timestamp, or None."""
+    if not raw:
+        return None
+    try:
+        reset = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if reset.tzinfo is None:
+        reset = reset.replace(tzinfo=timezone.utc)
+    return (reset - datetime.now(timezone.utc)).total_seconds()
+
+
+@dataclass
+class _HostLimiter:
+    """Per-host concurrency state: what AIMD learned, what the headers said."""
+
+    aimd: float | None = None  # None => never constrained, so never binding
+    seed: float | None = None
+    seed_until: float = 0.0
+    inflight: int = 0
+    waiting: int = 0
+    successes: int = 0
+    slot: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def limit(self, now: float) -> float | None:
+        """Effective limit: the tighter of AIMD and a still-valid header seed.
+
+        A minimum, not a last-writer-wins overwrite, because the two carry
+        different information: the seed is the upstream's own statement of
+        remaining quota, AIMD is what this process measured. A generous seed
+        must not erase what a 429 taught, and a scarce seed must still bind.
+        Each half is independently last-writer-wins, so neither ratchets.
+        """
+        seed = self.seed if self.seed is not None and self.seed_until > now else None
+        live = [value for value in (self.aimd, seed) if value is not None]
+        return min(live) if live else None
 
 
 def release_delay_seconds(remaining: float, roll: float) -> float:
@@ -177,6 +286,15 @@ class UpstreamRateGate:
             config.retry_after_budget_ms / 1000.0 if max_wait_seconds is None else max_wait_seconds
         )
         self._until: dict[str, float] = {}
+        # Second map, one lifecycle: both are swept together in :meth:`observe`.
+        # It is a separate dict only because ``_until`` holds a bare float and
+        # is written directly by tests; nothing else keeps them apart.
+        self._limiters: dict[str, _HostLimiter] = {}
+
+    def concurrency_limit(self, host: str) -> float | None:
+        """Effective in-flight cap for ``host``, or None when unconstrained."""
+        state = self._limiters.get(host)
+        return None if state is None else state.limit(time.monotonic())
 
     def deadline(self, host: str) -> float | None:
         """Live gate deadline for ``host``, or ``None`` when it is not gated."""
@@ -189,8 +307,11 @@ class UpstreamRateGate:
         return until
 
     def observe(self, host: str, response: httpx.Response) -> None:
-        """Open ``host``'s gate when the response is a 429."""
+        """Learn from a response: seed from quota headers, and gate on a 429."""
+        self._seed_from_headers(host, response)
         if response.status_code != RATE_LIMIT_STATUS:
+            # 529 lands here: upstream overload is not account quota, so it
+            # neither opens the gate nor moves the concurrency limit.
             return
         demanded_ms = retry_after_ms(response)
         if demanded_ms is None or demanded_ms <= 0:
@@ -204,6 +325,129 @@ class UpstreamRateGate:
         # header ratchet the deadline further out.
         self._until = {h: t for h, t in self._until.items() if t > now}  # cheap sweep
         self._until[host] = now + demanded_ms / 1000.0
+
+        # Multiplicative decrease. The first 429 has nothing to halve, so it
+        # halves the in-flight count that actually earned it -- the observed
+        # level that was too much -- which is why no initial limit has to be
+        # guessed. ``inflight`` still counts this request: release() runs after.
+        state = self._limiter(host)
+        base = state.aimd if state.aimd is not None else float(max(1, state.inflight))
+        state.aimd = max(_MIN_LIMIT, base * _DECREASE_FACTOR)
+        state.successes = 0
+        # Same sweep, same trigger: a host with nothing in flight, nobody
+        # waiting and no live deadline is quiescent, and AIMD state from a
+        # lapsed episode is stale anyway -- the next 429 re-learns it in one
+        # step. Bounds the map by "hosts with live activity", as ``_until`` is.
+        self._limiters = {
+            h: s
+            for h, s in self._limiters.items()
+            if h == host or s.inflight or s.waiting or self._until.get(h, 0.0) > now
+        }
+
+    def _limiter(self, host: str) -> _HostLimiter:
+        return self._limiters.setdefault(host, _HostLimiter())
+
+    def _seed_from_headers(self, host: str, response: httpx.Response) -> None:
+        """Bound concurrency by the upstream's own remaining request quota.
+
+        Absence of either header is not an error: subscription/OAuth auth sends
+        neither, and that path stays pure AIMD. ``-reset`` is what keeps a stale
+        ``remaining: 1`` from pinning a host forever -- past its reset the quota
+        has refilled, so the seed is simply dropped.
+        """
+        raw = response.headers.get(REQUESTS_REMAINING_HEADER)
+        if raw is None:
+            return
+        try:
+            remaining = float(raw)
+        except ValueError:
+            return
+        if remaining <= 0.0:
+            # "No requests at all until reset" is a DEADLINE statement, which the
+            # 429 + Retry-After path already owns; it carries no information
+            # about how many requests may safely run at once. Read as a
+            # concurrency floor of 1 it measurably backfires: every waiter is
+            # released together when the hold budget expires, and the
+            # resynchronized herd spends MORE 429s than it saved (14 vs 10 in
+            # the WU3 harness).
+            return
+        reset_in = _reset_seconds(response.headers.get(REQUESTS_RESET_HEADER))
+        if reset_in is None or reset_in <= 0.0:
+            return
+        state = self._limiter(host)
+        state.seed = max(_MIN_LIMIT, remaining)
+        state.seed_until = time.monotonic() + reset_in
+
+    async def admit(self, host: str) -> bool:
+        """Hold the request until the host's gate AND its limiter allow dispatch.
+
+        Returns True if shutdown interrupted the hold, like :meth:`wait`.
+
+        Both halves share ONE deadline, so a request's total hold per upstream
+        attempt is still bounded by ``retry_after_budget_ms`` -- the limiter adds
+        no new term to the worst-case latency arithmetic, it only spends what the
+        park left over.
+        """
+        hold_deadline = time.monotonic() + self._max_wait_seconds
+        if self.deadline(host) is not None and await self.wait(host):
+            return True
+        state = self._limiter(host)
+        shutdown = self._shutdown_event()
+        # Measured and rejected: drawing each waiter's fail-open instant
+        # uniformly inside the budget, to disperse the herd that forms when many
+        # waiters expire in the same tick. It disperses, but the shorter
+        # expected hold costs more than the herd does -- 9 -> 17 wasted upstream
+        # 429s, median of 5 reps of the WU3 harness, both arms otherwise
+        # identical. The hold stays the full remaining budget.
+        while True:
+            now = time.monotonic()
+            limit = state.limit(now)
+            if limit is None or state.inflight < limit:
+                break  # includes the solo-agent case: 0 < limit, always
+            remaining = hold_deadline - now
+            if remaining <= 0.0:
+                # Budget spent: dispatch anyway. Same call the gate's park and
+                # ``helpers.overload_retry_delay_ms`` make -- a limit must never
+                # become an unbounded hang.
+                break
+            state.slot.clear()
+            state.waiting += 1
+            try:
+                pending = (
+                    await asyncio.wait(
+                        (
+                            asyncio.ensure_future(state.slot.wait()),
+                            asyncio.ensure_future(shutdown.wait()),
+                        ),
+                        timeout=remaining,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                )[1]
+            finally:
+                state.waiting -= 1
+            for task in pending:
+                task.cancel()
+            if shutdown.is_set():
+                return True
+        state.inflight += 1
+        return False
+
+    def release(self, host: str, response: httpx.Response | None) -> None:
+        """Free the slot and, on a success, pay into the additive increase."""
+        state = self._limiters.get(host)
+        if state is None:
+            return
+        state.inflight = max(0, state.inflight - 1)
+        state.slot.set()
+        if response is None or response.status_code >= 400:
+            return  # 429/529/errors buy no headroom; only a real success does
+        limit = state.aimd
+        if limit is None:
+            return  # unconstrained: there is nothing to raise
+        state.successes += 1
+        if state.successes >= math.ceil(limit):
+            state.aimd = limit + _INCREASE_STEP
+            state.successes = 0
 
     async def wait(self, host: str) -> bool:
         """Park until ``host``'s gate expires, unless it is beyond the budget.
@@ -249,7 +493,7 @@ class RateGateTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         host = request.url.host
-        if self._gate.deadline(host) is not None and await self._gate.wait(host):
+        if await self._gate.admit(host):
             # Shutdown woke us. HeadroomProxy.shutdown sets that event and then
             # closes the client, so dispatching now races the close; answer with
             # the same shape _shutdown_retry_response uses.
@@ -264,8 +508,15 @@ class RateGateTransport(httpx.AsyncBaseTransport):
                     }
                 },
             )
-        response = await self._inner.handle_async_request(request)
-        self._gate.observe(host, response)
+        response: httpx.Response | None = None
+        try:
+            response = await self._inner.handle_async_request(request)
+        finally:
+            # observe() first: it reads ``inflight``, which must still include
+            # this request so the first 429 halves the level that earned it.
+            if response is not None:
+                self._gate.observe(host, response)
+            self._gate.release(host, response)
         return response
 
     async def aclose(self) -> None:

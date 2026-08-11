@@ -19,6 +19,7 @@ import asyncio
 import random
 import ssl
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -532,3 +533,220 @@ async def test_environment_proxy_map_survives_and_is_gated(
         assert type(exempt._inner._pool).__name__ == "AsyncConnectionPool"
     finally:
         await proxy.shutdown()
+
+
+# ===========================================================================
+# WU3 (headroom-8z2.3): AIMD concurrency limiter + header-driven seeding.
+#
+# One test per lettered requirement (2a-2i) of the ticket. The limiter is
+# inspected through ``concurrency_limit`` (the effective limit) and driven
+# through ``admit``/``release``/``observe`` -- the same three calls
+# ``RateGateTransport`` makes -- so the assertions are on the governor's
+# contract, never on elapsed wall clock.
+# ===========================================================================
+
+_HOST = "a.upstream"
+
+
+def _response(status: int, headers: dict[str, str] | None = None) -> httpx.Response:
+    return httpx.Response(status, headers=headers or {}, json={"ok": True})
+
+
+def _ratelimit_headers(remaining: int, *, reset_in_seconds: float = 60.0) -> dict[str, str]:
+    """Real API-key-auth header shape (tests/test_proxy_streaming_ratelimit_headers.py)."""
+    reset = datetime.now(timezone.utc) + timedelta(seconds=reset_in_seconds)
+    return {
+        "anthropic-ratelimit-requests-limit": "60",
+        "anthropic-ratelimit-requests-remaining": str(remaining),
+        "anthropic-ratelimit-requests-reset": reset.isoformat().replace("+00:00", "Z"),
+    }
+
+
+# --------------------------------------------------------------------------- 2a
+async def test_sustained_success_raises_the_concurrency_limit_additively() -> None:
+    """+1 per ceil(limit) successes: one extra slot per full round at the current limit."""
+    gate = _gate()
+    assert await gate.admit(_HOST) is False
+    gate.observe(_HOST, _response(429, {"retry-after": "0.001"}))
+    gate.release(_HOST, _response(429))
+    assert gate.concurrency_limit(_HOST) == 1.0
+
+    # ceil(1) == 1 success buys one slot.
+    assert await gate.admit(_HOST) is False
+    gate.release(_HOST, _response(200))
+    assert gate.concurrency_limit(_HOST) == 2.0
+
+    # ceil(2) == 2 successes buy the next one: additive, and slower as it grows.
+    assert await gate.admit(_HOST) is False
+    gate.release(_HOST, _response(200))
+    assert gate.concurrency_limit(_HOST) == 2.0
+    assert await gate.admit(_HOST) is False
+    gate.release(_HOST, _response(200))
+    assert gate.concurrency_limit(_HOST) == 3.0
+
+
+# --------------------------------------------------------------------------- 2b
+async def test_429_halves_the_concurrency_limit() -> None:
+    """The first 429 halves the in-flight count that earned it; later ones halve the limit."""
+    gate = _gate()
+    for _ in range(8):
+        assert await gate.admit(_HOST) is False
+    gate.observe(_HOST, _response(429, {"retry-after": "0.001"}))
+    assert gate.concurrency_limit(_HOST) == 4.0
+
+    gate.observe(_HOST, _response(429, {"retry-after": "0.001"}))
+    assert gate.concurrency_limit(_HOST) == 2.0
+
+
+# --------------------------------------------------------------------------- 2c
+async def test_concurrency_limit_never_drops_below_one() -> None:
+    gate = _gate()
+    assert await gate.admit(_HOST) is False
+    for _ in range(5):
+        gate.observe(_HOST, _response(429, {"retry-after": "0.001"}))
+    assert gate.concurrency_limit(_HOST) == 1.0
+
+
+# --------------------------------------------------------------------------- 2d
+async def test_529_does_not_change_the_concurrency_limit() -> None:
+    """Upstream overload is not account quota: it neither lowers nor raises the limit."""
+    gate = _gate()
+    for _ in range(4):
+        assert await gate.admit(_HOST) is False
+    gate.observe(_HOST, _response(429, {"retry-after": "0.001"}))
+    assert gate.concurrency_limit(_HOST) == 2.0
+
+    for _ in range(4):
+        overloaded = _response(529, {"retry-after": "5"})
+        gate.observe(_HOST, overloaded)
+        gate.release(_HOST, overloaded)
+    assert gate.concurrency_limit(_HOST) == 2.0
+
+
+# --------------------------------------------------------------------------- 2e
+async def test_ratelimit_headers_seed_the_limit_without_probing() -> None:
+    """API-key auth: ``requests-remaining`` bounds concurrency BEFORE any 429."""
+    gate = _gate()
+    gate.observe(_HOST, _response(200, _ratelimit_headers(3)))
+    assert gate.concurrency_limit(_HOST) == 3.0, "the limit must be seeded, not probed"
+    assert gate.deadline(_HOST) is None, "seeding must not open the 429 gate"
+
+    # A stale header set (reset already past) is ignored rather than pinning us.
+    gate.observe(_HOST, _response(200, _ratelimit_headers(1, reset_in_seconds=-10.0)))
+    assert gate.concurrency_limit(_HOST) == 3.0
+
+    # Headers and AIMD compose as a minimum: a generous quota cannot erase what
+    # a 429 taught, and a scarce quota still binds.
+    gate.observe(_HOST, _response(200, _ratelimit_headers(50)))
+    for _ in range(8):
+        assert await gate.admit(_HOST) is False
+    gate.observe(_HOST, _response(429, dict(_ratelimit_headers(50), **{"retry-after": "0.001"})))
+    assert gate.concurrency_limit(_HOST) == 4.0, "a generous quota must not erase AIMD"
+    gate.observe(_HOST, _response(200, _ratelimit_headers(2)))
+    assert gate.concurrency_limit(_HOST) == 2.0, "a scarce quota must still bind"
+
+
+# --------------------------------------------------------------------------- 2f
+async def test_absent_ratelimit_headers_fall_back_to_pure_aimd() -> None:
+    """Subscription/OAuth auth sends no such headers: nothing raises, nothing breaks."""
+    gate = _gate()
+    for _ in range(3):
+        ok = _response(200)
+        assert await gate.admit(_HOST) is False
+        gate.observe(_HOST, ok)
+        gate.release(_HOST, ok)
+    assert gate.concurrency_limit(_HOST) is None, "no headers, no 429: no limit at all"
+
+    for _ in range(2):
+        assert await gate.admit(_HOST) is False
+    gate.observe(_HOST, _response(429, {"retry-after": "0.001"}))
+    assert gate.concurrency_limit(_HOST) == 1.0, "pure AIMD still learns from the 429"
+
+
+# --------------------------------------------------------------------------- 2g
+async def test_single_in_flight_request_is_never_delayed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A solo agent pays nothing, even at the floor limit of 1."""
+    gate = _gate()
+    gate.observe(_HOST, _response(200, _ratelimit_headers(1)))
+    assert gate.concurrency_limit(_HOST) == 1.0
+
+    async def _boom(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("a single in-flight request must never wait on the limiter")
+
+    monkeypatch.setattr("headroom.proxy.upstream_rate_gate.asyncio.wait", _boom)
+    monkeypatch.setattr("headroom.proxy.upstream_rate_gate.asyncio.wait_for", _boom)
+    for _ in range(3):
+        assert await gate.admit(_HOST) is False
+        gate.release(_HOST, _response(200))
+
+
+# --------------------------------------------------------------------------- 2h
+async def test_limiter_wait_is_bounded_by_the_budget() -> None:
+    """At the budget the limiter fails open, exactly as the gate's park does.
+
+    ``asyncio.wait_for`` here is the assertion: an unbounded limiter hangs, and
+    the bound itself is pinned by the constructor budget, not by a wall-clock
+    threshold.
+    """
+    gate = _gate(max_wait_seconds=0.05)
+    gate.observe(_HOST, _response(200, _ratelimit_headers(1)))
+    assert await gate.admit(_HOST) is False  # fills the single slot
+    assert await asyncio.wait_for(gate.admit(_HOST), timeout=2.0) is False
+
+
+async def test_limiter_wait_is_shutdown_interruptible() -> None:
+    event = asyncio.Event()
+    gate = UpstreamRateGate(_config(), lambda: event)  # 30s budget: only shutdown can free it
+    gate.observe(_HOST, _response(200, _ratelimit_headers(1)))
+    assert await gate.admit(_HOST) is False
+
+    task = asyncio.create_task(gate.admit(_HOST))
+    await asyncio.sleep(0.05)
+    event.set()
+    assert await asyncio.wait_for(task, timeout=2.0) is True
+
+
+# --------------------------------------------------------------------------- 2i
+async def test_kill_switch_disables_the_limiter_with_the_gate() -> None:
+    config = _config(upstream_rate_gate_enabled=False, http2=False)
+    proxy = HeadroomProxy(config)
+    await proxy.startup()
+    try:
+        assert proxy.upstream_rate_gate is None, "no governor object at all"
+        assert not isinstance(proxy.http_client._transport, RateGateTransport)
+        assert not isinstance(proxy.http_client_h1._transport, RateGateTransport)
+    finally:
+        await proxy.shutdown()
+
+
+# --------------------------------------------------------------------------- behaviour
+async def test_limiter_bounds_concurrent_in_flight_requests() -> None:
+    """The point of the whole unit: a seeded limit caps real parallel dispatch.
+
+    No 429 is involved, so the gate deadline cannot be the cause of the bound --
+    the limiter is the only variable.
+    """
+    offered = 12
+
+    class _ConcurrencyRecorder(httpx.AsyncBaseTransport):
+        def __init__(self) -> None:
+            self.inflight = 0
+            self.max_inflight = 0
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            self.inflight += 1
+            self.max_inflight = max(self.max_inflight, self.inflight)
+            try:
+                await asyncio.sleep(0.01)
+                return httpx.Response(200, headers=_ratelimit_headers(3), request=request)
+            finally:
+                self.inflight -= 1
+
+    recorder = _ConcurrencyRecorder()
+    gate = _gate()
+    transport = RateGateTransport(gate, recorder)
+    gate.observe(_HOST, _response(200, _ratelimit_headers(3)))
+
+    await asyncio.gather(*(transport.handle_async_request(_request(_HOST)) for _ in range(offered)))
+    assert recorder.max_inflight < offered, "the limiter must bound parallel dispatch"
+    assert recorder.max_inflight >= 1
