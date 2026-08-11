@@ -22,11 +22,7 @@ from typing import Any
 import httpx
 
 from headroom.proxy.server import ProxyConfig, create_app
-from headroom.proxy.upstream_rate_gate import (
-    GATE_MAX_WAIT_SECONDS,
-    RateGateTransport,
-    UpstreamRateGate,
-)
+from headroom.proxy.upstream_rate_gate import RateGateTransport, UpstreamRateGate
 
 # Mirrors RETRYABLE_OVERLOAD_STATUSES semantics (headroom/proxy/helpers.py:848)
 # without importing private internals not needed here.
@@ -49,7 +45,6 @@ def _proxy_with(
     *,
     governor_enabled: bool = False,
     retry_after_budget_ms: int = _RETRY_AFTER_BUDGET_MS,
-    gate_max_wait_seconds: float = GATE_MAX_WAIT_SECONDS,
 ):
     """Build a HeadroomProxy wired to ``transport``.
 
@@ -85,9 +80,10 @@ def _proxy_with(
     proxy = create_app(config).state.proxy
     outbound: httpx.AsyncBaseTransport = transport
     if governor_enabled:
-        proxy.upstream_rate_gate = UpstreamRateGate(
-            config, proxy._get_shutdown_event, max_wait_seconds=gate_max_wait_seconds
-        )
+        # No gate-only bound: the gate's willingness to wait IS
+        # ``retry_after_budget_ms``, so the arm cannot be tuned independently of
+        # the retry loop it shares a policy with.
+        proxy.upstream_rate_gate = UpstreamRateGate(config, proxy._get_shutdown_event)
         outbound = RateGateTransport(proxy.upstream_rate_gate, transport)
     proxy.http_client = httpx.AsyncClient(transport=outbound)
     return proxy
@@ -153,25 +149,20 @@ class _WindowedCapacityTransport(httpx.AsyncBaseTransport):
         return httpx.Response(200, json={"id": "msg_1", "type": "message", "role": "assistant"})
 
 
-async def _run_governor_ab_storm(
-    *,
-    governor_enabled: bool,
-    window_s: float = _AB_WINDOW_S,
-    gate_max_wait_seconds: float = GATE_MAX_WAIT_SECONDS,
-    stagger_s: float = _AB_ARRIVAL_STAGGER_S,
-) -> dict[str, Any]:
-    transport = _WindowedCapacityTransport(capacity=_AB_CAPACITY, window_s=window_s)
+async def _run_governor_ab_storm(*, governor_enabled: bool) -> dict[str, Any]:
+    transport = _WindowedCapacityTransport(capacity=_AB_CAPACITY, window_s=_AB_WINDOW_S)
     proxy = _proxy_with(
         transport,
         governor_enabled=governor_enabled,
-        # Generous budget so the retry loop actually runs in both arms; real
-        # (unstubbed) waits, so neither arm gets a stub-induced advantage.
-        retry_after_budget_ms=int(window_s * 1000) + 1,
-        gate_max_wait_seconds=gate_max_wait_seconds,
+        # Generous budget so the retry loop actually runs in both arms, and so
+        # the mock's Retry-After (= one window) sits comfortably INSIDE the
+        # gate's willingness to wait rather than at its edge; real (unstubbed)
+        # waits, so neither arm gets a stub-induced advantage.
+        retry_after_budget_ms=int(_AB_WINDOW_S * 2000) + 1,
     )
 
     async def _one(i: int) -> httpx.Response:
-        await asyncio.sleep(i * stagger_s)
+        await asyncio.sleep(i * _AB_ARRIVAL_STAGGER_S)
         return await proxy._retry_request(
             "POST", "https://up/v1/messages", {"x-client-id": str(i)}, {"messages": []}
         )
@@ -203,28 +194,11 @@ def test_governor_arm_reduces_upstream_429s() -> None:
     )
 
 
-# Above-bound arm: the mock demands Retry-After = 2x the gate bound, the band
-# subscription 429s actually land in (60s+ against a 30s bound), scaled down.
-# The gate cannot honor such a wait in full, and capping it (rather than
-# skipping it, which would make the gate a permanent no-op in exactly this
-# band) still removes calls, because arrivals keep landing on a limited host
-# for longer than one window -- the epic's premise. Clients therefore arrive
-# spread over ~1s here, not in one burst.
-_AB_ABOVE_BOUND_WINDOW_S = 0.5
-_AB_ABOVE_BOUND_GATE_S = _AB_ABOVE_BOUND_WINDOW_S / 2
-_AB_ABOVE_BOUND_STAGGER_S = 0.04
-
-
-def test_governor_arm_still_throttles_above_the_bound() -> None:
-    """A/B in the above-bound band; arms differ only in the kill switch."""
-    kwargs: dict[str, Any] = {
-        "window_s": _AB_ABOVE_BOUND_WINDOW_S,
-        "gate_max_wait_seconds": _AB_ABOVE_BOUND_GATE_S,
-        "stagger_s": _AB_ABOVE_BOUND_STAGGER_S,
-    }
-    off = asyncio.run(_run_governor_ab_storm(governor_enabled=False, **kwargs))
-    on = asyncio.run(_run_governor_ab_storm(governor_enabled=True, **kwargs))
-
-    assert on["upstream_429_count"] < off["upstream_429_count"], (
-        f"a Retry-After above the bound must still throttle: off={off}, on={on}"
-    )
+# The above-bound A/B arm that used to live here is gone with the behavior it
+# measured: past ``retry_after_budget_ms`` the gate now fails fast instead of
+# parking (module docstring of ``upstream_rate_gate``), so there is nothing to
+# throttle in that band. Its measured win was 13 -> 7 wasted upstream 429s and
+# zero for a tight arrival burst, against a request paying the full budget
+# before receiving the same 429 it would have gotten in ~200ms.
+# ``tests/test_upstream_rate_gate.py::test_deadline_beyond_the_budget_dispatches_immediately``
+# pins the replacement contract deterministically.

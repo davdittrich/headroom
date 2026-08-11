@@ -1679,9 +1679,12 @@ class HeadroomProxy(
         _verify = build_httpx_verify()
         _http2, _client_kwargs = _provider_httpx_client_options(self.config, _verify)
         # One per-upstream-host rate gate shared by BOTH clients, so a 429 seen
-        # on either suppresses dispatch on the other (headroom-8z2.2). The
-        # wrapper re-applies _client_kwargs to the inner transport, since
-        # transport= silences the AsyncClient-level ones.
+        # on either suppresses dispatch on the other (headroom-8z2.2).
+        # install_gate re-applies NOTHING: it wraps the transports of an
+        # already-built client instead of passing transport=, precisely so
+        # nothing has to be re-derived from _client_kwargs (which mirrors only
+        # what is passed explicitly, never httpx's implicit env-proxy map). See
+        # install_gate's docstring.
         self.upstream_rate_gate = (
             UpstreamRateGate(self.config, self._get_shutdown_event)
             if self.config.upstream_rate_gate_enabled
