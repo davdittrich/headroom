@@ -525,6 +525,35 @@ SETTINGS: tuple[SettingField, ...] = (
         tier="advanced",
     ),
     SettingField(
+        "HEADROOM_RETRY_AFTER_BUDGET_MS",
+        "retry_after_budget_ms",
+        "Retry-After budget (ms)",
+        "Timeouts",
+        "int",
+        default=30000,
+        minimum=0,
+        help=(
+            "How long the proxy is willing to hold a request in its retry loop waiting on an "
+            "upstream-supplied Retry-After; a longer demanded wait returns the 429 to the "
+            "caller instead. Default: 30000."
+        ),
+        tier="advanced",
+    ),
+    SettingField(
+        "HEADROOM_NO_UPSTREAM_RATE_GATE",
+        "no_upstream_rate_gate",
+        "Disable upstream rate gate",
+        "Timeouts",
+        "bool",
+        default=False,
+        help=(
+            "Disable the per-upstream-host rate gate. With it on (the default), a 429 from an "
+            "upstream host makes every other request to that host in this proxy wait out the "
+            "Retry-After instead of rediscovering the limit on its own."
+        ),
+        tier="advanced",
+    ),
+    SettingField(
         "HEADROOM_REQUEST_TIMEOUT",
         "request_timeout",
         "Request timeout (s)",
