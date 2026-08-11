@@ -168,7 +168,7 @@ from headroom.proxy.savings_tracker import LITELLM_AVAILABLE
 from headroom.proxy.semantic_cache import SemanticCache  # noqa: F401
 from headroom.proxy.ssl_context import build_httpx_verify
 from headroom.proxy.tool_schema_savings_policy import tool_schema_saved_from_tags
-from headroom.proxy.upstream_rate_gate import UpstreamRateGate, client_kwargs_with_gate
+from headroom.proxy.upstream_rate_gate import UpstreamRateGate, install_gate
 from headroom.proxy.warmup import WarmupRegistry
 from headroom.proxy.ws_session_registry import WebSocketSessionRegistry
 from headroom.subscription.base import get_quota_registry, reset_quota_registry
@@ -1686,22 +1686,16 @@ class HeadroomProxy(
             if self.config.upstream_rate_gate_enabled
             else None
         )
-        self.http_client = httpx.AsyncClient(
-            http2=_http2,
-            **client_kwargs_with_gate(
-                self.upstream_rate_gate, http2=_http2, client_kwargs=_client_kwargs
-            ),
+        self.http_client = install_gate(
+            httpx.AsyncClient(http2=_http2, **_client_kwargs), self.upstream_rate_gate
         )
         # Reuse the primary client when HTTP/2 is already off; otherwise keep a
         # dedicated HTTP/1.1 client for ChatGPT passthrough.
         self.http_client_h1 = (
             self.http_client
             if not _http2
-            else httpx.AsyncClient(
-                http2=False,
-                **client_kwargs_with_gate(
-                    self.upstream_rate_gate, http2=False, client_kwargs=_client_kwargs
-                ),
+            else install_gate(
+                httpx.AsyncClient(http2=False, **_client_kwargs), self.upstream_rate_gate
             )
         )
         logger.info("Headroom Proxy started (version %s)", __version__)

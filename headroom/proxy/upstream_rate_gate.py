@@ -17,23 +17,39 @@ constructions covers ``.post``, ``.send`` and ``.stream`` uniformly.
 
 Policy, and why:
 
-* **Bounded wait, fail open at the bound.** The gate parks a request for at most
-  :data:`GATE_MAX_WAIT_SECONDS` (30s). Two ceilings were considered and the
-  smaller taken. (a) Anthropic's prompt-cache TTL is 5 minutes and ~97.6% of this
-  workload's input arrives as cache reads, so a wait that approaches the TTL
-  converts a rate-limit problem into a much larger uncached-input problem;
-  with ``retry_max_attempts=3`` (``models.py``) a request can meet the gate up to
-  three times, so 3 x 30s = 90s keeps a >3x margin under the 300s TTL. (b) There
-  is NO client-visible inbound request timeout to compete with: ``uvicorn.run``
-  (``server.py``, in ``run_server``) sets ``timeout_graceful_shutdown`` only, and
-  ``ProxyConfig.request_timeout_seconds`` / ``connect_timeout_seconds`` are
-  OUTBOUND httpx timeouts (``server.py:_provider_httpx_client_options``), not an
-  inbound cap. 30s also matches the already-approved
-  ``ProxyConfig.retry_after_budget_ms`` default, i.e. the gate never holds a
-  request longer than the retry loop itself already would. A remaining gate
-  longer than the bound (quota exhaustion: ``Retry-After`` of minutes or hours)
-  is NOT slept on -- the request dispatches, the upstream 429 flows back, and the
-  client's own backoff handles it. Never convert a 429 into a client-visible hang.
+* **Bounded wait, capped not skipped.** The gate parks a request for at most
+  :data:`GATE_MAX_WAIT_SECONDS` (30s), and a longer demanded wait is CAPPED at
+  the bound, never skipped: skipping would make the gate a permanent no-op for
+  exactly the ``Retry-After`` values subscription 429s carry (60s+), letting the
+  herd re-trip the limit and push the deadline out again with each fresh 429.
+  Two ceilings bound the number, and the binding one is (a):
+
+  (a) *Prompt-cache TTL.* Anthropic's default TTL is 5 minutes and ~97.6% of
+  this workload's input arrives as cache reads, so time spent holding a request
+  is time the cache entry is aging out; blowing the TTL converts a rate-limit
+  problem into a much larger uncached-input one. Gate parks are ADDITIVE with
+  the retry loop's own sleeps: ``retry_max_attempts=3`` (``models.py``) means a
+  request can meet the gate 3 times with 2 ``Retry-After`` sleeps between them,
+  each of those capped by ``retry_after_budget_ms`` (30s default), so the worst
+  case is ``3*B + 2*30s``. At ``B = 30s`` that is 150s, i.e. a 2x margin under
+  the 300s TTL. Solving ``3*B + 60 <= 150`` gives B <= 30s: the bound is the
+  largest value that keeps that 2x margin, not a round number.
+
+  (b) *Inbound concurrency, the client-visible cap.* There is no per-request
+  inbound timeout (``uvicorn.run`` in ``server.py`` sets only
+  ``timeout_graceful_shutdown``; ``ProxyConfig.request_timeout_seconds`` and
+  ``connect_timeout_seconds`` are OUTBOUND httpx timeouts), but
+  ``limit_concurrency`` (default 1000, ``HEADROOM_LIMIT_CONCURRENCY``) IS one:
+  uvicorn answers 503 once the slots are full, and a parked request holds its
+  slot the whole time. Parked slots are ``arrival_rate * B``; at the measured
+  baseline (~146 rate-limited requests over 29 minutes, ~0.08/s) that is ~3 of
+  1000 slots at B = 30s, and B = 30s stays under the cap for any arrival rate
+  below ~33 req/s. Not binding here, but it is why the bound cannot simply be
+  raised to the TTL.
+
+  30s also coincides with the already-approved ``ProxyConfig.retry_after_budget_ms``
+  default, i.e. the gate never holds a request longer than the retry loop
+  already would.
 * **Release jitter.** With one shared deadline, every parked waiter's timer would
   otherwise fire in the same event-loop tick and recreate the burst. Each waiter
   sleeps ``remaining * (1.0 + random())``, i.e. it dispatches uniformly in
@@ -43,6 +59,12 @@ Policy, and why:
   there is no new tuned constant.
 * **The wait is a loop.** After each wake the deadline is re-read: if the first
   released waiter tripped a fresh 429, the rest keep waiting on the new deadline.
+  The freshest 429 wins in both directions -- a later, shorter ``Retry-After``
+  lowers the deadline instead of being ignored by a ``max()`` merge.
+* **Shutdown aborts the request, not just the wait.** ``HeadroomProxy.shutdown``
+  sets the shutdown event and then closes the client, so a waiter that woke on
+  it and dispatched anyway would race the close. It answers 503 in the same
+  shape as ``HeadroomProxy._shutdown_retry_response``.
 * **Every 429 opens the gate**, including one with an absent or unparseable
   ``Retry-After`` (5.5% of the measured baseline). Those fall back to
   ``jitter_delay_ms(retry_base_delay_ms, retry_max_delay_ms, 0)`` -- the same
@@ -55,7 +77,8 @@ Limitations, deliberate:
 
 * State is process-local and intentionally lost on restart; a fresh process
   re-learns from its next 429. There is no persistence and no cross-process
-  coordination.
+  coordination. The deadline map is swept of expired hosts on every 429, so a
+  host that is 429'd once and never contacted again does not leak an entry.
 * Requests already in flight when the gate opens are NOT cancelled. The gate
   governs dispatch only.
 * ``headroom/backends/litellm.py`` and ``headroom/backends/anyllm.py`` drive
@@ -67,34 +90,21 @@ Limitations, deliberate:
 from __future__ import annotations
 
 import asyncio
-import logging
 import random
 import time
 from collections.abc import Callable
-from typing import Any
 
 import httpx
 
 from .helpers import jitter_delay_ms, retry_after_ms
 from .models import ProxyConfig
 
-logger = logging.getLogger(__name__)
-
 RATE_LIMIT_STATUS = 429
 
 #: Longest a single request may be parked on a gate. See the module docstring
-#: for the derivation (min of the prompt-cache-TTL margin and the client-visible
-#: inbound timeout, of which none is enforced).
+#: for the derivation (prompt-cache-TTL margin under additive retry sleeps, and
+#: the inbound concurrency cap).
 GATE_MAX_WAIT_SECONDS = 30.0
-
-#: ``_client_kwargs`` keys that must be mirrored onto the inner transport,
-#: because ``transport=`` makes the ``AsyncClient``-level ones silent no-ops.
-_MIRRORED_CLIENT_KWARGS = frozenset({"verify", "limits", "proxy"})
-
-#: ``_client_kwargs`` keys that stay effective at the client level: httpx passes
-#: timeouts down as ``request.extensions["timeout"]`` and httpcore applies them
-#: per I/O operation, so replacing the transport does not weaken them.
-_CLIENT_LEVEL_KWARGS = frozenset({"timeout"})
 
 
 class UpstreamRateGate:
@@ -131,31 +141,41 @@ class UpstreamRateGate:
             demanded_ms = jitter_delay_ms(
                 self._config.retry_base_delay_ms, self._config.retry_max_delay_ms, 0
             )
-        until = time.monotonic() + demanded_ms / 1000.0
-        previous = self._until.get(host)
-        if previous is None or until > previous:
-            self._until[host] = until
+        now = time.monotonic()
+        # The freshest 429 wins in BOTH directions. A max() merge would let one
+        # early ``Retry-After: 60`` pin the host for a minute after the upstream
+        # started answering ``Retry-After: 5``, and would let every fresh long
+        # header ratchet the deadline further out.
+        self._until = {h: t for h, t in self._until.items() if t > now}  # cheap sweep
+        self._until[host] = now + demanded_ms / 1000.0
 
-    async def wait(self, host: str) -> None:
-        """Park until ``host``'s gate expires, the bound is hit, or shutdown."""
+    async def wait(self, host: str) -> bool:
+        """Park until ``host``'s gate expires or the bound is hit.
+
+        Returns True if shutdown interrupted the wait, matching
+        ``HeadroomProxy._wait_for_retry_delay_or_shutdown``.
+        """
         park_until = time.monotonic() + self._max_wait_seconds
         shutdown = self._shutdown_event()
         while True:
             deadline = self.deadline(host)
             if deadline is None:
-                return
+                return False
             now = time.monotonic()
-            remaining = deadline - now
-            if remaining > self._max_wait_seconds or now >= park_until:
-                # Quota exhaustion or a gate that keeps advancing: dispatch and
-                # let the upstream 429 reach the client instead of hanging.
-                return
-            delay = min(remaining * (1.0 + random.random()), park_until - now)
+            if now >= park_until:
+                # Bound reached: dispatch and let the upstream 429 reach the
+                # client rather than hold the request (and its inbound
+                # concurrency slot) any longer.
+                return False
+            # min(remaining, bound), NOT "skip the wait when remaining > bound":
+            # skipping would make the gate a permanent no-op for exactly the
+            # Retry-After values subscription 429s carry.
+            delay = min((deadline - now) * (1.0 + random.random()), park_until - now)
             try:
                 await asyncio.wait_for(shutdown.wait(), timeout=delay)
             except (TimeoutError, asyncio.TimeoutError):
                 continue  # woke on the timer: re-read the deadline
-            return  # shutdown: abandon the wait
+            return True  # shutdown
 
 
 class RateGateTransport(httpx.AsyncBaseTransport):
@@ -171,8 +191,21 @@ class RateGateTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         host = request.url.host
-        if self._gate.deadline(host) is not None:
-            await self._gate.wait(host)
+        if self._gate.deadline(host) is not None and await self._gate.wait(host):
+            # Shutdown woke us. HeadroomProxy.shutdown sets that event and then
+            # closes the client, so dispatching now races the close; answer with
+            # the same shape _shutdown_retry_response uses.
+            return httpx.Response(
+                503,
+                request=request,
+                headers={"content-type": "application/json", "retry-after": "0"},
+                json={
+                    "error": {
+                        "type": "shutdown",
+                        "message": "Proxy is shutting down; upstream rate gate wait cancelled.",
+                    }
+                },
+            )
         response = await self._inner.handle_async_request(request)
         self._gate.observe(host, response)
         return response
@@ -181,40 +214,29 @@ class RateGateTransport(httpx.AsyncBaseTransport):
         await self._inner.aclose()
 
 
-def client_kwargs_with_gate(
-    gate: UpstreamRateGate | None,
-    *,
-    http2: bool,
-    client_kwargs: dict[str, Any],
-) -> dict[str, Any]:
-    """``AsyncClient`` kwargs with ``gate`` installed, or ``client_kwargs`` as-is.
+def install_gate(client: httpx.AsyncClient, gate: UpstreamRateGate | None) -> httpx.AsyncClient:
+    """Wrap every transport an already-built ``AsyncClient`` routes through.
 
-    ``transport=`` makes the client's own ``http2``/``limits``/``verify``/
-    ``proxy`` silent no-ops, so the inner :class:`httpx.AsyncHTTPTransport` is
-    built with those exact values and they are dropped from the client kwargs.
-    Dropping ``proxy`` is load-bearing, not tidiness: a client-level ``proxy``
-    registers an ``all://`` mount, and ``Client._transport_for_url`` consults
-    mounts BEFORE ``transport=``, so leaving it would route every request around
-    the gate. An unrecognized ``_client_kwargs`` key would mean a setting
-    silently lost (a TLS or connection-pool downgrade), so the gate refuses to
-    install rather than mirror an incomplete set.
+    Deliberately wraps AFTER construction instead of passing ``transport=``.
+    ``transport=`` is not a neutral override: httpx sets
+    ``allow_env_proxies = trust_env and transport is None``, so supplying one
+    empties the environment proxy map (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY and
+    every NO_PROXY exemption), and ``Client._transport_for_url`` consults
+    ``_mounts`` before ``_transport``, so any mount would route around the gate.
+    Re-deriving those from ``_client_kwargs`` is unwinnable -- it only mirrors
+    what is passed explicitly, never httpx's implicit behavior.
+
+    ponytail: reaches into ``_transport`` and ``_mounts``, which are private.
+    That is the ceiling: httpx has no public "wrap what you just built" hook.
+    Upgrade path is to drop this function the day it grows one. A ``None`` mount
+    value means "use the default transport" and is left alone, since that
+    default is already wrapped.
     """
     if gate is None:
-        return dict(client_kwargs)
-    unknown = set(client_kwargs) - _MIRRORED_CLIENT_KWARGS - _CLIENT_LEVEL_KWARGS
-    if unknown:
-        logger.error(
-            "Upstream rate gate not installed: unmirrored httpx client options %s "
-            "would be silently dropped by transport=. Update _MIRRORED_CLIENT_KWARGS.",
-            sorted(unknown),
-        )
-        return dict(client_kwargs)
-    inner = httpx.AsyncHTTPTransport(
-        http2=http2,
-        verify=client_kwargs["verify"],
-        limits=client_kwargs["limits"],
-        proxy=client_kwargs.get("proxy"),
-    )
-    gated = {k: v for k, v in client_kwargs.items() if k not in _MIRRORED_CLIENT_KWARGS}
-    gated["transport"] = RateGateTransport(gate, inner)
-    return gated
+        return client
+    client._transport = RateGateTransport(gate, client._transport)
+    client._mounts = {
+        pattern: (None if transport is None else RateGateTransport(gate, transport))
+        for pattern, transport in client._mounts.items()
+    }
+    return client
