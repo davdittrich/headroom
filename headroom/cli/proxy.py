@@ -409,6 +409,16 @@ def dashboard(port: int, no_open: bool) -> None:
     ),
 )
 @click.option(
+    "--no-upstream-rate-gate",
+    is_flag=True,
+    envvar="HEADROOM_NO_UPSTREAM_RATE_GATE",
+    help=(
+        "Disable the per-upstream-host rate gate: every request rediscovers an "
+        "upstream 429 on its own instead of sharing one gate across the process. "
+        "Env: HEADROOM_NO_UPSTREAM_RATE_GATE."
+    ),
+)
+@click.option(
     "--request-timeout-seconds",
     type=int,
     default=None,
@@ -954,6 +964,7 @@ def proxy(
     retry_base_delay_ms: int | None,
     retry_max_delay_ms: int | None,
     retry_after_budget_ms: int | None,
+    no_upstream_rate_gate: bool,
     request_timeout_seconds: int | None,
     connect_timeout_seconds: int | None,
     anthropic_buffered_request_timeout_seconds: int | None,
@@ -1242,6 +1253,7 @@ def proxy(
         retry_base_delay_ms=retry_base_delay_ms if retry_base_delay_ms is not None else 1000,
         retry_max_delay_ms=retry_max_delay_ms if retry_max_delay_ms is not None else 30000,
         retry_after_budget_ms=retry_after_budget_ms if retry_after_budget_ms is not None else 30000,
+        upstream_rate_gate_enabled=not no_upstream_rate_gate,
         request_timeout_seconds=request_timeout_seconds
         if request_timeout_seconds is not None and request_timeout_seconds > 0
         else 300,

@@ -169,6 +169,7 @@ from headroom.proxy.savings_tracker import LITELLM_AVAILABLE
 from headroom.proxy.semantic_cache import SemanticCache  # noqa: F401
 from headroom.proxy.ssl_context import build_httpx_verify
 from headroom.proxy.tool_schema_savings_policy import tool_schema_saved_from_tags
+from headroom.proxy.upstream_rate_gate import UpstreamRateGate, install_gate
 from headroom.proxy.warmup import WarmupRegistry
 from headroom.proxy.ws_session_registry import WebSocketSessionRegistry
 from headroom.subscription.base import get_quota_registry, reset_quota_registry
@@ -1046,6 +1047,9 @@ class HeadroomProxy(
         # HTTP/1.1-only client for ChatGPT passthrough (Cloudflare challenges
         # our HTTP/2 fingerprint on its sensitive account endpoints).
         self.http_client_h1: httpx.AsyncClient | None = None
+        # Per-upstream-host rate gate shared by both clients (populated by
+        # startup(); None when the kill switch disables it).
+        self.upstream_rate_gate: UpstreamRateGate | None = None
         self._shutdown_event: asyncio.Event | None = None
 
         # Shared cold-start warmup registry (populated by startup()).
@@ -1674,11 +1678,29 @@ class HeadroomProxy(
         # HEADROOM_TLS_STRICT=0, else httpx's default strict verification.
         _verify = build_httpx_verify()
         _http2, _client_kwargs = _provider_httpx_client_options(self.config, _verify)
-        self.http_client = httpx.AsyncClient(http2=_http2, **_client_kwargs)
+        # One per-upstream-host rate gate shared by BOTH clients, so a 429 seen
+        # on either suppresses dispatch on the other (headroom-8z2.2).
+        # install_gate re-applies NOTHING: it wraps the transports of an
+        # already-built client instead of passing transport=, precisely so
+        # nothing has to be re-derived from _client_kwargs (which mirrors only
+        # what is passed explicitly, never httpx's implicit env-proxy map). See
+        # install_gate's docstring.
+        self.upstream_rate_gate = (
+            UpstreamRateGate(self.config, self._get_shutdown_event)
+            if self.config.upstream_rate_gate_enabled
+            else None
+        )
+        self.http_client = install_gate(
+            httpx.AsyncClient(http2=_http2, **_client_kwargs), self.upstream_rate_gate
+        )
         # Reuse the primary client when HTTP/2 is already off; otherwise keep a
         # dedicated HTTP/1.1 client for ChatGPT passthrough.
         self.http_client_h1 = (
-            self.http_client if not _http2 else httpx.AsyncClient(http2=False, **_client_kwargs)
+            self.http_client
+            if not _http2
+            else install_gate(
+                httpx.AsyncClient(http2=False, **_client_kwargs), self.upstream_rate_gate
+            )
         )
         logger.info("Headroom Proxy started (version %s)", __version__)
         logger.info(f"Optimization: {'ENABLED' if self.config.optimize else 'DISABLED'}")
