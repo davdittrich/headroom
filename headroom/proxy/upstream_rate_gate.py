@@ -123,6 +123,12 @@ Limitations, deliberate:
   their own HTTP stacks and never touch ``self.http_client``, so traffic through
   a configured backend is not gated. The default direct-Anthropic path (where
   ``anthropic_backend`` is ``None``) is, which is the traffic this governs.
+* ``headroom/subscription/client.py`` (around line 109) and
+  ``headroom/subscription/codex_rate_limits.py`` (around line 448) each build
+  their own ``httpx.AsyncClient`` per poll, against the same upstream hosts
+  (``api.anthropic.com`` and ``chatgpt.com`` respectively) that this gate
+  governs on the main request path. A 429 from either poll neither opens nor
+  observes the gate.
 """
 
 from __future__ import annotations
