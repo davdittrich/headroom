@@ -264,6 +264,37 @@ def test_retry_after_honored_beyond_old_backoff_cap(monkeypatch) -> None:
     assert slept and abs(slept[0] - 60.0) < 0.01
 
 
+def test_stream_response_retry_after_honored_beyond_old_backoff_cap(monkeypatch) -> None:
+    slept: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:  # type: ignore[no-untyped-def]
+        slept.append(seconds)
+
+    monkeypatch.setattr("headroom.proxy.handlers.streaming.asyncio.sleep", _fake_sleep)
+    # Streaming-path counterpart of test_retry_after_honored_beyond_old_backoff_cap:
+    # retry_max_delay_ms=5000 (from _proxy_with) used to clamp this to 5s;
+    # retry_after_budget_ms=90000 is the new, separate "willing to wait" cap.
+    transport = _RateLimitTransport(fail_status=429, fail_times=1, retry_after="60", sse=True)
+    proxy = _proxy_with(transport, retry_after_budget_ms=90000)
+    asyncio.run(
+        proxy._stream_response(
+            "https://up/v1/messages",
+            {},
+            {"messages": []},
+            "anthropic",
+            "claude-3",
+            "r1",
+            0,
+            0,
+            0,
+            [],
+            {},
+            0.0,
+        )
+    )
+    assert slept and abs(slept[0] - 60.0) < 0.01
+
+
 def test_retry_after_beyond_budget_returns_429_verbatim_single_call(monkeypatch) -> None:
     async def _fail_if_called(self, seconds: float) -> bool:  # type: ignore[no-untyped-def]
         raise AssertionError("must not sleep when Retry-After exceeds the retry budget")
