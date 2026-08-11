@@ -525,6 +525,21 @@ SETTINGS: tuple[SettingField, ...] = (
         tier="advanced",
     ),
     SettingField(
+        "HEADROOM_RETRY_AFTER_BUDGET_MS",
+        "retry_after_budget_ms",
+        "Retry-After budget (ms)",
+        "Timeouts",
+        "int",
+        default=30000,
+        minimum=0,
+        help=(
+            "How long the proxy is willing to hold a request in its retry loop waiting on an "
+            "upstream-supplied Retry-After; a longer demanded wait returns the 429 to the "
+            "caller instead. Default: 30000."
+        ),
+        tier="advanced",
+    ),
+    SettingField(
         "HEADROOM_REQUEST_TIMEOUT",
         "request_timeout",
         "Request timeout (s)",
