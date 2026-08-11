@@ -284,6 +284,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **code:** fix two `CodeAwareCompressor` AST-reassembly bugs: an exported JS/TS function or class (`export function foo() {`) produced a duplicated `export export` keyword and invalid syntax, because line-based node slicing (used to preserve indentation) pulled in the preceding `export` sibling's text on top of the `export_statement` handler's own prefix reconstruction. Separately, in every supported language, a doc comment immediately above a top-level function, class, or type was detached from its declaration during extraction and re-emitted in a cluster at the end of the compressed output instead of staying attached to what it documents.
 - * **proxy:** Buffered upstream responses containing a `server_tool_use` (or any other unrecognized Anthropic content block) no longer turn a fully-generated response into an HTTP 502. `StreamingMixin._response_to_sse` raised `ValueError` on unknown block types after the entire upstream generation had already been buffered, so a slow-but-successful response failed and the client retried the whole multi-minute request. Unknown blocks are now emitted verbatim in `content_block_start` (following the existing redacted_thinking` pattern), so `server_tool_use`, `server_tool_result`, `mcp_tool_use`, and future block types round-trip ([#1806](https://github.com/headroomlabs-ai/headroom/issues/1806)).
 
+## [0.35.0](https://github.com/davdittrich/headroom/compare/v0.34.0...v0.35.0) (2026-08-11)
+
+
+### Features
+
+* **beacon:** allowlist the routing summary key ([#2818](https://github.com/davdittrich/headroom/issues/2818)) ([7940c05](https://github.com/davdittrich/headroom/commit/7940c05ebf4486c6b9d00984067ae33cedf4dddb))
+* **beacon:** hourly R2 compaction, per-strategy savings, and a stack that reports ([#2853](https://github.com/davdittrich/headroom/issues/2853)) ([e0870ef](https://github.com/davdittrich/headroom/commit/e0870ef931e5ea6cc6cb52551f5d80cd9e3dc715))
+* **cli,pricing:** add CLI extension seam and prompt-cache TTL pricing ([#2802](https://github.com/davdittrich/headroom/issues/2802)) ([6ec3e34](https://github.com/davdittrich/headroom/commit/6ec3e3478abf058fe1460f91342bcdadf54a1ba8))
+
+
+### Bug Fixes
+
+* **anthropic:** strip first-party tool search on custom upstreams ([#2539](https://github.com/davdittrich/headroom/issues/2539)) ([7f6950b](https://github.com/davdittrich/headroom/commit/7f6950be34e29304deae0fa5138b852491b092fe))
+* **beacon:** report all-layers savings, not context-compression only ([#2796](https://github.com/davdittrich/headroom/issues/2796)) ([e9a24f3](https://github.com/davdittrich/headroom/commit/e9a24f3ec1ffd278b0b3ca547a90942c40c99ec8))
+* **beacon:** split session failures by status code ([#2815](https://github.com/davdittrich/headroom/issues/2815)) ([2954e37](https://github.com/davdittrich/headroom/commit/2954e37048f8dcffe16e1c37b8f71afb0094a0a2))
+* **cache:** bound compression cache bookkeeping ([0ae948c](https://github.com/davdittrich/headroom/commit/0ae948c1510735df39317bf0861f8a8750cdbf9d))
+* **cache:** stabilize Anthropic block-growing lineages ([#2917](https://github.com/davdittrich/headroom/issues/2917)) ([1a04c95](https://github.com/davdittrich/headroom/commit/1a04c957f53ef25ab1209166f425a7876913c4d3))
+* **ccr:** preserve exact SQLite TTL boundary ([#2669](https://github.com/davdittrich/headroom/issues/2669)) ([d0a86d4](https://github.com/davdittrich/headroom/commit/d0a86d409fab377f9c642d1f3680b6ece7f97b8a))
+* **deps:** bump h2 to 4.4.1 for CVE-2026-71554 ([#2839](https://github.com/davdittrich/headroom/issues/2839)) ([564e0a8](https://github.com/davdittrich/headroom/commit/564e0a8d0fe440dff21a6c405c88e05698b3059f))
+* **deps:** enforce audited transitive dependency floors ([#2791](https://github.com/davdittrich/headroom/issues/2791)) ([64e2039](https://github.com/davdittrich/headroom/commit/64e203931b9810e5a010f063d26d154419016f86))
+* emit SSE ping before message_start on Bedrock streaming path (issue [#902](https://github.com/davdittrich/headroom/issues/902)) ([#1080](https://github.com/davdittrich/headroom/issues/1080)) ([4dab254](https://github.com/davdittrich/headroom/commit/4dab254d52914c39ffe13071848604e1771b1bd1))
+* **install:** trust Docker bridge for dashboard metadata ([e044139](https://github.com/davdittrich/headroom/commit/e044139001680fd5198147bf373df6f00db32cc7))
+* **install:** use --userns=keep-id under Podman so bind-mount writes don't fail ([#2846](https://github.com/davdittrich/headroom/issues/2846)) ([3488f8d](https://github.com/davdittrich/headroom/commit/3488f8d4b5fae4eab157e0c4031ccf712bcbcc0d))
+* **litellm:** add async_post_call_success_hook to HeadroomCallback ([#1322](https://github.com/davdittrich/headroom/issues/1322)) ([3107994](https://github.com/davdittrich/headroom/commit/3107994aed5fd42e713d3c26f3f08121a62b980e))
+* **litellm:** don't forward a caller key the target cannot accept ([#2883](https://github.com/davdittrich/headroom/issues/2883)) ([2f2950a](https://github.com/davdittrich/headroom/commit/2f2950a626cebf851aac29255e7188fbb1639f5a))
+* **memory:** bound the TrafficLearner pending-pattern accumulator (memory leak) ([#2579](https://github.com/davdittrich/headroom/issues/2579)) ([1f5feff](https://github.com/davdittrich/headroom/commit/1f5fefffd3e82c73bddd928cfd53334031e807bc))
+* **memory:** close DirectMem0 resources ([6596182](https://github.com/davdittrich/headroom/commit/65961827cf5e90d7b4e7026feb89aac000a73ea3))
+* **memory:** close MCP backend on shutdown ([4bd8ecd](https://github.com/davdittrich/headroom/commit/4bd8ecd1e31475365801791d35630f66f7393553))
+* **memory:** sync FTS5 and vector indexes on CLI delete/edit/prune/purge ([fd4628d](https://github.com/davdittrich/headroom/commit/fd4628d82156c65d4fa22df9513315790a6cd2fb))
+* **oauth2:** make repository lint checks pass ([c85abf7](https://github.com/davdittrich/headroom/commit/c85abf7a87920012e01f0a677f6fbd98c4b08de0))
+* **onnx:** stop ONNX thread pools from spinning idle cores ([#2495](https://github.com/davdittrich/headroom/issues/2495)) ([#2540](https://github.com/davdittrich/headroom/issues/2540)) ([5c561bd](https://github.com/davdittrich/headroom/commit/5c561bd913ea60fad2c3c53f4b65e679e7d248d0))
+* **openai:** skip Responses tool-search deferral for clients that cannot execute it ([#2696](https://github.com/davdittrich/headroom/issues/2696)) ([54ea28d](https://github.com/davdittrich/headroom/commit/54ea28d9839a0dcfa4dd0cf4210a4421f03beeff))
+* **opencode:** ship the transport hook-shim so wheel installs route Node child traffic ([702dbc5](https://github.com/davdittrich/headroom/commit/702dbc5902ff184a7c20178958a811beb9c78fa3))
+* **proxy/anthropic:** inject headroom_retrieve whenever a CCR marker is present, not only for new markers ([#2848](https://github.com/davdittrich/headroom/issues/2848)) ([3808f60](https://github.com/davdittrich/headroom/commit/3808f60ca61e84faf3ea8f8e003a6e6c8e9af4da))
+* **proxy/anthropic:** run tool-search history repair after turn hooks ([c6f9948](https://github.com/davdittrich/headroom/commit/c6f99482e1bea024db6014a70c8e6da419543957))
+* **proxy/gemini:** keep streaming-parity baseline so eligible_pct can't exceed 100 ([#2824](https://github.com/davdittrich/headroom/issues/2824)) ([b97c7c6](https://github.com/davdittrich/headroom/commit/b97c7c6e99eac84df49c7a7e5f21dedb298716fe))
+* **proxy/openai:** run response hooks on Responses, and bill their re-drives ([#2872](https://github.com/davdittrich/headroom/issues/2872)) ([675d13f](https://github.com/davdittrich/headroom/commit/675d13f08d42455c8fa17bda878c1a11b905cee4))
+* **proxy:** cache litellm model resolution to stop repeated Provider List spam ([99f07e7](https://github.com/davdittrich/headroom/commit/99f07e7bbdded9dadc70e35ee6ab025279d1aa22))
+* **proxy:** cancel periodic TOIN task on shutdown ([739fdef](https://github.com/davdittrich/headroom/commit/739fdef423fa8cbc82537481c875d4570b0ecad4))
+* **proxy:** emit request log timestamps in UTC ([620028f](https://github.com/davdittrich/headroom/commit/620028fa18843622d3e454bd40fb91a93e607dbf))
+* **proxy:** enable tool search by default and repair poisoned transcripts ([#2807](https://github.com/davdittrich/headroom/issues/2807)) ([0237cbf](https://github.com/davdittrich/headroom/commit/0237cbffbbc456ad8a7398005602d76881862d99))
+* **proxy:** graceful shutdown and reliable Ctrl+C exit ([#621](https://github.com/davdittrich/headroom/issues/621)) ([17cdb18](https://github.com/davdittrich/headroom/commit/17cdb185bc79d8cfec104e781a7e555af3ef11e1))
+* **proxy:** stop discarding compressed Codex WS later-frame payloads ([#2823](https://github.com/davdittrich/headroom/issues/2823)) ([4ec416d](https://github.com/davdittrich/headroom/commit/4ec416df8899036544e679f561f1cf921f3da0dd))
+* **proxy:** unwrap Hermes tool_call bridge in tool name map ([#2717](https://github.com/davdittrich/headroom/issues/2717)) ([a97b824](https://github.com/davdittrich/headroom/commit/a97b82413bdc86655c064417ed4628ff4d9d7c9d))
+* **tokenizer:** coerce non-string tool_call fields before counting ([#2801](https://github.com/davdittrich/headroom/issues/2801)) ([b6f9877](https://github.com/davdittrich/headroom/commit/b6f9877c78b3fa3b1d705426bd27d74be77f4fa0))
+* **wrap/serena:** install Serena from the serena-agent PyPI wheel, not the git source ([d7b25ae](https://github.com/davdittrich/headroom/commit/d7b25ae3bb3364cde4931509ecb65e32085e5b09))
+* **wrap:** stop the launch cwd from shadowing the installed package in the proxy subprocess ([#2843](https://github.com/davdittrich/headroom/issues/2843)) ([c49be26](https://github.com/davdittrich/headroom/commit/c49be269a18446779cd8a048caaa7f0ba3a3b48b))
+
+
+### Performance Improvements
+
+* cut hot-path latency 27% (token-count memo, startup preloads, JSON scan memo) ([#2838](https://github.com/davdittrich/headroom/issues/2838)) ([53af90d](https://github.com/davdittrich/headroom/commit/53af90d68c723f644a5a41dd273a606117109866))
+* **proxy:** bound upstream calls and hot-path costs ([#2852](https://github.com/davdittrich/headroom/issues/2852)) ([f624d3a](https://github.com/davdittrich/headroom/commit/f624d3a00ac271db7947443ddeb0c8bc2e93d3eb))
+* **subscription:** skip transcripts older than the window in compute_window_tokens ([#2861](https://github.com/davdittrich/headroom/issues/2861)) ([91d6bf3](https://github.com/davdittrich/headroom/commit/91d6bf33cde777b541375fb182d4479fdd78f81b))
+
+
+### Dependencies
+
+* bump brace-expansion from 5.0.7 to 5.0.9 in /docs ([#2751](https://github.com/davdittrich/headroom/issues/2751)) ([56ee57b](https://github.com/davdittrich/headroom/commit/56ee57be98bf109f0a46de522724ef169a4bc51c))
+* bump bytesize from 1.3.3 to 2.4.2 ([#2286](https://github.com/davdittrich/headroom/issues/2286)) ([6448545](https://github.com/davdittrich/headroom/commit/6448545a7f5a1dee88bce6f0830bdbfd1c99c617))
+* bump hf-hub from 0.4.3 to 0.5.0 ([#2285](https://github.com/davdittrich/headroom/issues/2285)) ([4925bf6](https://github.com/davdittrich/headroom/commit/4925bf6a829735977bab5000b469c3edb19c75b1))
+* bump next from 16.2.10 to 16.3.0 in /docs ([#2750](https://github.com/davdittrich/headroom/issues/2750)) ([0fd0b99](https://github.com/davdittrich/headroom/commit/0fd0b996a4b58a166491b145f4d3885c21b27cc0))
+* bump postcss from 8.5.19 to 8.5.25 in /plugins/openclaw ([#2749](https://github.com/davdittrich/headroom/issues/2749)) ([cd60ee9](https://github.com/davdittrich/headroom/commit/cd60ee9ae886b32ba5da3203e35bb6b088031fd3))
+* bump postcss from 8.5.19 to 8.5.25 in /plugins/opencode ([#2748](https://github.com/davdittrich/headroom/issues/2748)) ([ff4e016](https://github.com/davdittrich/headroom/commit/ff4e0167bbccbd4ae51bf23ddec144e61c94cd68))
+* bump postcss from 8.5.19 to 8.5.25 in /sdk/typescript ([#2747](https://github.com/davdittrich/headroom/issues/2747)) ([267c2bd](https://github.com/davdittrich/headroom/commit/267c2bdcb56e132b2dd9c065dab3498dbf730ca3))
+* bump postcss from 8.5.19 to 8.5.26 in /docs ([#2881](https://github.com/davdittrich/headroom/issues/2881)) ([e6e5826](https://github.com/davdittrich/headroom/commit/e6e5826423a0a700a8c544ce2c8cbcdef694160e))
+* bump ruff from 0.15.17 to 0.15.22 in the pip-minor-patch group ([#2501](https://github.com/davdittrich/headroom/issues/2501)) ([ecf130d](https://github.com/davdittrich/headroom/commit/ecf130d3ac6fb864098cb93fafd2621ae3ac7e12))
+* bump rusqlite from 0.32.1 to 0.40.1 ([#2287](https://github.com/davdittrich/headroom/issues/2287)) ([522faa1](https://github.com/davdittrich/headroom/commit/522faa1a59aa94e4adfd4a4afe0202d1126e187d))
+
 ## [0.34.0](https://github.com/headroomlabs-ai/headroom/compare/v0.33.0...v0.34.0) (2026-08-05)
 
 
