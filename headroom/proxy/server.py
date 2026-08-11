@@ -139,6 +139,7 @@ from headroom.proxy.helpers import (
     _setup_file_logging,  # noqa: F401
     is_anthropic_auth,  # noqa: F401
     jitter_delay_ms,
+    overload_retry_delay_ms,
     resolve_display_provider,
     retry_after_ms,
 )
@@ -2153,32 +2154,19 @@ class HeadroomProxy(
                         ):
                             return response
                         retry_after = retry_after_ms(response)
-                        # A parsed delay of 0 (or a past HTTP-date, floored to
-                        # 0 by retry_after_ms) is not a usable wait signal —
-                        # sleeping 0ms would re-fire immediately into the same
-                        # rate limit. Treat it like an absent header and fall
-                        # back to jittered backoff, matching the pre-fix
-                        # `retry_after_ms(...) or jitter_delay_ms(...)`.
-                        usable_retry_after = retry_after is not None and retry_after > 0
-                        if response.status_code == 429 and usable_retry_after:
-                            if retry_after > self.config.retry_after_budget_ms:
-                                # Demanded wait exceeds what we're willing to
-                                # hold this request for in-loop — hand the
-                                # 429 back now instead of retrying into a
-                                # wait we already know is insufficient.
-                                return response
-                            delay_ms = retry_after
-                        elif usable_retry_after:
-                            # 529 Retry-After is not a trustworthy signal;
-                            # keep the pre-fix clamp-to-backoff-cap instead
-                            # of coupling it to the 429 budget policy.
-                            delay_ms = min(retry_after, float(self.config.retry_max_delay_ms))
-                        else:
-                            delay_ms = jitter_delay_ms(
-                                self.config.retry_base_delay_ms,
-                                self.config.retry_max_delay_ms,
-                                attempt,
-                            )
+                        # Single source of truth for the 429/529 delay policy
+                        # (see overload_retry_delay_ms) — None means give up
+                        # and hand the response back.
+                        delay_ms = overload_retry_delay_ms(
+                            response.status_code,
+                            retry_after,
+                            retry_after_budget_ms=self.config.retry_after_budget_ms,
+                            retry_base_delay_ms=self.config.retry_base_delay_ms,
+                            retry_max_delay_ms=self.config.retry_max_delay_ms,
+                            attempt=attempt,
+                        )
+                        if delay_ms is None:
+                            return response
                         logger.warning(
                             f"Upstream {response.status_code} (attempt {attempt + 1}), "
                             f"retrying in {delay_ms:.0f}ms"
