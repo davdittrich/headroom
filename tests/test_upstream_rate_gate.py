@@ -129,7 +129,7 @@ async def test_release_delay_disperses_waiters_in_every_parking_regime() -> None
     The previous form of this test compared order statistics of 8 unsynchronized
     ``asyncio`` wakeups and failed at ``spread=0.0491`` against a ``>= 0.05``
     threshold on a loaded combined run while passing in isolation.
-    :func:`release_delay_seconds` is pure in ``(remaining, budget, roll)``, so a
+    :func:`release_delay_seconds` is pure in ``(remaining, roll)``, so a
     seeded RNG makes the same property deterministic.
 
     Both parking regimes are covered. Only "remaining far below the budget" was

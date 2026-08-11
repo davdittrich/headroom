@@ -154,10 +154,13 @@ async def _run_governor_ab_storm(*, governor_enabled: bool) -> dict[str, Any]:
     proxy = _proxy_with(
         transport,
         governor_enabled=governor_enabled,
-        # Generous budget so the retry loop actually runs in both arms, and so
-        # the mock's Retry-After (= one window) sits comfortably INSIDE the
-        # gate's willingness to wait rather than at its edge; real (unstubbed)
-        # waits, so neither arm gets a stub-induced advantage.
+        # Generous budget so the retry loop actually runs in both arms. The
+        # budget is set to `2*window + 1ms`, so the mock's Retry-After (= one
+        # window) sits exactly AT the gate's threshold (2x remaining <=
+        # budget) rather than comfortably inside it -- only elapsed time
+        # between observing the 429 and evaluating the threshold keeps it
+        # parking; real (unstubbed) waits, so neither arm gets a
+        # stub-induced advantage.
         retry_after_budget_ms=int(_AB_WINDOW_S * 2000) + 1,
     )
 
