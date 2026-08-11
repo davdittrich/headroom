@@ -599,6 +599,48 @@ async def test_429_halves_the_concurrency_limit() -> None:
 
 
 # --------------------------------------------------------------------------- 2c
+async def test_one_burst_of_429s_halves_the_limit_exactly_once() -> None:
+    """Chiu & Jain assume ONE decrease per feedback round; N decreases is collapse.
+
+    Eight requests admitted together all 429: that is one congestion episode,
+    not eight, and un-collapsing 8 -> 1 would cost 1+2+...+7 = 28 successes
+    serialised at limit 1.
+    """
+    gate = _gate()
+    generations = []
+    for _ in range(8):
+        assert await gate.admit(_HOST) is False
+        generations.append(gate.generation(_HOST))
+
+    rate_limited = _response(429, {"retry-after": "0.001"})
+    for generation in generations:
+        gate.observe(_HOST, rate_limited, generation)
+        gate.release(_HOST, rate_limited)
+    assert gate.concurrency_limit(_HOST) == 4.0
+
+    # A 429 from a request admitted AFTER the decrease is a new episode.
+    assert await gate.admit(_HOST) is False
+    gate.observe(_HOST, _response(429, {"retry-after": "0.001"}), gate.generation(_HOST))
+    assert gate.concurrency_limit(_HOST) == 2.0
+
+
+async def test_cancelling_a_parked_admit_leaves_no_pending_tasks() -> None:
+    """Client disconnects and httpx timeouts cancel admit on the hot path."""
+    gate = _gate()
+    gate.observe(_HOST, _response(200, _ratelimit_headers(1)))
+    assert await gate.admit(_HOST) is False  # fills the single slot
+
+    task = asyncio.create_task(gate.admit(_HOST))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0)
+
+    leaked = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    assert leaked == [], f"cancelled admit leaked waiter tasks: {leaked}"
+
+
 async def test_concurrency_limit_never_drops_below_one() -> None:
     gate = _gate()
     assert await gate.admit(_HOST) is False
@@ -706,17 +748,11 @@ async def test_limiter_wait_is_shutdown_interruptible() -> None:
     assert await asyncio.wait_for(task, timeout=2.0) is True
 
 
-# --------------------------------------------------------------------------- 2i
-async def test_kill_switch_disables_the_limiter_with_the_gate() -> None:
-    config = _config(upstream_rate_gate_enabled=False, http2=False)
-    proxy = HeadroomProxy(config)
-    await proxy.startup()
-    try:
-        assert proxy.upstream_rate_gate is None, "no governor object at all"
-        assert not isinstance(proxy.http_client._transport, RateGateTransport)
-        assert not isinstance(proxy.http_client_h1._transport, RateGateTransport)
-    finally:
-        await proxy.shutdown()
+# 2i (kill switch) needs no test of its own: with the gate off no
+# RateGateTransport is installed, so the limiter is unreachable by
+# construction, and ``test_kill_switch_prevents_installation`` above already
+# asserts exactly that. A limiter-specific copy passed before the limiter
+# existed, which makes it evidence of nothing.
 
 
 # --------------------------------------------------------------------------- behaviour
@@ -748,5 +784,6 @@ async def test_limiter_bounds_concurrent_in_flight_requests() -> None:
     gate.observe(_HOST, _response(200, _ratelimit_headers(3)))
 
     await asyncio.gather(*(transport.handle_async_request(_request(_HOST)) for _ in range(offered)))
-    assert recorder.max_inflight < offered, "the limiter must bound parallel dispatch"
-    assert recorder.max_inflight >= 1
+    # Exactly the seeded limit: every response re-seeds 3 and no 429 ever moves
+    # AIMD off None, so the effective limit is 3 for the whole run.
+    assert recorder.max_inflight == 3, "the limiter must bound parallel dispatch to the limit"
