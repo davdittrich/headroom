@@ -310,6 +310,14 @@ class ProxyConfig:
     retry_max_attempts: int = 3
     retry_base_delay_ms: int = 1000
     retry_max_delay_ms: int = 30000
+    # Separate from retry_max_delay_ms (which caps *exponential backoff
+    # growth*): this is how long we're willing to hold a request in-loop
+    # waiting on an upstream-supplied Retry-After before giving the 429 back
+    # to the caller instead. Default matches the pre-fix retry_max_delay_ms
+    # default (30000ms) so a Retry-After <=30s keeps retrying exactly as
+    # before; only waits beyond that (previously silently clamped to 30s,
+    # guaranteeing a repeat 429) now fail fast. See headroom-8z2.1.
+    retry_after_budget_ms: int = 30000
 
     # Prefix freeze
     prefix_freeze_enabled: bool = True

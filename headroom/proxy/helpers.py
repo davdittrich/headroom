@@ -815,13 +815,20 @@ def jitter_delay_ms(base_ms: int, max_ms: int, attempt: int) -> float:
     return capped * (0.5 + random.random())
 
 
-def retry_after_ms(response: httpx.Response, max_ms: int) -> float | None:
-    """Parse an HTTP ``Retry-After`` header into a millisecond delay, capped at ``max_ms``.
+def retry_after_ms(response: httpx.Response) -> float | None:
+    """Parse an HTTP ``Retry-After`` header into an uncapped millisecond delay.
 
     Returns the delay in ms for a numeric ``seconds`` value or an HTTP-date, or
     ``None`` when the header is absent or unparseable so the caller falls back to
     exponential backoff. Anthropic sends integer seconds; the HTTP-date branch
     covers other upstreams. Fails open on any parse error.
+
+    Never shrinks the parsed value — this is a floor, not a cap. Whether a
+    demanded wait is acceptable (and any clamping policy) is the caller's
+    decision, since "how long we're willing to wait" differs by status code
+    (see ``ProxyConfig.retry_after_budget_ms`` for 429; 529 keeps the old
+    backoff-cap clamp inline at its call sites since Anthropic sends no
+    trustworthy ``Retry-After`` on 529 in practice).
     """
     value = response.headers.get("retry-after")
     if not value:
@@ -837,7 +844,7 @@ def retry_after_ms(response: httpx.Response, max_ms: int) -> float | None:
             seconds = (retry_at - datetime.now(retry_at.tzinfo)).total_seconds()
         except (TypeError, ValueError):
             return None
-    return min(max(seconds, 0.0) * 1000.0, float(max_ms))
+    return max(seconds, 0.0) * 1000.0
 
 
 # Transient upstream statuses worth retrying with backoff: 429 (rate limit) and
@@ -846,6 +853,45 @@ def retry_after_ms(response: httpx.Response, max_ms: int) -> float | None:
 # problem with the request itself. Single source of truth so the streaming and
 # non-streaming forwarders agree on what is retriable.
 RETRYABLE_OVERLOAD_STATUSES: frozenset[int] = frozenset({429, 529})
+
+
+def overload_retry_delay_ms(
+    status_code: int,
+    retry_after: float | None,
+    *,
+    retry_after_budget_ms: float,
+    retry_base_delay_ms: int,
+    retry_max_delay_ms: int,
+    attempt: int,
+) -> float | None:
+    """Decide the retry delay for a 429/529 overload response.
+
+    ``retry_after`` is the pre-parsed ``retry_after_ms(response)`` value (or
+    ``None``). Returns the delay in ms to wait before retrying, or ``None``
+    when the caller should give up and hand the response back as-is.
+
+    Single source of truth for the four-branch policy previously duplicated
+    between ``_retry_request`` (server.py) and the streaming handler
+    (handlers/streaming.py) — see issue #1221, where the two copies drifted.
+    """
+    if retry_after is None or retry_after <= 0:
+        # A parsed delay of 0 (or a past HTTP-date, floored to 0 by
+        # retry_after_ms) is not a usable wait signal — sleeping 0ms would
+        # re-fire immediately into the same rate limit. Treat it like an absent
+        # header and fall back to jittered backoff, matching the pre-fix
+        # `retry_after_ms(...) or jitter_delay_ms(...)`.
+        return jitter_delay_ms(retry_base_delay_ms, retry_max_delay_ms, attempt)
+    if status_code == 429:
+        if retry_after > retry_after_budget_ms:
+            # Demanded wait exceeds what we're willing to hold this request
+            # for in-loop — hand the 429 back now instead of retrying into a
+            # wait we already know is insufficient.
+            return None
+        return retry_after
+    # 529 Retry-After is not a trustworthy signal; keep the pre-fix
+    # clamp-to-backoff-cap instead of coupling it to the 429 budget
+    # policy.
+    return min(retry_after, float(retry_max_delay_ms))
 
 
 async def request_with_transient_retry(

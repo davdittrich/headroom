@@ -16,6 +16,7 @@ from headroom.proxy.auth_mode import classify_client
 from headroom.proxy.helpers import (
     RETRYABLE_OVERLOAD_STATUSES,
     jitter_delay_ms,
+    overload_retry_delay_ms,
     retry_after_ms,
 )
 from headroom.proxy.token_counting import gemini_output_tokens
@@ -1209,20 +1210,31 @@ class StreamingMixin:
                         )
                     # Retry transient overloads (429 rate-limit, 529 overloaded)
                     # honoring Retry-After — the streaming sibling of the
-                    # _retry_request path (#1221); on exhaustion, fall through to
-                    # forward the status to the client.
+                    # non-streaming _retry_request path (#1221); both share
+                    # the delay policy via overload_retry_delay_ms so they
+                    # cannot drift apart again. On exhaustion, fall through
+                    # to forward the status to the client.
                     if (
                         upstream_response.status_code in RETRYABLE_OVERLOAD_STATUSES
                         and self.config.retry_enabled
                         and attempt < retry_attempts - 1
                     ):
-                        delay_with_jitter = retry_after_ms(
-                            upstream_response, self.config.retry_max_delay_ms
-                        ) or jitter_delay_ms(
-                            self.config.retry_base_delay_ms,
-                            self.config.retry_max_delay_ms,
-                            attempt,
+                        retry_after = retry_after_ms(upstream_response)
+                        delay_with_jitter = overload_retry_delay_ms(
+                            upstream_response.status_code,
+                            retry_after,
+                            retry_after_budget_ms=self.config.retry_after_budget_ms,
+                            retry_base_delay_ms=self.config.retry_base_delay_ms,
+                            retry_max_delay_ms=self.config.retry_max_delay_ms,
+                            attempt=attempt,
                         )
+                        if delay_with_jitter is None:
+                            # Demanded wait exceeds the retry budget — fall
+                            # through and forward this response instead of
+                            # retrying into an insufficient wait. Do not
+                            # close it: the caller streams this response's
+                            # body back to the client.
+                            break
                         await upstream_response.aclose()
                         logger.warning(
                             f"[{request_id}] Upstream {upstream_response.status_code} "
