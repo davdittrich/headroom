@@ -17,12 +17,33 @@ constructions covers ``.post``, ``.send`` and ``.stream`` uniformly.
 
 Policy, and why:
 
-* **Bounded wait, capped not skipped.** The gate parks a request for at most
-  :data:`GATE_MAX_WAIT_SECONDS` (30s), and a longer demanded wait is CAPPED at
-  the bound, never skipped: skipping would make the gate a permanent no-op for
-  exactly the ``Retry-After`` values subscription 429s carry (60s+), letting the
-  herd re-trip the limit and push the deadline out again with each fresh 429.
-  Two ceilings bound the number, and the binding one is (a):
+* **Fail fast above the budget.** The gate parks a request only while the whole
+  hold -- the remaining deadline plus its release jitter, i.e. up to 2x the
+  remaining wait -- fits inside ONE willingness-to-wait number,
+  ``ProxyConfig.retry_after_budget_ms`` (30s default): the same number
+  ``helpers.overload_retry_delay_ms`` uses to decide that a demanded wait is
+  not worth holding a request for, applied to the total this component actually
+  holds for. Past it the gate dispatches immediately and
+  lets the upstream 429 flow back to the client, whose own backoff handles it,
+  exactly as the retry loop already does. There is deliberately no second
+  gate-only ceiling: a separate constant is what let the two halves of one
+  policy disagree (the gate parked 30s on a wait the retry loop had already
+  given up on), so the budget is read from the config and the
+  ``max_wait_seconds`` constructor argument exists only for tests.
+
+  Consequence, accepted deliberately: **above the budget the gate no longer
+  throttles at all.** The measured above-bound benefit was small (13 -> 7
+  wasted upstream 429s in the A/B harness) and zero for a tight arrival burst,
+  while the cost was concrete: a request meeting an over-budget gate burned the
+  full 30s and then got its 429 anyway, where the ungated path answered in
+  ~200ms. The gate still RECORDS every 429 deadline -- :meth:`observe` is
+  independent of :meth:`wait` -- so it keeps learning while it declines to
+  park, and throttles again as soon as a fresh ``Retry-After`` lands inside the
+  budget.
+
+  Why 30s is also the right park ceiling, i.e. why sharing the retry loop's
+  budget is not merely convenient -- two ceilings bound it, and the binding one
+  is (a):
 
   (a) *Prompt-cache TTL.* Anthropic's default TTL is 5 minutes and ~97.6% of
   this workload's input arrives as cache reads, so time spent holding a request
@@ -46,17 +67,20 @@ Policy, and why:
   1000 slots at B = 30s, and B = 30s stays under the cap for any arrival rate
   below ~33 req/s. Not binding here, but it is why the bound cannot simply be
   raised to the TTL.
-
-  30s also coincides with the already-approved ``ProxyConfig.retry_after_budget_ms``
-  default, i.e. the gate never holds a request longer than the retry loop
-  already would.
 * **Release jitter.** With one shared deadline, every parked waiter's timer would
   otherwise fire in the same event-loop tick and recreate the burst. Each waiter
-  sleeps ``remaining * (1.0 + random())``, i.e. it dispatches uniformly in
-  ``[deadline, deadline + remaining]``. This is the proportional 50-150% band of
+  sleeps :func:`release_delay_seconds`, dispatching uniformly in
+  ``[deadline, deadline + remaining]``: the proportional 50-150% band of
   ``helpers.jitter_delay_ms`` shifted to 100-200% so that no waiter can dispatch
   *before* the deadline; the dispersal window equals the gate length itself, so
-  there is no new tuned constant.
+  there is no new tuned constant. It is never clamped, which is why the
+  fail-fast test above is on ``2 * remaining``. The previous form,
+  ``min(remaining * (1.0 + random()), park_until - now)``, produced ZERO jitter
+  wherever the clamp bound: for a demanded wait at or past the ceiling every
+  draw clamped, so all eight waiters' timers fired at exactly ``park_until`` and
+  the herd was reassembled intact. Measured over 8 parked waiters, the release
+  spread is now 0.16s at ``Retry-After`` 0.2s and 0.46s at a demanded wait of
+  half the budget -- the regime that previously released in one tick.
 * **The wait is a loop.** After each wake the deadline is re-read: if the first
   released waiter tripped a fresh 429, the rest keep waiting on the new deadline.
   The freshest 429 wins in both directions -- a later, shorter ``Retry-After``
@@ -81,6 +105,20 @@ Limitations, deliberate:
   host that is 429'd once and never contacted again does not leak an entry.
 * Requests already in flight when the gate opens are NOT cancelled. The gate
   governs dispatch only.
+* Above the budget there is no throttling at all (see the fail-fast bullet):
+  the herd re-tries into the limit and each member spends its own 429. That is
+  the accepted cost of never holding a request past the point where the retry
+  loop would have given up.
+* Because the hold must cover the jitter tail, the largest ``Retry-After`` the
+  gate throttles is HALF the budget (15s at the default). Between half and the
+  full budget the retry loop still honors the wait while the gate does not --
+  the two agree on the number and on what it bounds (the total hold), not on
+  who holds longest.
+* Release order is the jitter roll, not arrival order: there is no fairness or
+  FIFO guarantee between waiters, and a late arrival can dispatch first.
+* The deadline is keyed by HOST alone. A 429 earned by one API key, model or
+  organization gates every request this process sends to that host, including
+  ones drawing on untouched quota.
 * ``headroom/backends/litellm.py`` and ``headroom/backends/anyllm.py`` drive
   their own HTTP stacks and never touch ``self.http_client``, so traffic through
   a configured backend is not gated. The default direct-Anthropic path (where
@@ -101,10 +139,17 @@ from .models import ProxyConfig
 
 RATE_LIMIT_STATUS = 429
 
-#: Longest a single request may be parked on a gate. See the module docstring
-#: for the derivation (prompt-cache-TTL margin under additive retry sleeps, and
-#: the inbound concurrency cap).
-GATE_MAX_WAIT_SECONDS = 30.0
+
+def release_delay_seconds(remaining: float, roll: float) -> float:
+    """Seconds a waiter sleeps before dispatching, for ``roll`` drawn from [0, 1).
+
+    Dispatch lands uniformly in ``[deadline, deadline + remaining]`` -- never
+    before the deadline, and spread over a window as wide as the gate itself in
+    EVERY regime the gate parks in, because :meth:`UpstreamRateGate.wait` only
+    parks when the whole window fits inside the budget. Pure, so that dispersal
+    is testable without racing event-loop wakeups.
+    """
+    return remaining * (1.0 + roll)
 
 
 class UpstreamRateGate:
@@ -115,11 +160,16 @@ class UpstreamRateGate:
         config: ProxyConfig,
         shutdown_event: Callable[[], asyncio.Event],
         *,
-        max_wait_seconds: float = GATE_MAX_WAIT_SECONDS,
+        max_wait_seconds: float | None = None,
     ) -> None:
         self._config = config
         self._shutdown_event = shutdown_event
-        self._max_wait_seconds = max_wait_seconds
+        # One policy, one number: the gate's willingness to wait IS the retry
+        # loop's ``retry_after_budget_ms``. A separate gate constant is what let
+        # the two disagree. The override is for tests only.
+        self._max_wait_seconds = (
+            config.retry_after_budget_ms / 1000.0 if max_wait_seconds is None else max_wait_seconds
+        )
         self._until: dict[str, float] = {}
 
     def deadline(self, host: str) -> float | None:
@@ -150,27 +200,29 @@ class UpstreamRateGate:
         self._until[host] = now + demanded_ms / 1000.0
 
     async def wait(self, host: str) -> bool:
-        """Park until ``host``'s gate expires or the bound is hit.
+        """Park until ``host``'s gate expires, unless it is beyond the budget.
 
         Returns True if shutdown interrupted the wait, matching
         ``HeadroomProxy._wait_for_retry_delay_or_shutdown``.
         """
-        park_until = time.monotonic() + self._max_wait_seconds
         shutdown = self._shutdown_event()
         while True:
             deadline = self.deadline(host)
             if deadline is None:
                 return False
-            now = time.monotonic()
-            if now >= park_until:
-                # Bound reached: dispatch and let the upstream 429 reach the
-                # client rather than hold the request (and its inbound
-                # concurrency slot) any longer.
+            remaining = deadline - time.monotonic()
+            if 2.0 * remaining > self._max_wait_seconds:
+                # Over budget: dispatch now and let the 429 reach the client,
+                # the same call ``helpers.overload_retry_delay_ms`` makes for
+                # the retry loop. Holding the request (and its inbound
+                # concurrency slot) only to hand back that same 429 later is
+                # strictly worse. The factor 2 is the jitter band, not a second
+                # ceiling: the budget bounds the WHOLE hold, and a waiter's hold
+                # is up to 2x the remaining wait (see release_delay_seconds), so
+                # every park that starts is guaranteed to fit inside the budget
+                # and to keep a full dispersal window.
                 return False
-            # min(remaining, bound), NOT "skip the wait when remaining > bound":
-            # skipping would make the gate a permanent no-op for exactly the
-            # Retry-After values subscription 429s carry.
-            delay = min((deadline - now) * (1.0 + random.random()), park_until - now)
+            delay = release_delay_seconds(remaining, random.random())
             try:
                 await asyncio.wait_for(shutdown.wait(), timeout=delay)
             except (TimeoutError, asyncio.TimeoutError):

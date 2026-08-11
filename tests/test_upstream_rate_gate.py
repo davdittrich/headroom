@@ -16,6 +16,7 @@ stubbed anywhere in this module.
 from __future__ import annotations
 
 import asyncio
+import random
 import ssl
 import time
 from typing import Any
@@ -26,10 +27,10 @@ import pytest
 from headroom.proxy.models import ProxyConfig
 from headroom.proxy.server import HeadroomProxy
 from headroom.proxy.upstream_rate_gate import (
-    GATE_MAX_WAIT_SECONDS,
     RateGateTransport,
     UpstreamRateGate,
     install_gate,
+    release_delay_seconds,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -122,17 +123,53 @@ async def test_gate_on_one_host_does_not_delay_another_host() -> None:
 
 
 # --------------------------------------------------------------------------- 3c
-async def test_release_is_dispersed_across_waiters() -> None:
+async def test_release_delay_disperses_waiters_in_every_parking_regime() -> None:
+    """Dispersal is asserted on the computed delay, not on observed wakeups.
+
+    The previous form of this test compared order statistics of 8 unsynchronized
+    ``asyncio`` wakeups and failed at ``spread=0.0491`` against a ``>= 0.05``
+    threshold on a loaded combined run while passing in isolation.
+    :func:`release_delay_seconds` is pure in ``(remaining, budget, roll)``, so a
+    seeded RNG makes the same property deterministic.
+
+    Both parking regimes are covered. Only "remaining far below the budget" was
+    exercised before, which is why the clamped form of this computation --
+    ``min(remaining * (1 + random()), park_until - now)``, where every waiter
+    whose demanded wait reached the ceiling got the identical clamped timer --
+    shipped with dead jitter unnoticed.
+    """
+    budget = 30.0
+    rng = random.Random(20260810)
+    # Far below the budget, and at the largest remaining wait the gate parks on
+    # at all (2 * remaining == budget) -- the regime the clamp used to kill.
+    for remaining in (0.2, 7.5, 15.0):
+        delays = [release_delay_seconds(remaining, rng.random()) for _ in range(8)]
+        assert min(delays) >= remaining, "no waiter may dispatch before the deadline"
+        assert max(delays) <= budget, "no waiter may be held past the budget"
+        spread = max(delays) - min(delays)
+        assert spread > 0.3 * remaining, (
+            f"waiters share one timer at remaining={remaining} (spread={spread:.4f}s)"
+        )
+
+
+async def test_waiters_do_not_all_dispatch_in_one_tick() -> None:
+    """End-to-end companion to the pure-function assertion above.
+
+    Deliberately only an upper bound (everyone dispatches inside the jitter
+    window) plus an exact count -- lower-bounding an observed spread is what
+    made the old version of this flaky.
+    """
     recorder = _Recorder({"a.upstream": [(429, {"retry-after": "0.2"}), (200, {})]})
     _, transport = _wired(recorder)
     await transport.handle_async_request(_request("a.upstream"))
+    opened_at = time.monotonic()
 
     await asyncio.gather(
         *(transport.handle_async_request(_request("a.upstream")) for _ in range(8))
     )
     released = recorder.times("a.upstream")[1:]
-    spread = max(released) - min(released)
-    assert spread >= 0.05, f"waiters dispatched in one tick (spread={spread:.4f}s)"
+    assert len(released) == 8
+    assert min(released) - opened_at >= 0.2, "no waiter may dispatch before the deadline"
 
 
 # --------------------------------------------------------------------------- 3d
@@ -151,15 +188,17 @@ async def test_idle_path_performs_no_await(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 # --------------------------------------------------------------------------- 3e
-async def test_deadline_beyond_bound_parks_for_the_bound_then_dispatches() -> None:
-    """A deadline past the bound caps the park at the bound -- it does not skip it.
+async def test_deadline_beyond_the_budget_dispatches_immediately() -> None:
+    """Above the willingness-to-wait budget the gate does not park at all.
 
-    Dispatching immediately would make the gate a permanent no-op for exactly
-    the ``Retry-After`` values subscription 429s carry (60s+ against a 30s
-    bound): nobody parks, everyone re-trips the limit, and the deadline is
-    pushed out again by each fresh 429.
+    Same rule ``helpers.overload_retry_delay_ms`` applies to the retry loop: a
+    demanded wait past ``retry_after_budget_ms`` is not worth holding the
+    request for, so the 429 goes back to the client and its own backoff handles
+    it. Parking anyway burned the full budget and then returned the same 429.
     """
-    assert GATE_MAX_WAIT_SECONDS == 30.0, "the shipped bound, derived in the module docstring"
+    assert _gate()._max_wait_seconds == _config().retry_after_budget_ms / 1000.0, (
+        "the gate budget must BE retry_after_budget_ms, not a second constant that can drift"
+    )
     recorder = _Recorder()
     gate, transport = _wired(recorder, _gate(max_wait_seconds=0.2))
     gate._until["a.upstream"] = time.monotonic() + 10.0
@@ -169,10 +208,16 @@ async def test_deadline_beyond_bound_parks_for_the_bound_then_dispatches() -> No
 
     started = time.monotonic()
     await transport.handle_async_request(_request("a.upstream"))
-    elapsed = time.monotonic() - started
-    assert elapsed >= 0.2, "a deadline past the bound must still park for the bound"
-    assert elapsed < 1.0, "...and must never park longer than the bound"
+    assert time.monotonic() - started < 0.15, "an over-budget deadline must not park the request"
     assert len(recorder.dispatches) == 1
+    assert gate.deadline("a.upstream") is not None, "declining to park must not clear the deadline"
+
+    # The budget bounds the WHOLE hold, jitter included, so the threshold sits
+    # at half of it: a wait whose 100-200% release band still fits does park.
+    gate._until["a.upstream"] = time.monotonic() + 0.08  # 2 * 0.08 <= 0.2
+    started = time.monotonic()
+    await transport.handle_async_request(_request("a.upstream"))
+    assert time.monotonic() - started >= 0.08, "a wait that fits the budget must still park"
 
 
 # --------------------------------------------------------------------------- 3f
@@ -203,7 +248,7 @@ async def test_shutdown_abandons_the_gate_wait() -> None:
     event = asyncio.Event()
     gate = UpstreamRateGate(_config(), lambda: event)
     transport = RateGateTransport(gate, recorder)
-    gate._until["a.upstream"] = time.monotonic() + 20.0
+    gate._until["a.upstream"] = time.monotonic() + 10.0  # inside the budget, so it parks
 
     started = time.monotonic()
     task = asyncio.create_task(transport.handle_async_request(_request("a.upstream")))
@@ -373,12 +418,12 @@ async def test_gate_state_is_shared_across_both_clients() -> None:
 
 
 # --------------------------------------------------------------------------- 3o
-async def test_quota_exhaustion_retry_after_is_capped_at_the_bound() -> None:
-    """An hour-long Retry-After must never hold a request for an hour.
+async def test_quota_exhaustion_retry_after_is_recorded_but_not_waited_on() -> None:
+    """An hour-long Retry-After is learned, then failed fast.
 
-    It is still worth the bound: parking that long is what stops the herd from
-    re-trying into an exhausted quota, and the bound is what stops the client
-    from seeing a hang.
+    ``observe()`` must record the deadline even though ``wait()`` will decline
+    to park on it: the gate keeps learning, so it throttles again the moment a
+    fresh 429 lands inside the budget.
     """
     recorder = _Recorder({"a.upstream": [(429, {"retry-after": "3600"}), (200, {})]})
     gate, transport = _wired(recorder, _gate(max_wait_seconds=0.2))
@@ -388,8 +433,7 @@ async def test_quota_exhaustion_retry_after_is_capped_at_the_bound() -> None:
     assert deadline is not None and deadline - time.monotonic() > 3000
     started = time.monotonic()
     await transport.handle_async_request(_request("a.upstream"))
-    elapsed = time.monotonic() - started
-    assert 0.2 <= elapsed < 1.0, "must park for the bound, and only the bound"
+    assert time.monotonic() - started < 0.15, "an hour-long Retry-After must not park at all"
 
 
 async def test_gate_deadline_does_not_ratchet_upward() -> None:
