@@ -4,9 +4,9 @@ Covers the guards from the ticket, one test per lettered requirement (3a-3p):
 gating, per-host isolation, dispersed release, idle no-op, the fail-fast bound,
 529 exclusion, shutdown interruption, the kill switch, streaming transparency,
 non-``_retry_request`` call sites, headerless/unparseable ``Retry-After``,
-post-wake re-check, cross-client shared state, quota-exhaustion fail-fast, and
-preservation of the ``AsyncClient`` kwargs that ``transport=`` would otherwise
-silence.
+post-wake re-check, cross-client shared state, the bound on quota-exhaustion
+waits, and preservation of everything the client was built with -- including
+the environment proxy map, which ``transport=`` silently discards.
 
 All waits are test-scale (tens to hundreds of milliseconds) so the suite stays
 fast while exercising the real ``asyncio`` wait path -- the gate's wait is not
@@ -24,12 +24,12 @@ import httpx
 import pytest
 
 from headroom.proxy.models import ProxyConfig
-from headroom.proxy.server import HeadroomProxy, _provider_httpx_client_options
+from headroom.proxy.server import HeadroomProxy
 from headroom.proxy.upstream_rate_gate import (
     GATE_MAX_WAIT_SECONDS,
     RateGateTransport,
     UpstreamRateGate,
-    client_kwargs_with_gate,
+    install_gate,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -151,17 +151,27 @@ async def test_idle_path_performs_no_await(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 # --------------------------------------------------------------------------- 3e
-async def test_deadline_beyond_bound_dispatches_instead_of_sleeping() -> None:
+async def test_deadline_beyond_bound_parks_for_the_bound_then_dispatches() -> None:
+    """A deadline past the bound caps the park at the bound -- it does not skip it.
+
+    Dispatching immediately would make the gate a permanent no-op for exactly
+    the ``Retry-After`` values subscription 429s carry (60s+ against a 30s
+    bound): nobody parks, everyone re-trips the limit, and the deadline is
+    pushed out again by each fresh 429.
+    """
+    assert GATE_MAX_WAIT_SECONDS == 30.0, "the shipped bound, derived in the module docstring"
     recorder = _Recorder()
-    gate, transport = _wired(recorder)
-    gate._until["a.upstream"] = time.monotonic() + GATE_MAX_WAIT_SECONDS + 60
+    gate, transport = _wired(recorder, _gate(max_wait_seconds=0.2))
+    gate._until["a.upstream"] = time.monotonic() + 10.0
     assert gate.deadline("a.upstream") is not None, (
         "the gate must be live for this to prove anything"
     )
 
     started = time.monotonic()
     await transport.handle_async_request(_request("a.upstream"))
-    assert time.monotonic() - started < 0.1, "a deadline beyond the bound must not park"
+    elapsed = time.monotonic() - started
+    assert elapsed >= 0.2, "a deadline past the bound must still park for the bound"
+    assert elapsed < 1.0, "...and must never park longer than the bound"
     assert len(recorder.dispatches) == 1
 
 
@@ -182,6 +192,13 @@ async def test_529_does_not_open_the_gate() -> None:
 
 # --------------------------------------------------------------------------- 3g
 async def test_shutdown_abandons_the_gate_wait() -> None:
+    """Shutdown must abandon the wait AND the request.
+
+    ``HeadroomProxy.shutdown`` sets this same event and then ``aclose()``s the
+    client, so dispatching after the wake races the close and can surface
+    ``RuntimeError: client has been closed``. Return the same 503 shape
+    ``_shutdown_retry_response`` uses instead.
+    """
     recorder = _Recorder()
     event = asyncio.Event()
     gate = UpstreamRateGate(_config(), lambda: event)
@@ -192,10 +209,10 @@ async def test_shutdown_abandons_the_gate_wait() -> None:
     task = asyncio.create_task(transport.handle_async_request(_request("a.upstream")))
     await asyncio.sleep(0.05)
     event.set()
-    await asyncio.wait_for(task, timeout=2.0)
-    dispatched_at = recorder.dispatches[0][1]
-    assert dispatched_at - started >= 0.05, "the request must actually have been parked"
-    assert dispatched_at - started < 1.0, "shutdown must abandon the wait promptly"
+    response = await asyncio.wait_for(task, timeout=2.0)
+    assert time.monotonic() - started < 1.0, "shutdown must abandon the wait promptly"
+    assert response.status_code == 503
+    assert recorder.dispatches == [], "shutdown must not dispatch into a closing client"
 
 
 # --------------------------------------------------------------------------- 3h
@@ -211,9 +228,14 @@ async def test_kill_switch_prevents_installation() -> None:
         await proxy.shutdown()
 
 
-async def test_kill_switch_off_yields_no_transport_kwarg() -> None:
-    kwargs = {"timeout": httpx.Timeout(1.0), "verify": True}
-    assert client_kwargs_with_gate(None, http2=True, client_kwargs=kwargs) == kwargs
+async def test_install_gate_is_a_no_op_without_a_gate() -> None:
+    client = httpx.AsyncClient()
+    try:
+        original = client._transport
+        assert install_gate(client, None) is client
+        assert client._transport is original
+    finally:
+        await client.aclose()
 
 
 # --------------------------------------------------------------------------- 3i
@@ -351,16 +373,42 @@ async def test_gate_state_is_shared_across_both_clients() -> None:
 
 
 # --------------------------------------------------------------------------- 3o
-async def test_quota_exhaustion_retry_after_does_not_park() -> None:
+async def test_quota_exhaustion_retry_after_is_capped_at_the_bound() -> None:
+    """An hour-long Retry-After must never hold a request for an hour.
+
+    It is still worth the bound: parking that long is what stops the herd from
+    re-trying into an exhausted quota, and the bound is what stops the client
+    from seeing a hang.
+    """
     recorder = _Recorder({"a.upstream": [(429, {"retry-after": "3600"}), (200, {})]})
-    gate, transport = _wired(recorder)
+    gate, transport = _wired(recorder, _gate(max_wait_seconds=0.2))
 
     await transport.handle_async_request(_request("a.upstream"))
     deadline = gate.deadline("a.upstream")
     assert deadline is not None and deadline - time.monotonic() > 3000
     started = time.monotonic()
     await transport.handle_async_request(_request("a.upstream"))
-    assert time.monotonic() - started < 0.1, "an hour-long Retry-After must fail fast"
+    elapsed = time.monotonic() - started
+    assert 0.2 <= elapsed < 1.0, "must park for the bound, and only the bound"
+
+
+async def test_gate_deadline_does_not_ratchet_upward() -> None:
+    """The freshest 429 wins, in both directions.
+
+    With ``max()`` merge semantics an early ``Retry-After: 60`` would pin the
+    host for a minute even after the upstream started answering ``Retry-After:
+    5``, and every fresh long header would push the deadline further out.
+    """
+    recorder = _Recorder(
+        {"a.upstream": [(429, {"retry-after": "60"}), (429, {"retry-after": "0.1"})]}
+    )
+    gate, transport = _wired(recorder, _gate(max_wait_seconds=0.05))
+
+    await transport.handle_async_request(_request("a.upstream"))
+    await transport.handle_async_request(_request("a.upstream"))
+    deadline = gate.deadline("a.upstream")
+    assert deadline is not None
+    assert deadline - time.monotonic() <= 0.1, "a shorter, fresher Retry-After must win"
 
 
 # --------------------------------------------------------------------------- 3p
@@ -394,63 +442,49 @@ async def test_client_kwargs_survive_transport_installation() -> None:
         await proxy.shutdown()
 
 
-async def test_verify_object_is_handed_to_the_inner_transport() -> None:
-    context = ssl.create_default_context()
-    gate = _gate()
-    kwargs = client_kwargs_with_gate(
-        gate,
-        http2=False,
-        client_kwargs={
-            "timeout": httpx.Timeout(1.0),
-            "limits": httpx.Limits(max_connections=3),
-            "verify": context,
-        },
-    )
-    assert kwargs["transport"]._inner._pool._ssl_context is context
+async def test_configured_http_proxy_is_mounted_and_gated() -> None:
+    """A configured ``proxy=`` keeps its ``all://`` mount, and the mount is gated.
 
-
-async def test_unknown_client_kwarg_disables_the_gate_rather_than_dropping_it() -> None:
-    """A future ``_client_kwargs`` key must never be silently lost.
-
-    Dropping one would silently downgrade TLS or the connection pool; the gate
-    fails open (not installed) instead, which is exactly the kill-switch path.
-    """
-    kwargs = client_kwargs_with_gate(
-        _gate(),
-        http2=False,
-        client_kwargs={
-            "timeout": httpx.Timeout(1.0),
-            "limits": httpx.Limits(max_connections=3),
-            "verify": True,
-            "cert": ("/nope.pem",),
-        },
-    )
-    assert "transport" not in kwargs
-    assert kwargs["cert"] == ("/nope.pem",)
-
-
-async def test_provider_client_kwargs_keys_are_all_mirrored() -> None:
-    """Guards the mirroring list against drift in ``_provider_httpx_client_options``."""
-    _, client_kwargs = _provider_httpx_client_options(_config(http_proxy="http://p:1"), verify=True)
-    assert set(client_kwargs) == {"timeout", "limits", "verify", "proxy"}
-    kwargs = client_kwargs_with_gate(_gate(), http2=False, client_kwargs=client_kwargs)
-    assert "transport" in kwargs
-
-
-async def test_configured_http_proxy_does_not_mount_around_the_gate() -> None:
-    """A client-level ``proxy=`` registers an ``all://`` mount that
-    ``Client._transport_for_url`` prefers over ``transport=``, which would route
-    every request around the gate. The proxy must live on the inner transport.
+    ``Client._transport_for_url`` consults mounts BEFORE ``transport=``, so a
+    gate installed only on ``_transport`` would be routed around entirely.
     """
     config = _config(http_proxy="http://corp-proxy:3128", upstream_rate_gate_enabled=True)
     proxy = HeadroomProxy(config)
     await proxy.startup()
     try:
         client = proxy.http_client
-        assert client._mounts == {}
+        assert client._mounts, "the configured proxy mount must survive"
         routed = client._transport_for_url(httpx.URL("https://api.anthropic.com/v1/messages"))
-        assert routed is client._transport
         assert isinstance(routed, RateGateTransport)
         assert type(routed._inner._pool).__name__ == "AsyncHTTPProxy"
+    finally:
+        await proxy.shutdown()
+
+
+async def test_environment_proxy_map_survives_and_is_gated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """httpx builds its env proxy map only when ``transport is None``.
+
+    ``_client.py``: ``allow_env_proxies = trust_env and transport is None``.
+    Passing any ``transport=`` therefore drops HTTP_PROXY/HTTPS_PROXY/ALL_PROXY
+    and every NO_PROXY exemption -- in a deployment whose egress only works
+    through the env proxy that is total breakage, and the gate is on by default.
+    """
+    monkeypatch.setenv("HTTPS_PROXY", "http://corp-egress:3128")
+    monkeypatch.setenv("NO_PROXY", "internal.test")
+    config = _config(upstream_rate_gate_enabled=True)
+    proxy = HeadroomProxy(config)
+    await proxy.startup()
+    try:
+        client = proxy.http_client
+        assert client._mounts, "environment proxies must survive gate installation"
+        routed = client._transport_for_url(httpx.URL("https://api.anthropic.com/v1/messages"))
+        assert isinstance(routed, RateGateTransport), "the env proxy mount must be gated"
+        assert type(routed._inner._pool).__name__ == "AsyncHTTPProxy"
+        # NO_PROXY exemptions still bypass the proxy, and are still gated.
+        exempt = client._transport_for_url(httpx.URL("https://internal.test/v1"))
+        assert isinstance(exempt, RateGateTransport)
+        assert type(exempt._inner._pool).__name__ == "AsyncConnectionPool"
     finally:
         await proxy.shutdown()
