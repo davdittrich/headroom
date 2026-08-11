@@ -318,6 +318,10 @@ class ProxyConfig:
     # before; only waits beyond that (previously silently clamped to 30s,
     # guaranteeing a repeat 429) now fail fast. See headroom-8z2.1.
     retry_after_budget_ms: int = 30000
+    # Kill switch for the per-upstream-host rate gate (headroom-8z2.2). When
+    # False the transport wrapper is not installed at all, restoring pre-gate
+    # behavior byte-for-byte. See headroom/proxy/upstream_rate_gate.py.
+    upstream_rate_gate_enabled: bool = True
 
     # Prefix freeze
     prefix_freeze_enabled: bool = True

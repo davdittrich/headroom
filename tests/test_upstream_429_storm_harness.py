@@ -37,6 +37,11 @@ combination takes, it either returns the parsed ``Retry-After`` value
 directly or falls back to ``jitter_delay_ms`` (only reachable for an absent
 or non-positive ``Retry-After``, which this mock never sends, so the harness
 itself never exercises ``random.random()``).
+
+Exception, added by WU2 (headroom-8z2.2): the governor A/B section at the end
+of this module does sleep for real (sub-second), because the thing under test
+IS a wait. Stubbing the wait in either arm would decide the comparison, so both
+arms run unstubbed and differ only in the kill switch.
 """
 
 from __future__ import annotations
@@ -50,6 +55,7 @@ import httpx
 import pytest
 
 from headroom.proxy.server import ProxyConfig, create_app
+from headroom.proxy.upstream_rate_gate import RateGateTransport, UpstreamRateGate
 
 # Mirrors RETRYABLE_OVERLOAD_STATUSES semantics (headroom/proxy/helpers.py:848)
 # without importing private internals not needed here.
@@ -150,14 +156,14 @@ def _proxy_with(
 
     ``governor_enabled`` is the A/B arm switch the epic guard requires
     (headroom-8z2 guard: "gate is keyed... one install point"; headroom-8z2.4
-    guard: "expose the arm as an explicit parameter"). WU0 builds no
-    governor -- there is nothing in ``ProxyConfig`` yet to flip -- so the
-    parameter is currently inert and both arms produce a byte-identical
-    ``ProxyConfig``. WU2/WU3 wire this into the real kill switch; until then
-    it exists so callers of this harness never change call signature.
+    guard: "expose the arm as an explicit parameter"). WU2 (headroom-8z2.2)
+    wired it to the real kill switch ``ProxyConfig.upstream_rate_gate_enabled``:
+    the enabled arm installs the same :class:`RateGateTransport` wrapper that
+    ``HeadroomProxy.startup`` installs in production, around the mock upstream.
+    Everything else in both arms is identical.
     """
-    del governor_enabled  # no-op until WU2/WU3 land a governor to toggle
     config = ProxyConfig(
+        upstream_rate_gate_enabled=governor_enabled,
         optimize=False,
         cache_enabled=False,
         rate_limit_enabled=False,
@@ -174,7 +180,11 @@ def _proxy_with(
         retry_after_budget_ms=retry_after_budget_ms,
     )
     proxy = create_app(config).state.proxy
-    proxy.http_client = httpx.AsyncClient(transport=transport)
+    outbound: httpx.AsyncBaseTransport = transport
+    if governor_enabled:
+        proxy.upstream_rate_gate = UpstreamRateGate(config, proxy._get_shutdown_event)
+        outbound = RateGateTransport(proxy.upstream_rate_gate, transport)
+    proxy.http_client = httpx.AsyncClient(transport=outbound)
     return proxy
 
 
@@ -378,7 +388,9 @@ def test_buffered_path_fix_returns_429_on_first_call(monkeypatch: pytest.MonkeyP
     assert metrics["client_visible_rate_limit_error_count"] == n_rate_limited
 
 
-def test_buffered_path_retries_when_budget_exceeds_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_buffered_path_retries_when_budget_exceeds_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Retry-exercised arm: budget (_RETRY_AFTER_BUDGET_MS_GENEROUS) exceeds the
     mock's Retry-After (5000ms), so the retry/backoff loop still runs its full
     retry_max_attempts instead of failing fast. This does not weaken the
@@ -416,7 +428,9 @@ def test_buffered_path_governor_arms_are_config_identical(monkeypatch: pytest.Mo
     """WU0 ships no governor; both arms must be byte-identical configs until
     WU2/WU3 land something to flip. Guards the harness's own contract, not
     proxy behavior."""
-    off = asyncio.run(_run_buffered_storm(_N_CLIENTS, _CAPACITY, monkeypatch, governor_enabled=False))
+    off = asyncio.run(
+        _run_buffered_storm(_N_CLIENTS, _CAPACITY, monkeypatch, governor_enabled=False)
+    )
     monkeypatch.undo()
     on = asyncio.run(_run_buffered_storm(_N_CLIENTS, _CAPACITY, monkeypatch, governor_enabled=True))
     off.pop("wallclock_seconds")
@@ -452,7 +466,9 @@ def test_streaming_path_fix_returns_429_on_first_call(monkeypatch: pytest.Monkey
     assert metrics["client_visible_rate_limit_error_count"] == n_rate_limited
 
 
-def test_streaming_path_retries_when_budget_exceeds_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_streaming_path_retries_when_budget_exceeds_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Streaming-path counterpart of test_buffered_path_retries_when_budget_exceeds_retry_after."""
     metrics = asyncio.run(
         _run_streaming_storm(
@@ -470,6 +486,109 @@ def test_streaming_path_retries_when_budget_exceeds_retry_after(monkeypatch: pyt
     assert metrics["retries_at_max_delay_cap"] == 0
     assert metrics["applied_wait_seconds"] == [5.0] * (n_rate_limited * (_RETRY_MAX_ATTEMPTS - 1))
     assert metrics["client_visible_rate_limit_error_count"] == n_rate_limited
+
+
+# ---------------------------------------------------------------------------
+# WU2 (headroom-8z2.2) A/B: the per-upstream-host rate gate on vs off.
+#
+# The non-replenishing mock above cannot show a governor win -- capacity never
+# comes back, so no amount of waiting rescues a request. This arm uses a
+# windowed mock (capacity refills every window, like a real per-minute quota)
+# and staggered client arrivals, which is the measured failure shape: agents
+# keep arriving while the host is already limited and each burns its own 429
+# rediscovering that. The two arms differ ONLY in ``governor_enabled``.
+# ---------------------------------------------------------------------------
+_AB_WINDOW_S = 0.25
+_AB_CAPACITY = 8
+_AB_CLIENTS = 24
+_AB_ARRIVAL_STAGGER_S = 0.01
+
+
+class _WindowedCapacityTransport(httpx.AsyncBaseTransport):
+    """Mock upstream granting ``capacity`` calls per ``window_s`` window."""
+
+    def __init__(self, *, capacity: int, window_s: float) -> None:
+        self.capacity = capacity
+        self.window_s = window_s
+        self.calls = 0
+        self.rate_limited = 0
+        self._window_start: float | None = None
+        self._granted = 0
+        self._lock = asyncio.Lock()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        async with self._lock:
+            now = time.monotonic()
+            if self._window_start is None or now - self._window_start >= self.window_s:
+                self._window_start = now
+                self._granted = 0
+            self.calls += 1
+            allow = self._granted < self.capacity
+            if allow:
+                self._granted += 1
+            else:
+                self.rate_limited += 1
+        async for _ in request.stream:  # drain the request body
+            pass
+        if not allow:
+            return httpx.Response(
+                _RATE_LIMIT_STATUS,
+                headers={"retry-after": str(self.window_s)},
+                json={
+                    "type": "error",
+                    "error": {
+                        "type": "rate_limit_error",
+                        "message": (
+                            "This request would exceed your account's rate "
+                            "limit. Please try again later."
+                        ),
+                    },
+                },
+            )
+        return httpx.Response(200, json={"id": "msg_1", "type": "message", "role": "assistant"})
+
+
+async def _run_governor_ab_storm(*, governor_enabled: bool) -> dict[str, Any]:
+    transport = _WindowedCapacityTransport(capacity=_AB_CAPACITY, window_s=_AB_WINDOW_S)
+    proxy = _proxy_with(
+        transport,
+        governor_enabled=governor_enabled,
+        # Generous budget so the retry loop actually runs in both arms; real
+        # (unstubbed) waits, so neither arm gets a stub-induced advantage.
+        retry_after_budget_ms=int(_AB_WINDOW_S * 1000) + 1,
+    )
+
+    async def _one(i: int) -> httpx.Response:
+        await asyncio.sleep(i * _AB_ARRIVAL_STAGGER_S)
+        return await proxy._retry_request(
+            "POST", "https://up/v1/messages", {"x-client-id": str(i)}, {"messages": []}
+        )
+
+    start = time.perf_counter()
+    responses = await asyncio.gather(*(_one(i) for i in range(_AB_CLIENTS)))
+    return {
+        "upstream_429_count": transport.rate_limited,
+        "upstream_call_count": transport.calls,
+        "client_visible_rate_limit_error_count": sum(
+            1 for r in responses if r.status_code == _RATE_LIMIT_STATUS
+        ),
+        "wallclock_seconds": time.perf_counter() - start,
+    }
+
+
+def test_governor_arm_reduces_upstream_429s() -> None:
+    """A/B: the only difference between the arms is the gate kill switch."""
+    off = asyncio.run(_run_governor_ab_storm(governor_enabled=False))
+    on = asyncio.run(_run_governor_ab_storm(governor_enabled=True))
+
+    assert on["upstream_429_count"] < off["upstream_429_count"], (
+        f"gate must cut wasted upstream 429s: off={off}, on={on}"
+    )
+    assert on["upstream_call_count"] < off["upstream_call_count"]
+    assert (
+        on["client_visible_rate_limit_error_count"]
+        <= (off["client_visible_rate_limit_error_count"])
+    )
 
 
 def test_streaming_path_deterministic_across_runs(monkeypatch: pytest.MonkeyPatch) -> None:
