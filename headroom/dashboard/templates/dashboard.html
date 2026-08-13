@@ -264,7 +264,7 @@
                         <template x-if="!stats.tokens?.output_reduction?.available">
                             <div class="mt-1 text-xs text-gray-500 leading-relaxed">
                                 <span class="text-2xl font-light tabular-nums text-gray-600">—</span>
-                                <div class="mt-1">Enable the output shaper (HEADROOM_OUTPUT_SHAPER=1) and run
+                                <div class="mt-1">Enable the beta output shaper (HEADROOM_ROLLOUT_CHANNEL=beta HEADROOM_OUTPUT_SHAPER=1) and run
                                     <code class="text-gray-400">headroom learn --verbosity --apply</code> to start measuring.</div>
                             </div>
                         </template>
@@ -2145,7 +2145,9 @@
 
                 truncateModel(model) {
                     if (!model) return '-';
-                    return model.replace(/^(anthropic\.|openai\.|bedrock\/)/, '')
+                    return model.replace(/^(bedrock\/)/, '')
+                               .replace(/^(au\.|us\.|eu\.|apac\.|global\.)/, '')
+                               .replace(/^(anthropic\.|openai\.)/, '')
                                .replace(/-\d{8}$/, '')
                                .substring(0, 20);
                 },

@@ -495,7 +495,8 @@ def _echo_installed(manifest: DeploymentManifest, *, prefix: str = "Installed pe
     is_flag=True,
     help=(
         "Opt in to tool_result interceptors (ast-grep Read outliner, etc.) in the "
-        "persistent runtime. Off by default while this feature ships."
+        "persistent runtime. This also selects the required canary rollout channel "
+        "unless --env HEADROOM_ROLLOUT_CHANNEL=... is supplied."
     ),
 )
 @click.option(
