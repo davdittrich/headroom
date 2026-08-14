@@ -2125,16 +2125,18 @@ class HeadroomProxy(
         construct their body from scratch, so canonical serialization is
         correct and original bytes do not exist).
         """
-        from headroom.proxy.body_forwarding import prepare_outbound_body_bytes
+        from headroom.proxy.body_forwarding import select_outbound_body
         from headroom.proxy.helpers import log_outbound_request
 
         last_error = None
         reasons = list(mutation_reasons or [])
-        outbound_bytes, source = prepare_outbound_body_bytes(
+        outbound = select_outbound_body(
             body=body,
             original_body_bytes=original_body_bytes,
             body_mutated=body_mutated,
+            mutation_reasons=reasons,
         )
+        outbound_bytes, source = outbound.content, outbound.source
         outbound_headers = {**headers, "content-type": "application/json"}
 
         log_outbound_request(
@@ -2146,6 +2148,7 @@ class HeadroomProxy(
             mutation_reasons=reasons,
             request_id=request_id,
             source=source,
+            dropped_mutation_reasons=outbound.dropped_mutation_reasons,
         )
 
         post_kwargs: dict = {"content": outbound_bytes, "headers": outbound_headers}
@@ -3843,6 +3846,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                     "has_exact_tokens": token_accounting_status == "complete",
                     "token_accounting_status": token_accounting_status,
                     "transforms_applied": log.get("transforms_applied", []),
+                    "savings_breakdown": log.get("savings_breakdown", []),
                     "waste_signals": log.get("waste_signals"),
                     "tool_schema_saved_tokens": _tool_schema_saved_from_tags(log.get("tags")),
                 }
@@ -4067,6 +4071,12 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "savings": {
                 "total_tokens": total_tokens_all_layers,
                 "per_project": persistent_savings.get("projects", {}),
+                # Attribution only: these rows explain the canonical headline
+                # and are not added to it again.
+                "by_source": sorted(
+                    (dict(row) for row in m.savings_by_source.values()),
+                    key=lambda row: (-int(row.get("tokens", 0)), str(row["source"])),
+                ),
                 "by_layer": {
                     "compression": {
                         "tokens": proxy_compression_tokens,
