@@ -209,6 +209,21 @@ class TestRetryDelayValidation:
         result = runner.invoke(main, ["proxy", option, "-1"])
         assert result.exit_code != 0
 
+    def test_retry_after_budget_ms_is_forwarded(
+        self, runner: CliRunner, mock_run_server: dict
+    ) -> None:
+        result = runner.invoke(
+            main,
+            ["proxy", "--retry-after-budget-ms", "45000"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert mock_run_server["config"].retry_after_budget_ms == 45000
+
+    def test_negative_retry_after_budget_ms_is_rejected(self, runner: CliRunner) -> None:
+        result = runner.invoke(main, ["proxy", "--retry-after-budget-ms", "-1"])
+        assert result.exit_code != 0
+
 
 class TestConnectTimeoutSecondsValidation:
     """--connect-timeout-seconds should accept 1-300, reject outside that range."""
@@ -406,6 +421,18 @@ class TestNewEnvVarWiring:
         assert result.exit_code == 0, result.output
         assert mock_run_server["config"].retry_base_delay_ms == 125
         assert mock_run_server["config"].retry_max_delay_ms == 8000
+
+    def test_headroom_retry_after_budget_ms_from_env(
+        self, runner: CliRunner, mock_run_server: dict
+    ) -> None:
+        result = runner.invoke(
+            main,
+            ["proxy"],
+            env={"HEADROOM_RETRY_AFTER_BUDGET_MS": "60000"},
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert mock_run_server["config"].retry_after_budget_ms == 60000
 
     def test_headroom_connect_timeout_from_env(
         self, runner: CliRunner, mock_run_server: dict

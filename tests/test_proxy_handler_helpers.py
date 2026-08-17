@@ -696,6 +696,7 @@ def test_retry_request_returns_503_when_shutdown_interrupts_retry_sleep() -> Non
         retry_max_attempts=3,
         retry_base_delay_ms=30000,
         retry_max_delay_ms=30000,
+        retry_after_budget_ms=30000,
     )
     proxy._shutdown_event = asyncio.Event()
     proxy._shutdown_event.set()
