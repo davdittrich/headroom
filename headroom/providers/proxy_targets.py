@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -14,6 +15,7 @@ from headroom.providers.codex import resolve_codex_routing
 from headroom.providers.codex.endpoints import CHATGPT_BACKEND_API_URL
 from headroom.providers.vertex import vertex_target_for_location as _vertex_target_for_location
 from headroom.proxy.agy_terminator import DEFAULT_ALLOWLIST, normalize_host
+from headroom.proxy.upstream_guard import is_safe_upstream_url
 
 LEGACY_API_TARGET_ATTRS: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_URL",
@@ -51,6 +53,9 @@ def cloudcode_host_base(host: str) -> str | None:
     return f"https://{normalized}" if normalized in DEFAULT_ALLOWLIST else None
 
 
+logger = logging.getLogger("headroom.proxy")
+
+
 def select_passthrough_base_url(
     proxy: Any, headers: Mapping[str, str], path: str | None = None
 ) -> str:
@@ -65,7 +70,14 @@ def select_passthrough_base_url(
     if headers.get("api-key"):
         azure_base = headers.get("x-headroom-base-url", "")
         if azure_base:
-            return azure_base.rstrip("/")
+            # Validate here, not only at the routes. `api-key` is attacker-
+            # supplied too, so this branch is reachable by anyone who can send
+            # a header, and it returns the destination the caller named. Routes
+            # that forgot to guard turned the proxy into an SSRF relay into
+            # loopback/RFC1918/cloud-metadata space (CVE-2026-77775).
+            if is_safe_upstream_url(azure_base):
+                return azure_base.rstrip("/")
+            logger.warning("ignoring unsafe x-headroom-base-url override: %r", azure_base)
     provider_name = proxy.provider_runtime.model_metadata_provider(headers)
     target = api_target(proxy, provider_name)
     if (

@@ -284,6 +284,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **code:** fix two `CodeAwareCompressor` AST-reassembly bugs: an exported JS/TS function or class (`export function foo() {`) produced a duplicated `export export` keyword and invalid syntax, because line-based node slicing (used to preserve indentation) pulled in the preceding `export` sibling's text on top of the `export_statement` handler's own prefix reconstruction. Separately, in every supported language, a doc comment immediately above a top-level function, class, or type was detached from its declaration during extraction and re-emitted in a cluster at the end of the compressed output instead of staying attached to what it documents.
 - * **proxy:** Buffered upstream responses containing a `server_tool_use` (or any other unrecognized Anthropic content block) no longer turn a fully-generated response into an HTTP 502. `StreamingMixin._response_to_sse` raised `ValueError` on unknown block types after the entire upstream generation had already been buffered, so a slow-but-successful response failed and the client retried the whole multi-minute request. Unknown blocks are now emitted verbatim in `content_block_start` (following the existing redacted_thinking` pattern), so `server_tool_use`, `server_tool_result`, `mcp_tool_use`, and future block types round-trip ([#1806](https://github.com/headroomlabs-ai/headroom/issues/1806)).
 
+## [0.36.5](https://github.com/headroomlabs-ai/headroom/compare/v0.36.4...v0.36.5) (2026-08-22)
+
+
+### Bug Fixes
+
+* **codex:** detect ChatGPT auth from id_token claims so wrap/init emit requires_openai_auth ([#3212](https://github.com/headroomlabs-ai/headroom/issues/3212)) ([2f81fa5](https://github.com/headroomlabs-ai/headroom/commit/2f81fa5931ddf233b908103f25c614b5a6b7e33b))
+* **doctor:** report project-scoped Claude routing instead of a false negative ([#3213](https://github.com/headroomlabs-ai/headroom/issues/3213)) ([8f3e33a](https://github.com/headroomlabs-ai/headroom/commit/8f3e33a00ea377403497b600841c03344d0c1cd8))
+
+## [0.36.4](https://github.com/headroomlabs-ai/headroom/compare/v0.36.3...v0.36.4) (2026-08-22)
+
+
+### Bug Fixes
+
+* **dashboard:** pin MIME types for the vendored static assets ([#3193](https://github.com/headroomlabs-ai/headroom/issues/3193)) ([b485768](https://github.com/headroomlabs-ai/headroom/commit/b4857685ffca656f8f4f17111b88e80637511f52))
+* **proxy/responses:** keep the Codex additional_tools carrier on the wire ([#3194](https://github.com/headroomlabs-ai/headroom/issues/3194)) ([1617f83](https://github.com/headroomlabs-ai/headroom/commit/1617f839a197ed1f17ca2083fbd288ffa2af7820))
+* **security:** validate caller-supplied upstreams on every resolution path ([#3195](https://github.com/headroomlabs-ai/headroom/issues/3195)) ([3e3c409](https://github.com/headroomlabs-ai/headroom/commit/3e3c409436792129259cfae3d95179a94321f9ce))
+* skip cross-turn dedup pointers on OpenAI chat streaming ([#3191](https://github.com/headroomlabs-ai/headroom/issues/3191)) ([9c30b62](https://github.com/headroomlabs-ai/headroom/commit/9c30b629624a42495d82f79fb7df9f21cdac7865))
+* **wrap:** make the Serena pre-index stall budget configurable ([#3183](https://github.com/headroomlabs-ai/headroom/issues/3183)) ([202c189](https://github.com/headroomlabs-ai/headroom/commit/202c1895e1c2617121f3513054e4a1306d9c573f))
+
+## [0.36.3](https://github.com/headroomlabs-ai/headroom/compare/v0.36.2...v0.36.3) (2026-08-21)
+
+
+### Bug Fixes
+
+* **proxy/responses:** lift Codex &gt;= 0.149.0 additional_tools into top-level tools ([#3186](https://github.com/headroomlabs-ai/headroom/issues/3186)) ([25ca580](https://github.com/headroomlabs-ai/headroom/commit/25ca580825b6d1eef385042fd9524e2da2b2baee))
+
 ## [0.36.2](https://github.com/headroomlabs-ai/headroom/compare/v0.36.1...v0.36.2) (2026-08-21)
 
 
