@@ -2704,14 +2704,14 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
 
                 if not agy_emit_enabled():
                     agy_drain_task = asyncio.create_task(
-                _drain_agy_savings_periodically(proxy.metrics)
-            )
+                        _drain_agy_savings_periodically(proxy.metrics)
+                    )
 
                 # Per-worker on purpose: allocator state is per-process, so
                 # every worker must trim its own zones (no beacon-owner gate).
                 if config.periodic_malloc_trim_enabled:
                     app.state.periodic_malloc_trim_task = asyncio.create_task(
-                trim_periodically(config.malloc_trim_interval_seconds)
+                        trim_periodically(config.malloc_trim_interval_seconds)
                     )
                 if proxy.usage_reporter:
                     await proxy.usage_reporter.start(proxy)
@@ -2779,7 +2779,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                     asyncio.gather(agy_drain_task, return_exceptions=True),
                     label="agy_drain_task.stop",
                     timeout=3.0,
-            )
+                )
 
             periodic_malloc_trim_task = app.state.periodic_malloc_trim_task
             if periodic_malloc_trim_task is not None:
