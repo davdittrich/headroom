@@ -38,6 +38,7 @@ scripts/*
 !scripts/audit_wheel_glibc_symbols.py
 !scripts/replay_codex_ws_load.py
 !scripts/export_kompress_v2_onnx.py
+!scripts/refresh_tool_hashes.py
 !scripts/record_kompress_fixtures.py
 !scripts/record_code_compressor_fixtures.py
 
@@ -269,3 +270,9 @@ uv.lock
 .tokensave
 
 .codebase-memory/
+
+# Embedded-database sidecars written into the repo root by local issue-tracker
+# tooling (Dolt-backed). Regenerated on demand; never part of a change set.
+/embeddeddolt/
+/backup/
+/.local_version

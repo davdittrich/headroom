@@ -284,6 +284,7 @@ Rewrite the upstream model per request — for example, send small, tool-free ca
 | `--telemetry` / `HEADROOM_TELEMETRY` | off | **Local-only** usage stats for your own `/stats`, `/metrics`, and dashboard. Nothing leaves the machine. |
 | `--log-file` / `HEADROOM_LOG_FILE` | none | JSONL request/response log. |
 | `--log-messages` | `false` | Include full message bodies in the log (may contain sensitive data). |
+| `HEADROOM_LOG_LEVEL` | `warning` | uvicorn's log level (`critical`, `error`, `warning`, `info`, `debug`, `trace`). Raise to `info` for the per-request access log when diagnosing a deployed proxy. An unrecognized value warns and falls back to `warning`. |
 | `HEADROOM_OTEL_METRICS_ENABLED` | `false` | Export OpenTelemetry metrics (`HEADROOM_OTEL_METRICS_ENDPOINT`, …). See [OTLP export](/docs/metrics#opentelemetry-otlp-export). |
 | `HEADROOM_LANGFUSE_ENABLED` | `false` | Emit Langfuse traces (`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`). |
 
@@ -408,6 +409,24 @@ Google Cloud Code Assist / Antigravity compatibility endpoint used by Pi-style `
 
 The proxy also accepts:
 - `POST /v1/v1internal:streamGenerateContent`
+
+**agy / Google Antigravity CLI:** `agy` cannot use this endpoint via a base-URL redirect
+because it has no base-URL override knob.  Headroom wraps `agy` via a selective TLS-MITM
+transport instead:
+
+- `HTTPS_PROXY` and `HTTP_PROXY` are set to the Headroom in-process CONNECT terminator
+  (loopback, bound to `127.0.0.1`).
+- Three CA trust-bundle variables are set to a combined PEM bundle
+  (`SSL_CERT_FILE`, `CACERT_PATH`, `NODE_EXTRA_CA_CERTS`).
+- Only `daily-cloudcode-pa.googleapis.com` (and `cloudcode-pa.googleapis.com`) are
+  TLS-terminated.  All other CONNECT tunnels are byte-spliced unchanged.
+- HTTP/2 and SSE are negotiated natively via an in-process hypercorn HTTPS server;
+  decrypted requests are routed to the existing `handle_google_cloudcode_stream` handler.
+- The process-local CA is stored under `~/.headroom/ca/` and is **never** added to the
+  OS trust store.
+
+Usage: `headroom wrap agy` (also `headroom unwrap agy`, `--no-intercept`).
+See the [agy section in README.md](../../../README.md#using-headroom-with-agy) for full details.
 
 ### `POST /v1/compress`
 
@@ -581,6 +600,11 @@ headroom wrap cursor
 
 # Grok Build (updates ~/.grok/config.toml and starts the proxy)
 headroom wrap grok-build
+
+# Google Antigravity CLI (agy) — TLS-MITM transport, not a base-URL redirect
+headroom wrap agy
+headroom wrap agy --no-intercept   # passthrough, no compression
+headroom unwrap agy                # revert GEMINI.md and MCP config changes
 ```
 
 Cursor reads model endpoints from its settings UI, so `headroom wrap cursor`

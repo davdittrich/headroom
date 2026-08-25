@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -21,13 +20,39 @@ from headroom.copilot_auth import build_copilot_upstream_url
 from headroom.proxy.auth_mode import classify_client
 from headroom.proxy.compression_decision import CompressionDecision
 from headroom.proxy.helpers import COMPRESSION_TIMEOUT_SECONDS, extract_tags
+from headroom.proxy.identity import resolve_memory_identity
 from headroom.proxy.outcome import RequestOutcome
 from headroom.proxy.token_counting import gemini_output_tokens
+from headroom.transforms.agy_fr_compressor import (  # noqa: F401  (re-exported for existing import sites)
+    _FR_CCR_HASH_LEN,
+    _FR_CCR_MARKER_PREFIX,
+    _FR_CCR_MARKER_TEMPLATE,
+    _FR_MARKER_MIN_RATIO,
+    _RETRIEVE_HASH_RE,
+    _requested_agy_fr_mode,
+    _scan_hex_hashes,
+    compress_function_response_leaves,
+)
 
 logger = logging.getLogger("headroom.proxy")
 
 DEFAULT_CLOUDCODE_API_URL = "https://cloudcode-pa.googleapis.com"
-ANTIGRAVITY_DAILY_API_URL = "https://daily-cloudcode-pa.sandbox.googleapis.com"
+ANTIGRAVITY_DAILY_API_URL = "https://daily-cloudcode-pa.googleapis.com"
+
+
+def _resolve_agy_fr_mode() -> str:
+    """Resolve the functionResponse compression mode for an agy run.
+
+    ``HEADROOM_AGY_FR_MODE`` selects ``ccr`` (default) or ``lossless``;
+    ``lossless`` must be requested explicitly to opt out of savings. When
+    ``ccr`` is in effect but the CCR retrieve listener is not wired for this
+    run (``HEADROOM_AGY_RETRIEVE_WIRED`` != "1"), we must NOT ship
+    unrecoverable markers -- downgrade to ``lossless`` (byte-recoverable / no-op).
+    """
+    mode = _requested_agy_fr_mode()
+    if mode == "ccr" and os.environ.get("HEADROOM_AGY_RETRIEVE_WIRED") != "1":
+        return "lossless"
+    return mode
 
 
 def _usage_int(value: Any, default: int = 0) -> int:
@@ -60,19 +85,63 @@ class GeminiHandlerMixin:
     def _is_cloudcode_antigravity_request(
         self, body: dict[str, Any], headers: dict[str, str]
     ) -> bool:
-        """Detect Pi/OpenClaw antigravity requests routed via Cloud Code Assist."""
+        """Detect Pi/OpenClaw and agy antigravity requests routed via Cloud Code Assist.
+
+        Detection paths (any one is sufficient):
+        - body requestType == "agent"  (Pi/OpenClaw classic)
+        - body userAgent == "antigravity"  (Pi/OpenClaw classic)
+        - HTTP User-Agent header starts with "antigravity/"  (case-insensitive)
+        - body model is an agent-model name (e.g. "gemini-3-flash-agent")
+        - agy-shaped body: top-level model + project + request.contents present
+        """
         user_agent = headers.get("user-agent", "").lower()
         body_user_agent = str(body.get("userAgent", "")).lower()
+        model = str(body.get("model", ""))
+        # Agent-model names carry "-agent" suffix (e.g. gemini-3-flash-agent)
+        is_agent_model = model.endswith("-agent")
+        # agy-shaped body confirmation: top-level project + request with contents.
+        # Only meaningful together with is_agent_model; the body shape alone is shared
+        # with regular Pi/OpenClaw traffic (CLOUDCODE_BODY has the same structure).
+        request_block = body.get("request", {})
+        is_agy_agent_body = is_agent_model and (
+            bool(body.get("project"))
+            and isinstance(request_block, dict)
+            and bool(request_block.get("contents"))
+        )
         return (
             body.get("requestType") == "agent"
             or body_user_agent == "antigravity"
             or user_agent.startswith("antigravity/")
+            or is_agy_agent_body
         )
 
-    def _resolve_cloudcode_base_url(self, is_antigravity: bool) -> str:
-        """Resolve upstream base URL for Pi Cloud Code Assist / Antigravity traffic."""
+    def _resolve_cloudcode_base_url(
+        self,
+        is_antigravity: bool,
+        original_host: str | None = None,
+    ) -> str:
+        """Resolve upstream base URL for Pi Cloud Code Assist / Antigravity traffic.
+
+        Resolution order (first match wins):
+        1. Antigravity path — env HEADROOM_ANTIGRAVITY_API_URL override (an explicit
+           operator escape hatch, honoured verbatim), else the host the client itself
+           chose, else the default backend.
+        2. Reverse-proxy path — ``CLOUDCODE_API_URL`` instance attr or DEFAULT_CLOUDCODE_API_URL.
+
+        ``original_host`` carries the MITM CONNECT target (the allowlisted host agy
+        opened the tunnel to). Preserving it matters: the allowlist covers both
+        ``cloudcode-pa`` and ``daily-cloudcode-pa``, so re-originating everything to
+        the default would send a client's request — and its bearer — to a backend it
+        never selected. Requests arriving via the reverse-proxy route have no CONNECT
+        host and fall through to the default.
+        """
         if is_antigravity:
-            return ANTIGRAVITY_DAILY_API_URL
+            override = os.environ.get("HEADROOM_ANTIGRAVITY_API_URL")
+            if override:
+                return override.rstrip("/")
+            from headroom.providers.proxy_targets import cloudcode_host_base
+
+            return cloudcode_host_base(original_host or "") or ANTIGRAVITY_DAILY_API_URL
         return getattr(self, "CLOUDCODE_API_URL", DEFAULT_CLOUDCODE_API_URL).rstrip("/")
 
     @staticmethod
@@ -316,6 +385,13 @@ class GeminiHandlerMixin:
         headers.pop("host", None)
         headers.pop("content-length", None)
         tags = extract_tags(headers)
+        # Anthropic and OpenAI bind here; Gemini did not, so anything an ASGI
+        # extension recorded into the request scope was dropped on the floor
+        # for Gemini traffic only — silently, because an empty ledger and an
+        # unbound one look identical at the outcome funnel.
+        from headroom.proxy.savings_attribution import bind_scope
+
+        bind_scope(tags, request.scope)
         client = classify_client(headers)
         # PR-A5 (P5-49): strip internal x-headroom-* from upstream-bound
         # headers AFTER `_extract_tags` reads them. Memory user-id reads
@@ -335,10 +411,7 @@ class GeminiHandlerMixin:
         memory_user_id: str | None = None
         memory_request_ctx = None
         if self.memory_handler:
-            memory_user_id = request.headers.get(
-                "x-headroom-user-id",
-                os.environ.get("USER", os.environ.get("USERNAME", "default")),
-            )
+            memory_user_id = resolve_memory_identity(request)
             # Per-project memory routing (GH #462). Gemini's
             # ``systemInstruction`` field carries the system prompt;
             # ``extract_system_prompt`` doesn't know that shape, so we
@@ -869,9 +942,22 @@ class GeminiHandlerMixin:
                     resp_json = final_resp_json
                     response_content = json.dumps(resp_json).encode()
                     usage = resp_json.get("usageMetadata", {})
-                    total_input_tokens = usage.get("promptTokenCount", total_input_tokens)
-                    output_tokens = usage.get("candidatesTokenCount", output_tokens)
-                    cache_read_tokens = usage.get("cachedContentTokenCount", cache_read_tokens)
+                    # A CCR continuation response can carry a present-null count
+                    # (e.g. a safety-blocked continuation turn), where
+                    # ``.get(key, prior)`` returns None rather than the prior
+                    # value, and the ``max(0, prompt - cache_read)`` /
+                    # ``total_input_tokens > 0`` arithmetic below would then raise
+                    # TypeError and the outer handler would mask a successful 200
+                    # as a synthetic 502. Guard with ``_usage_int`` (keeping the
+                    # pre-continuation count as the fallback), mirroring the two
+                    # sibling extraction sites above.
+                    total_input_tokens = _usage_int(
+                        usage.get("promptTokenCount"), total_input_tokens
+                    )
+                    output_tokens = _usage_int(usage.get("candidatesTokenCount"), output_tokens)
+                    cache_read_tokens = _usage_int(
+                        usage.get("cachedContentTokenCount"), cache_read_tokens
+                    )
 
                 uncached_input_tokens = max(0, total_input_tokens - cache_read_tokens)
 
@@ -982,6 +1068,22 @@ class GeminiHandlerMixin:
                 },
             )
 
+    def _compress_agy_function_responses(
+        self,
+        contents: list[dict],
+        mode: str,
+        tokenizer: Any,
+        store: Any,
+    ) -> tuple[int, int, int]:
+        """Uniformly compress functionResponse string leaves across ALL entries.
+
+        Thin delegate -- the algorithm now lives in
+        ``headroom.transforms.agy_fr_compressor.compress_function_response_leaves``
+        (headroom-37g.36) so it is unit-testable standalone. See that
+        function's docstring for the full behavior contract.
+        """
+        return compress_function_response_leaves(contents, mode, tokenizer, store)
+
     async def handle_google_cloudcode_stream(
         self,
         request: Request,
@@ -1027,6 +1129,9 @@ class GeminiHandlerMixin:
         headers.pop("content-length", None)
         headers.pop("accept-encoding", None)
         tags = extract_tags(headers)
+        from headroom.proxy.savings_attribution import bind_scope
+
+        bind_scope(tags, request.scope)
         # Note: streaming handlers delegate to _stream_response, which
         # does its own classify_client. No need to compute here.
         is_antigravity = self._is_cloudcode_antigravity_request(body, headers)
@@ -1108,6 +1213,33 @@ class GeminiHandlerMixin:
             optimized_tokens = original_tokens
             transforms_applied = []
 
+        # WU1 (headroom-37g.1): uniform deterministic recoverable compression of
+        # agy functionResponse leaves. Runs INDEPENDENT of the text-pipeline
+        # revert above so the per-turn tool-output bulk (which lives in preserved
+        # functionResponse parts the text compressor never sees) is compressed
+        # and counted even when the tiny residual text inflates and reverts.
+        fr_before = fr_after = fr_leaves = 0
+        if is_antigravity and _decision.should_compress and isinstance(contents, list):
+            try:
+                fr_mode = _resolve_agy_fr_mode()
+                fr_store = None
+                if fr_mode == "ccr":
+                    from headroom.cache.compression_store import get_compression_store
+
+                    fr_store = get_compression_store()
+                fr_before, fr_after, fr_leaves = self._compress_agy_function_responses(
+                    contents, fr_mode, tokenizer, fr_store
+                )
+                if fr_leaves:
+                    logger.info(
+                        f"[{request_id}] agy functionResponse compression: "
+                        f"mode={fr_mode} leaves={fr_leaves} "
+                        f"tokens {fr_before}->{fr_after} retrieve_wired="
+                        f"{os.environ.get('HEADROOM_AGY_RETRIEVE_WIRED') == '1'}"
+                    )
+            except Exception as e:
+                logger.warning(f"[{request_id}] agy functionResponse compression failed: {e}")
+
         if optimized_messages != messages:
             optimized_contents, optimized_system = self._messages_to_gemini_contents(
                 optimized_messages
@@ -1124,10 +1256,26 @@ class GeminiHandlerMixin:
                     request_payload["systemInstruction"] = optimized_system
                 elif "systemInstruction" in request_payload:
                     del request_payload["systemInstruction"]
+        elif fr_leaves:
+            # Text pipeline reverted (or produced no change) but functionResponse
+            # leaves were compressed in place. Ship the mutated contents as-is:
+            # original structure preserved, only FR string leaves replaced. Avoid
+            # the messages<->contents round-trip (which collapses multi-part text).
+            request_payload["contents"] = contents
 
+        # Fold the functionResponse leaf delta into the accounting so the saving
+        # ships and is recorded even when the text pipeline reverted. FR tokens
+        # are disjoint from the text-pipeline counts (messages excludes
+        # functionResponse), so this never double-counts the #819 waste path.
+        original_tokens += fr_before
+        optimized_tokens += fr_after
         tokens_saved = original_tokens - optimized_tokens
         optimization_latency = (time.time() - start_time) * 1000
-        base_url = self._resolve_cloudcode_base_url(is_antigravity)
+        # On the MITM path the Host header still carries the host agy CONNECTed to;
+        # keep the request on that backend instead of re-originating it.
+        base_url = self._resolve_cloudcode_base_url(
+            is_antigravity, original_host=request.headers.get("host")
+        )
         stream_url = f"{base_url}/v1internal:streamGenerateContent"
         if request.url.query:
             stream_url = f"{stream_url}?{request.url.query}"
@@ -1180,6 +1328,9 @@ class GeminiHandlerMixin:
         headers.pop("host", None)
         headers.pop("content-length", None)
         tags = extract_tags(headers)
+        from headroom.proxy.savings_attribution import bind_scope
+
+        bind_scope(tags, request.scope)
         # Streaming variant — delegates to _stream_response which
         # classifies the client itself from headers.
         # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
@@ -1328,6 +1479,9 @@ class GeminiHandlerMixin:
         # outcome. Extract here so apply_to_tags below has a dict to
         # mutate and the outcome at end-of-call inherits the tag.
         tags = extract_tags(request.headers)
+        from headroom.proxy.savings_attribution import bind_scope
+
+        bind_scope(tags, request.scope)
         _decision = CompressionDecision.decide(
             headers=request.headers,
             config=self.config,

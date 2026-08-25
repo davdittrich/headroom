@@ -1,11 +1,10 @@
 """``RequestOutcome``: the canonical value type for "what happened during
 one completed proxy request."
 
-Per the P0 audit (``docs/superpowers/specs/P0-proxy-pipeline-audit.md``),
-18 ``metrics.record_request`` call sites across four handler files
-disagreed on argument shape — 9 of 18 omitted ``cached=``, 7 of 18
-omitted ``attempted_input_tokens=``, only 4 sites emitted a structured
-PERF log at all. This module is the structural fix: every handler
+An earlier audit found that 18 ``metrics.record_request`` call sites across
+four handler files disagreed on argument shape — 9 of 18 omitted ``cached=``,
+7 of 18 omitted ``attempted_input_tokens=``, only 4 sites emitted a
+structured PERF log at all. This module is the structural fix: every handler
 converges on building a :class:`RequestOutcome` at end-of-request and
 hands it to :func:`emit_request_outcome` (also exposed as
 :meth:`HeadroomProxy._record_request_outcome`), which owns the four
@@ -25,6 +24,7 @@ actually reports.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -399,7 +399,12 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
     from headroom.proxy.cost import _summarize_transforms
     from headroom.proxy.models import RequestLog
     from headroom.proxy.project_context import get_current_project
-    from headroom.proxy.savings_attribution import encode, from_tags, public_tags
+    from headroom.proxy.savings_attribution import (
+        encode,
+        from_tags,
+        public_tags,
+        timings_from_tags,
+    )
     from headroom.telemetry.session import record_outcome
 
     # GitHub Copilot: requests routed to the Copilot API travel on the OpenAI or
@@ -450,10 +455,17 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
             from headroom.proxy.output_savings import get_recorder
 
             _rec = get_recorder()
-            _rec.record_from_labels(outcome.transforms_applied, outcome.output_tokens)
-            output_tokens_saved_est = _rec.estimate_request_savings(
-                outcome.transforms_applied, outcome.output_tokens
-            )
+
+            def _record_and_estimate() -> int:
+                _rec.record_from_labels(outcome.transforms_applied, outcome.output_tokens)
+                return _rec.estimate_request_savings(
+                    outcome.transforms_applied, outcome.output_tokens
+                )
+
+            # Both calls take the recorder lock, and the every-Nth record also
+            # does a full read-modify-write of the ledger file — run them
+            # together off the event loop (#18) so a slow flush can't stall it.
+            output_tokens_saved_est = await asyncio.to_thread(_record_and_estimate)
         except Exception:  # pragma: no cover - defensive
             pass
 
@@ -466,6 +478,20 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
     # session summary / cost summary / all-layers total can surface the layer.
     tool_search_saved = tool_schema_saved_from_tags(outcome.tags or {})
     savings_breakdown = from_tags(outcome.tags)
+
+    # Stage timings contributed from OUTSIDE the handler, folded in here rather
+    # than in each handler so every provider picks them up from one place.
+    #
+    # The handler's own timings win a name collision, which cannot happen while
+    # extension stages carry the ``ext:`` prefix but is the safe way round if
+    # that ever changes: a plugin must not be able to overwrite a measurement
+    # the pipeline made of itself.
+    extension_timing = timings_from_tags(outcome.tags)
+    pipeline_timing = (
+        {**extension_timing, **(outcome.pipeline_timing or {})}
+        if extension_timing
+        else outcome.pipeline_timing
+    )
 
     # Billed input volume. Prefer the provider's own count where it reported one
     # — that is what the invoice charges for, and it is the number cache math is
@@ -488,7 +514,7 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
         cached=outcome.cache_hit,
         overhead_ms=outcome.overhead_ms,
         ttfb_ms=outcome.ttfb_ms,
-        pipeline_timing=outcome.pipeline_timing,
+        pipeline_timing=pipeline_timing,
         waste_signals=outcome.waste_signals,
         cache_read_tokens=outcome.cache_read_tokens,
         cache_write_tokens=outcome.cache_write_tokens,
@@ -504,6 +530,38 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
         savings_attribution=savings_breakdown,
     )
 
+    # 1b. agy cross-process emit (best-effort, agy process only). When agy runs
+    #     as a separate process from the shared proxy, this drops one inbox
+    #     event carrying the SAME funnel kwargs; the shared proxy drains and
+    #     replays it through its own record_request so the savings land on the
+    #     shared dashboard, counted once. Gated by a marker env var the shared
+    #     proxy never sets, so it never emits. Never raises into the request.
+    from headroom.proxy import agy_savings_inbox
+
+    if agy_savings_inbox.agy_emit_enabled():
+        try:
+            agy_savings_inbox.emit_event(
+                provider=outcome.provider,
+                model=outcome.model,
+                input_tokens=outcome.optimized_tokens,
+                output_tokens=outcome.output_tokens,
+                tokens_saved=outcome.tokens_saved,
+                latency_ms=outcome.total_latency_ms,
+                cached=outcome.cache_hit,
+                overhead_ms=outcome.overhead_ms,
+                ttfb_ms=outcome.ttfb_ms,
+                cache_read_tokens=outcome.cache_read_tokens,
+                cache_write_tokens=outcome.cache_write_tokens,
+                cache_write_5m_tokens=outcome.cache_write_5m_tokens,
+                cache_write_1h_tokens=outcome.cache_write_1h_tokens,
+                uncached_input_tokens=outcome.uncached_input_tokens,
+                attempted_input_tokens=outcome.attempted_input_tokens,
+                project=project,
+                client=outcome.client,
+            )
+        except Exception:  # noqa: BLE001 - best-effort, never break the response
+            pass
+
     # 2. Cost tracker (optional).
     cost_tracker = getattr(handler, "cost_tracker", None)
     if cost_tracker is not None:
@@ -518,6 +576,10 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
             uncached_tokens=outcome.uncached_input_tokens,
             cache_inferred=outcome.cache_inferred,
             output_tokens=outcome.output_tokens,
+            # Same figure already handed to metrics.record_request above. The
+            # cost tracker feeds the dashboard's per-model table, which read
+            # compression only while its own headline counted both layers.
+            tool_schema_saved=tool_search_saved,
         )
 
     # 3. Per-request log (optional). The ``client`` outcome field is
@@ -567,6 +629,15 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
     #    line unchanged, and gives ``headroom perf --client X``
     #    parsers a clean key to filter on.
     client_part = f" client={outcome.client}" if outcome.client else ""
+    # ``cached=1`` marks a turn answered from Headroom's own response cache.
+    # Such a turn never contacts the upstream, so it has no outbound_request
+    # line, no upstream stage timings, and all-zero token counters — which
+    # made it indistinguishable in the logs from a turn that died silently
+    # (#3019). Appended only on a hit, so every other PERF line is unchanged
+    # and existing parsers keep working (``_parse_kv`` reads trailing
+    # key=value pairs after ``transforms=`` the same way it reads
+    # ``client=``).
+    cached_part = " cached=1" if outcome.from_response_cache else ""
     # Tool-schema DEFERRAL savings can't move tok_before/after (those count messages
     # only), so a tool-heavy turn shows tok_saved=0 while genuinely saving thousands of
     # tool-definition tokens. `tool_saved` carries that component and `total_saved` is
@@ -592,4 +663,5 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
         f"savings={encoded_savings} "
         f"transforms={_summarize_transforms(list(outcome.transforms_applied))}"
         f"{client_part}"
+        f"{cached_part}"
     )

@@ -66,7 +66,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from headroom._version import __version__
-from headroom.agent_savings import proxy_pipeline_kwargs
+from headroom.agent_savings import DEFAULT_PROFILE, proxy_pipeline_kwargs
 from headroom.cache.compression_feedback import get_compression_feedback
 from headroom.cache.compression_store import format_retrieval_miss_detail, get_compression_store
 from headroom.ccr import (
@@ -114,6 +114,7 @@ from headroom.proxy.audit import is_auditable_path, record_admin_action
 from headroom.proxy.auth_mode import should_stamp_codex_client
 from headroom.proxy.background_compression import BackgroundCompressor
 from headroom.proxy.budget_basis_policy import resolve_estimated_basis_policy
+from headroom.proxy.buffered_ccr_response import DEFAULT_BUFFERED_CCR_GRACE_SECONDS
 
 # =============================================================================
 # Extracted modules (re-exported for backward compatibility)
@@ -144,6 +145,7 @@ from headroom.proxy.helpers import (
 )
 from headroom.proxy.loop_callback_failure_policy import is_known_websocket_callback_failure
 from headroom.proxy.loopback_guard import is_loopback_host
+from headroom.proxy.malloc_trim import trim_periodically
 from headroom.proxy.memory_handler import MemoryConfig, MemoryHandler
 
 # Data models (extracted to headroom/proxy/models.py for maintainability)
@@ -1735,6 +1737,38 @@ class HeadroomProxy(
         if self.config.mode == PROXY_MODE_CACHE:
             logger.info("  Prefix freeze: strict (all prior turns immutable)")
             logger.info("  Mutations: latest turn only")
+        # Effective compression posture, resolved (not merely requested). The
+        # savings profile reaches the router through two paths — the config
+        # object and the seeded process env — and `setdefault` semantics mean a
+        # stale HEADROOM_* value silently overrides the profile that names it.
+        # A deployment can therefore log `savings_profile=coding` while actually
+        # running balanced's thresholds, and the only prior evidence was a
+        # single easily-missed WARNING. Print what is actually in force so
+        # "which profile am I really running?" is answerable from the banner.
+        try:
+            _eff = proxy_pipeline_kwargs(self.config)
+            # Read cross-turn dedup off the CONSTRUCTED router, not off the env.
+            # ContentRouter resolves it as `config.enable_cross_turn_dedup OR
+            # $HEADROOM_DEDUPE`, so reporting the env alone would be a guess that
+            # happens to be right only while nothing sets the config field. A
+            # banner line exists to be trusted; it must read what was resolved.
+            _dedupe: object = "unknown"
+            for _t in getattr(self.anthropic_pipeline, "transforms", []):
+                if isinstance(_t, ContentRouter):
+                    _dedupe = bool(getattr(_t, "_cross_turn_dedup_enabled", False))
+                    break
+            logger.info(
+                "Savings profile: %s (effective: min_tokens=%s min_chars_block=%s "
+                "compress_user=%s dedupe=%s tool_search=%s)",
+                self.config.savings_profile or DEFAULT_PROFILE,
+                _eff.get("min_tokens_to_compress", "default"),
+                _eff.get("min_chars_for_block_compression", "default(500)"),
+                _eff.get("compress_user_messages", False),
+                _dedupe,
+                os.environ.get("HEADROOM_TOOL_SEARCH", "1") in ("1", "true", "yes", "on", "auto"),
+            )
+        except Exception:  # never let a banner line block startup
+            logger.debug("effective savings-profile banner skipped", exc_info=True)
         logger.info(f"Caching: {'ENABLED' if self.config.cache_enabled else 'DISABLED'}")
         logger.info(f"Rate Limiting: {'ENABLED' if self.config.rate_limit_enabled else 'DISABLED'}")
         logger.info(
@@ -2033,9 +2067,6 @@ class HeadroomProxy(
         The real implementation lives in ``outcome.py`` as a free function so
         test dummies and provider mixins can call it without inheriting from
         ``HeadroomProxy``.
-
-        See ``docs/superpowers/specs/P0-proxy-pipeline-audit.md`` for the
-        divergence catalog this funnel collapses.
         """
         from headroom.proxy.outcome import emit_request_outcome
 
@@ -2287,6 +2318,24 @@ async def _log_toin_stats_periodically(interval_seconds: int = 300) -> None:
             logger.debug("Failed to log TOIN stats: %s", e)
 
 
+async def _drain_agy_savings_periodically(metrics: Any, interval_seconds: int = 5) -> None:
+    """Background task: drain the agy cross-process savings inbox on a timer.
+
+    Each agy process drops per-request savings events into a canonical inbox;
+    this replays them through the shared proxy's own ``record_request`` funnel so
+    they land on the dashboard, counted once. Best-effort — a drain error never
+    crashes the loop (``drain_inbox`` also never raises out on its own).
+    """
+    from headroom.proxy import agy_savings_inbox
+
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await agy_savings_inbox.drain_inbox(metrics)
+        except Exception as e:  # noqa: BLE001 - never let a drain error kill the loop
+            logger.debug("Failed to drain agy savings inbox: %s", e)
+
+
 def _register_memory_components(proxy: HeadroomProxy, tracker: MemoryTracker) -> None:
     """Register all memory-tracked components with the tracker.
 
@@ -2435,6 +2484,35 @@ def _normalized_http_origin(value: str) -> tuple[str, str, int] | None:
     if port is None:
         port = 80 if scheme == "http" else 443
     return scheme, parsed.hostname.lower(), port
+
+
+#: Feedback-pattern keys built verbatim from agent query text. They are useful
+#: in-process for compression decisions but must never reach an HTTP response —
+#: same privacy contract the TOIN endpoints were brought under in #2926/#2927.
+_FEEDBACK_QUERY_TEXT_KEYS = ("common_queries", "queried_fields")
+
+
+def _feedback_stats_without_query_text(stats: dict[str, Any]) -> dict[str, Any]:
+    """Return ``stats`` with per-tool query text stripped from ``tool_patterns``.
+
+    Copies only the levels it edits; the aggregate counters are shared with the
+    caller's dict, which is fine because they are scalars.
+    """
+
+    patterns = stats.get("tool_patterns")
+    if not isinstance(patterns, dict):
+        return stats
+
+    scrubbed: dict[str, Any] = {}
+    for name, pattern in patterns.items():
+        if isinstance(pattern, dict):
+            scrubbed[name] = {
+                key: value for key, value in pattern.items() if key not in _FEEDBACK_QUERY_TEXT_KEYS
+            }
+        else:
+            scrubbed[name] = pattern
+
+    return {**stats, "tool_patterns": scrubbed}
 
 
 _is_known_websocket_callback_failure = is_known_websocket_callback_failure
@@ -2601,7 +2679,9 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         app.state.ready = False
         app.state.startup_error = None
         app.state.periodic_toin_stats_task = None
+        app.state.periodic_malloc_trim_task = None
 
+        agy_drain_task: asyncio.Task[None] | None = None
         try:
             try:
                 previous_handler = _install_loop_exception_handler()
@@ -2610,6 +2690,28 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 if config.periodic_toin_stats_enabled:
                     app.state.periodic_toin_stats_task = asyncio.create_task(
                         _log_toin_stats_periodically()
+                    )
+                # Periodically drain the agy cross-process savings inbox so
+                # agy sessions' savings surface on the shared dashboard.
+                # Tracked so it is cancelled on shutdown (no leaked task).
+                #
+                # A process that EMITS must never DRAIN: `wrap agy` builds
+                # create_app() in-process (twice — dispatch + retrieve) with its
+                # own savings paths redirected to a temp dir deleted at exit, so
+                # a drain loop here would consume events into a sink that is
+                # thrown away, and race the shared proxy for them.
+                from headroom.proxy.agy_savings_inbox import agy_emit_enabled
+
+                if not agy_emit_enabled():
+                    agy_drain_task = asyncio.create_task(
+                        _drain_agy_savings_periodically(proxy.metrics)
+                    )
+
+                # Per-worker on purpose: allocator state is per-process, so
+                # every worker must trim its own zones (no beacon-owner gate).
+                if config.periodic_malloc_trim_enabled:
+                    app.state.periodic_malloc_trim_task = asyncio.create_task(
+                        trim_periodically(config.malloc_trim_interval_seconds)
                     )
                 if proxy.usage_reporter:
                     await proxy.usage_reporter.start(proxy)
@@ -2669,6 +2771,25 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                     timeout=3.0,
                 )
                 app.state.periodic_toin_stats_task = None
+
+            # Cancel the agy savings-drain loop so it does not leak past shutdown.
+            if agy_drain_task is not None:
+                agy_drain_task.cancel()
+                await _timed(
+                    asyncio.gather(agy_drain_task, return_exceptions=True),
+                    label="agy_drain_task.stop",
+                    timeout=3.0,
+                )
+
+            periodic_malloc_trim_task = app.state.periodic_malloc_trim_task
+            if periodic_malloc_trim_task is not None:
+                periodic_malloc_trim_task.cancel()
+                await _timed(
+                    asyncio.gather(periodic_malloc_trim_task, return_exceptions=True),
+                    label="periodic_malloc_trim.stop",
+                    timeout=3.0,
+                )
+            app.state.periodic_malloc_trim_task = None
 
             if _cc_reconciler is not None:
                 await _timed(_cc_reconciler.stop(), label="cc_reconciler.stop", timeout=3.0)
@@ -3488,7 +3609,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         payload["runtime"] = _runtime_payload()
         return JSONResponse(status_code=200, content=payload)
 
-    @app.post("/admin/runtime-env", dependencies=[Depends(_require_loopback)])
+    @app.post(
+        "/admin/runtime-env",
+        dependencies=[Depends(_require_loopback), Depends(_require_same_origin)],
+    )
     async def admin_runtime_env(request: Request):
         """Hot-reload live env knobs (the output-shaper family, the ast-grep
         read threshold) without restarting the proxy.
@@ -3559,7 +3683,12 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     # register_provider_routes' catch-all so it is not tunneled upstream.
     from starlette.staticfiles import StaticFiles
 
-    from headroom.dashboard import STATIC_DIR
+    from headroom.dashboard import STATIC_DIR, register_static_mime_types
+
+    # A host whose mime database maps .js to text/plain (stale Windows registry
+    # entry, minimal container image) would otherwise have these served as plain
+    # text, which the nosniff header above then blocks in the browser (#3179).
+    register_static_mime_types()
 
     # check_dir=False keeps a missing assets directory from aborting proxy
     # startup: the dashboard JS 404s, but proxying itself still works.
@@ -4394,6 +4523,15 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         only for loopback callers — the local dashboard. Network callers still
         get the aggregate counters but never the per-request metadata.
         """
+        # Opportunistically drain the agy cross-process savings inbox so the
+        # dashboard reflects any pending agy events promptly. Best-effort.
+        try:
+            from headroom.proxy import agy_savings_inbox
+
+            await agy_savings_inbox.drain_inbox(proxy.metrics)
+        except Exception:  # noqa: BLE001 - never let a drain error break /stats
+            pass
+
         include_sensitive = _request_can_view_dashboard_metadata(
             request,
             trusted_dashboard_client_cidrs,
@@ -4429,7 +4567,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 payload["persistence"] = {**persistence, "error": None}
         return payload
 
-    @app.post("/stats/reset", dependencies=[Depends(_require_loopback)])
+    @app.post(
+        "/stats/reset",
+        dependencies=[Depends(_require_loopback), Depends(_require_same_origin)],
+    )
     async def stats_reset():
         """Reset in-memory proxy stats for local test/debug isolation."""
         await proxy.metrics.reset_runtime()
@@ -4566,7 +4707,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         report = tracker.get_report()
         return report.to_dict()
 
-    @app.post("/cache/clear", dependencies=[Depends(_require_loopback)])
+    @app.post(
+        "/cache/clear",
+        dependencies=[Depends(_require_loopback), Depends(_require_same_origin)],
+    )
     async def clear_cache():
         """Clear the response cache.
 
@@ -4582,7 +4726,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         return {"status": "cache disabled"}
 
     # CCR (Compress-Cache-Retrieve) endpoints
-    @app.post("/v1/retrieve", dependencies=[Depends(_require_loopback)])
+    @app.post(
+        "/v1/retrieve",
+        dependencies=[Depends(_require_loopback), Depends(_require_same_origin)],
+    )
     async def ccr_retrieve(request: Request):
         """Retrieve original content from CCR compression cache.
 
@@ -4651,21 +4798,25 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             ],
         }
 
-    @app.get("/v1/feedback")
+    @app.get("/v1/feedback", dependencies=[Depends(_require_loopback)])
     async def ccr_feedback():
         """Get CCR feedback loop statistics and learned patterns.
 
         This endpoint exposes the feedback loop's learned patterns for monitoring
         and debugging. It shows:
         - Per-tool retrieval rates (high = compress less aggressively)
-        - Common search queries per tool
-        - Queried fields (suggest what to preserve)
+        - Aggregate compression/retrieval counters per tool
 
         Use this to understand how well compression is working and whether
         the feedback loop is adjusting appropriately.
+
+        Loopback-guarded and query-text free for the same reason as the
+        telemetry and TOIN endpoints (#2926/#2927): ``common_queries`` and
+        ``queried_fields`` are built verbatim from agent search queries, so
+        they stay out of the response even on the guarded path.
         """
         feedback = get_compression_feedback()
-        stats = feedback.get_stats()
+        stats = _feedback_stats_without_query_text(feedback.get_stats())
         return {
             "feedback": stats,
             "hints_example": {
@@ -4684,12 +4835,15 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             },
         }
 
-    @app.get("/v1/feedback/{tool_name}")
+    @app.get("/v1/feedback/{tool_name}", dependencies=[Depends(_require_loopback)])
     async def ccr_feedback_for_tool(tool_name: str):
         """Get compression hints for a specific tool.
 
         Returns feedback-based hints that would be used for compressing
         this tool's output.
+
+        Loopback-guarded, and the pattern block excludes ``common_queries``
+        and ``queried_fields`` — both are raw agent query text (#2926/#2927).
         """
         feedback = get_compression_feedback()
         hints = feedback.get_compression_hints(tool_name)
@@ -4712,8 +4866,6 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "retrieval_rate": patterns.retrieval_rate if patterns else 0.0,
                 "full_retrieval_rate": patterns.full_retrieval_rate if patterns else 0.0,
                 "search_rate": patterns.search_rate if patterns else 0.0,
-                "common_queries": list(patterns.common_queries.keys())[:10] if patterns else [],
-                "queried_fields": list(patterns.queried_fields.keys())[:10] if patterns else [],
             }
             if patterns
             else None,
@@ -4759,7 +4911,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         telemetry = get_telemetry_collector()
         return telemetry.export_stats()
 
-    @app.post("/v1/telemetry/import", dependencies=[Depends(_require_loopback)])
+    @app.post(
+        "/v1/telemetry/import",
+        dependencies=[Depends(_require_loopback), Depends(_require_same_origin)],
+    )
     async def telemetry_import(request: Request):
         """Import telemetry data from another source.
 
@@ -5141,6 +5296,10 @@ def _proxy_config_from_env() -> ProxyConfig:
             600,
             min_value=1,
         ),
+        buffered_ccr_grace_seconds=_get_env_float(
+            "HEADROOM_BUFFERED_CCR_GRACE_SECONDS",
+            DEFAULT_BUFFERED_CCR_GRACE_SECONDS,
+        ),
         vertex_api_url=os.environ.get("VERTEX_TARGET_API_URL"),
         backend=_get_env_str("HEADROOM_BACKEND", "anthropic"),
         bedrock_region=_get_env_str("HEADROOM_BEDROCK_REGION", "us-west-2"),
@@ -5160,6 +5319,10 @@ def _proxy_config_from_env() -> ProxyConfig:
         http2=_get_env_bool("HEADROOM_HTTP2", True),
         http_proxy=os.environ.get("HEADROOM_HTTP_PROXY") or None,
         periodic_toin_stats_enabled=_get_env_bool("HEADROOM_PERIODIC_TOIN_STATS", True),
+        periodic_malloc_trim_enabled=_get_env_bool(
+            "HEADROOM_MALLOC_TRIM", sys.platform == "darwin"
+        ),
+        malloc_trim_interval_seconds=_get_env_int("HEADROOM_MALLOC_TRIM_INTERVAL_SECONDS", 60),
         proxy_token=os.environ.get("HEADROOM_PROXY_TOKEN") or None,
         offline=_get_env_bool("HEADROOM_OFFLINE", False),
         # Default mode is CACHE (Headroom's coding posture): delta-only compression
@@ -5377,11 +5540,18 @@ def run_server(
     else:
         app_target = create_app(config)
 
+    # "warning" keeps the default terminal quiet (uvicorn's access log is one line
+    # per request). It was previously hardcoded, which left deployed proxies with
+    # no way to turn request logging on: operators diagnosing a production
+    # incident could not see uvicorn's view of the traffic at all, with no env var
+    # and no CLI flag to change it. Overridable now; the default is unchanged.
+    uvicorn_log_level = _resolve_uvicorn_log_level()
+
     uvicorn.run(
         app_target,
         host=config.host,
         port=config.port,
-        log_level="warning",
+        log_level=uvicorn_log_level,
         workers=workers if workers > 1 else None,  # None = single process (default)
         limit_concurrency=limit_concurrency,
         # Defense-in-depth: the loopback guard for /debug/* endpoints trusts
@@ -5446,6 +5616,30 @@ def _get_env_float(name: str, default: float) -> float:
 def _get_env_str(name: str, default: str) -> str:
     """Get string from environment variable."""
     return os.environ.get(name, default)
+
+
+# uvicorn rejects anything outside this set with a KeyError during startup, so an
+# operator typo in HEADROOM_LOG_LEVEL must not be able to stop the proxy booting.
+_UVICORN_LOG_LEVELS = frozenset({"critical", "error", "warning", "info", "debug", "trace"})
+_UVICORN_LOG_LEVEL_DEFAULT = "warning"
+
+
+def _resolve_uvicorn_log_level() -> str:
+    """Resolve uvicorn's log level from ``HEADROOM_LOG_LEVEL``.
+
+    Falls back to the previous hardcoded default on an unset or unrecognized
+    value, warning loudly rather than failing the boot.
+    """
+    raw = _get_env_str("HEADROOM_LOG_LEVEL", _UVICORN_LOG_LEVEL_DEFAULT).strip().lower()
+    if raw in _UVICORN_LOG_LEVELS:
+        return raw
+    logger.warning(
+        "Ignoring unrecognized HEADROOM_LOG_LEVEL=%r; using %r. Valid values: %s",
+        raw,
+        _UVICORN_LOG_LEVEL_DEFAULT,
+        ", ".join(sorted(_UVICORN_LOG_LEVELS)),
+    )
+    return _UVICORN_LOG_LEVEL_DEFAULT
 
 
 def _parse_exclude_tools(cli_excludes: str | None) -> set[str]:

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from headroom.providers.codex.runtime import CodexRoutingDecision
+from headroom.proxy import upstream_guard
 from headroom.proxy.project_context import get_current_project
 from headroom.proxy.server import HeadroomProxy, ProxyConfig, create_app
 
@@ -30,6 +31,9 @@ def _app() -> Any:
 
 
 def test_provider_passthrough_routes_forward_expected_targets(monkeypatch) -> None:
+    # This routing test uses reserved, intentionally unresolvable hostnames.
+    # Explicitly allow them so the SSRF guard can remain fail-closed on DNS errors.
+    monkeypatch.setenv("HEADROOM_ALLOWED_BASE_URLS", "azure.example,custom.example,opencode.ai")
     calls: list[tuple[str, str, str, str]] = []
     gemini_calls: list[tuple[str, str, str, str]] = []
     gemini_count_calls: list[tuple[str, str, str, str]] = []
@@ -427,12 +431,21 @@ def test_proxy_route_helpers_prefer_legacy_targets_and_gemini_passthrough() -> N
     assert proxy_routes._select_passthrough_base_url(proxy, {"x-goog-api-key": "test"}) == (
         "https://legacy.gemini.test"
     )
-    assert (
-        proxy_routes._select_passthrough_base_url(
-            proxy, {"api-key": "azure", "x-headroom-base-url": "https://azure.example/base/"}
+    # The azure branch honours the override, but only after the SSRF guard
+    # clears the destination (CVE-2026-77775). `azure.example` does not
+    # resolve, and the guard fails closed on resolution failure, so pin a
+    # public answer to keep this assertion about target *precedence*.
+    with patch.object(
+        upstream_guard.socket,
+        "getaddrinfo",
+        return_value=[(None, None, None, None, ("20.10.10.10", 443))],
+    ):
+        assert (
+            proxy_routes._select_passthrough_base_url(
+                proxy, {"api-key": "azure", "x-headroom-base-url": "https://azure.example/base/"}
+            )
+            == "https://azure.example/base"
         )
-        == "https://azure.example/base"
-    )
     assert proxy_routes._select_passthrough_base_url(proxy, {"api-key": "azure"}) == (
         "https://legacy.anthropic.test"
     )
@@ -441,6 +454,75 @@ def test_proxy_route_helpers_prefer_legacy_targets_and_gemini_passthrough() -> N
         == "https://chatgpt.com"
     )
     assert proxy_routes._select_passthrough_base_url(proxy, {}) == "https://legacy.anthropic.test"
+
+
+def test_cloudcode_host_base_allowlists_exact_hosts_only() -> None:
+    proxy_targets = importlib.import_module("headroom.providers.proxy_targets")
+
+    # Every allowlisted host maps to its own https URL (guards against an
+    # all-None regression where the helper rejects legitimate hosts too).
+    assert proxy_targets.DEFAULT_ALLOWLIST, "allowlist must be non-empty"
+    for host in proxy_targets.DEFAULT_ALLOWLIST:
+        assert proxy_targets.cloudcode_host_base(host) == f"https://{host}"
+
+    # SSRF guard: a suffix-collision host that the old endswith() check accepted
+    # is now rejected, as are empty / unrelated hosts.
+    assert proxy_targets.cloudcode_host_base("evilcloudcode-pa.googleapis.com") is None
+    assert proxy_targets.cloudcode_host_base("cloudcode-pa.googleapis.com.evil.test") is None
+    assert proxy_targets.cloudcode_host_base("") is None
+
+    # The catch-all base selection honours the allowlist forward, so an
+    # allowlisted Host on an unrecognised path routes back to that host
+    # instead of falling through to the provider-heuristic default.
+    class _Runtime:
+        @staticmethod
+        def model_metadata_provider(_headers: dict[str, str]) -> str:
+            return "anthropic"
+
+    class _Proxy:
+        provider_runtime = _Runtime()
+        ANTHROPIC_API_URL = "https://legacy.anthropic.test"
+
+    allowlisted = next(iter(proxy_targets.DEFAULT_ALLOWLIST))
+    assert (
+        proxy_targets.select_passthrough_base_url(_Proxy(), {"host": allowlisted})
+        == f"https://{allowlisted}"
+    )
+
+
+def test_select_passthrough_rejects_forged_cloudcode_host() -> None:
+    proxy_routes = importlib.import_module("headroom.providers.proxy_routes")
+    proxy = type(
+        "Proxy",
+        (),
+        {
+            "ANTHROPIC_API_URL": "https://legacy.anthropic.test",
+            "GEMINI_API_URL": "https://legacy.gemini.test",
+            "provider_runtime": type(
+                "Runtime",
+                (),
+                {
+                    "api_target": staticmethod(lambda provider: f"https://runtime.{provider}.test"),
+                    "model_metadata_provider": staticmethod(lambda headers: "anthropic"),
+                },
+            )(),
+        },
+    )()
+
+    # Positive: an allowlisted host is forwarded back to itself via the same path.
+    assert (
+        proxy_routes._select_passthrough_base_url(
+            proxy, {"host": "daily-cloudcode-pa.googleapis.com"}
+        )
+        == "https://daily-cloudcode-pa.googleapis.com"
+    )
+
+    # SSRF fallthrough: a forged suffix-collision host is NOT echoed back; it
+    # falls through to the configured default selection instead.
+    forged = "evilcloudcode-pa.googleapis.com"
+    base = proxy_routes._select_passthrough_base_url(proxy, {"host": forged})
+    assert base != f"https://{forged}"
+    assert base == "https://legacy.anthropic.test"
 
 
 def test_provider_specific_routes_delegate_to_expected_proxy_handlers(monkeypatch) -> None:
