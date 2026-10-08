@@ -50,6 +50,14 @@ def _read_config(tmp_path: Path) -> dict:
     return json.loads(p.read_text())
 
 
+def test_config_writes_use_lf_newlines(tmp_path: Path) -> None:
+    reg = _make_reg(tmp_path)
+    reg.register_server(_SPEC)
+    data = _config_path(tmp_path).read_bytes()
+    assert b"\n" in data
+    assert b"\r\n" not in data
+
+
 # ---------------------------------------------------------------------------
 # detect
 # ---------------------------------------------------------------------------

@@ -123,6 +123,7 @@ def test_purge_targets_all_four_entry_types():
     with (
         mock.patch.object(wrap, "_disable_tokensave_mcp") as dis_tok,
         mock.patch.object(wrap, "_disable_serena_mcp") as dis_ser,
+        mock.patch.object(wrap, "_remove_headroom_installed_retrieve_mcp") as dis_retrieve,
     ):
         _purge_agy_mcp_entries(registrar)
 
@@ -130,7 +131,8 @@ def test_purge_targets_all_four_entry_types():
     # (so a user-owned entry is never clobbered).
     dis_tok.assert_called_once_with(registrar)
     dis_ser.assert_called_once()
-    # code-graph + retrieve removed via raw unregister (Headroom-owned names).
+    dis_retrieve.assert_called_once_with(registrar)
+    # Legacy code-graph cleanup remains separate from ledger-owned retrieve.
     unregistered = {c.args[0] for c in registrar.unregister_server.call_args_list}
     assert wrap._CBM_MCP_SERVER_NAME in unregistered
-    assert "headroom" in unregistered
+    assert "headroom" not in unregistered

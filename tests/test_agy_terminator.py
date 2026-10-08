@@ -360,6 +360,8 @@ async def test_blind_tunnel_byte_faithful(tmp_ca: tuple) -> None:
         received = await asyncio.wait_for(raw_reader.read(len(payload)), timeout=5.0)
         assert received == payload, f"Echo mismatch: {received!r} != {payload!r}"
     finally:
+        raw_writer.close()
+        await raw_writer.wait_closed()
         await terminator.stop()
         echo_server.close()
         await echo_server.wait_closed()
@@ -487,6 +489,131 @@ async def test_bad_connect_returns_400(tmp_ca: tuple) -> None:
 # ---------------------------------------------------------------------------
 # Regression: header-drain timeout aborts (no splice)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_eof", ["client", "target"])
+async def test_blind_splice_drains_normal_half_closes(first_eof: str) -> None:
+    from headroom.proxy.agy_terminator import _blind_splice
+
+    request = b"request before sending EOF"
+    response = b"response after receiving EOF"
+    received = []
+    upstream_done = asyncio.Event()
+    relay_done = asyncio.Event()
+
+    async def upstream(reader, writer):
+        try:
+            if first_eof == "target":
+                writer.write(request)
+                await writer.drain()
+                writer.write_eof()
+                received.append(await reader.read())
+            else:
+                received.append(await reader.read())
+                writer.write(response)
+                await writer.drain()
+                writer.write_eof()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            upstream_done.set()
+
+    target = await asyncio.start_server(upstream, "127.0.0.1", 0)
+    target_port = target.sockets[0].getsockname()[1]
+
+    async def relay(reader, writer):
+        try:
+            target_reader, target_writer = await asyncio.open_connection("127.0.0.1", target_port)
+            await _blind_splice(reader, writer, target_reader, target_writer)
+        finally:
+            relay_done.set()
+
+    proxy = await asyncio.start_server(relay, "127.0.0.1", 0)
+    reader, writer = await asyncio.open_connection("127.0.0.1", proxy.sockets[0].getsockname()[1])
+    try:
+        if first_eof == "client":
+            writer.write(request)
+            await writer.drain()
+            writer.write_eof()
+            assert await asyncio.wait_for(reader.read(), 2) == response
+        else:
+            assert await asyncio.wait_for(reader.read(), 2) == request
+            writer.write(response)
+            await writer.drain()
+            writer.write_eof()
+        await asyncio.wait_for(upstream_done.wait(), 2)
+        await asyncio.wait_for(relay_done.wait(), 2)
+        assert received == [request if first_eof == "client" else response]
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        proxy.close()
+        target.close()
+        await proxy.wait_closed()
+        await target.wait_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers",
+    [
+        b"X-Header: value\r\n" * 101,
+        (b"X-Header: " + b"x" * 2048 + b"\r\n") * 20,
+        b"X-Header: " + b"x" * 70000 + b"\r\n",
+    ],
+    ids=["count", "total-bytes", "oversized-line"],
+)
+async def test_connect_rejects_excessive_headers(tmp_ca: tuple, headers: bytes) -> None:
+    key, cert, _ = tmp_ca
+    async with AgyCONNECTTerminator(ca_key=key, ca_cert=cert, dispatch_port=1) as server:
+        reader, writer = await asyncio.open_connection(*server.address)
+        try:
+            writer.write(
+                b"CONNECT daily-cloudcode-pa.googleapis.com:443 HTTP/1.1\r\n" + headers + b"\r\n"
+            )
+            await writer.drain()
+            status = await asyncio.wait_for(reader.readline(), 2)
+            assert b"431" in status
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_connect_header_deadline_is_not_reset_by_each_line(
+    tmp_ca: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("headroom.proxy.agy_terminator._CONNECT_TIMEOUT", 0.12)
+    key, cert, _ = tmp_ca
+    async with AgyCONNECTTerminator(ca_key=key, ca_cert=cert, dispatch_port=1) as server:
+        reader, writer = await asyncio.open_connection(*server.address)
+
+        async def send_headers():
+            writer.write(b"CONNECT daily-cloudcode-pa.googleapis.com:443 HTTP/1.1\r\n")
+            for _ in range(6):
+                writer.write(b"X-Header: value\r\n")
+                await writer.drain()
+                await asyncio.sleep(0.04)
+            writer.write(b"\r\n")
+            await writer.drain()
+
+        sender = asyncio.create_task(send_headers())
+        try:
+            try:
+                status = await asyncio.wait_for(reader.readline(), 1)
+            except ConnectionResetError:
+                # Windows may reset a timed-out socket with unread headers.
+                status = b""
+            assert status == b""
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except ConnectionResetError:
+                pass
 
 
 @pytest.mark.asyncio
@@ -943,6 +1070,8 @@ async def test_proxy_authorization_header_parsed(tmp_ca: tuple) -> None:
         received = await asyncio.wait_for(raw_reader.read(len(payload)), timeout=5.0)
         assert received == payload
     finally:
+        raw_writer.close()
+        await raw_writer.wait_closed()
         await terminator.stop()
         echo_server.close()
         await echo_server.wait_closed()
@@ -1000,6 +1129,8 @@ async def test_dispatch_port_success_splices_to_dispatch_server(tmp_ca: tuple) -
         # down mid-flight.
         await asyncio.sleep(0.05)
     finally:
+        raw_writer.close()
+        await raw_writer.wait_closed()
         await terminator.stop()
         dispatch_server.close()
         await dispatch_server.wait_closed()

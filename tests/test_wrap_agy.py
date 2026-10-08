@@ -1190,6 +1190,81 @@ class TestPrintModePurgesStaleHeadroomEntry:
         survived = AgyRegistrar(home_dir=tmp_path).get_server("my-tool")
         assert survived is not None, "user-managed entries must not be removed by print-mode purge"
 
+    def test_unsafe_print_purge_preserves_user_owned_headroom(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from headroom.cli.wrap import _purge_agy_mcp_entries
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.base import ServerSpec
+
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        reg = AgyRegistrar(home_dir=tmp_path)
+        user_spec = ServerSpec(name="headroom", command="/opt/user-mcp", args=(), env={})
+        reg.register_server(user_spec)
+        _purge_agy_mcp_entries(reg)
+        assert reg.get_server("headroom") == user_spec
+
+    @pytest.mark.parametrize("version", [(1, 0, 8), None])
+    def test_unsafe_print_refuses_remaining_user_mcp(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version
+    ) -> None:
+        import headroom.cli.wrap as wrap_mod
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.base import ServerSpec
+
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        monkeypatch.setattr(wrap_mod, "_detect_agy_version", lambda _: version)
+        reg = AgyRegistrar(home_dir=tmp_path)
+        user_spec = ServerSpec(name="my-tool", command="/opt/user-mcp", args=(), env={})
+        reg.register_server(user_spec)
+        launches = []
+        monkeypatch.setattr(
+            "subprocess.run", lambda cmd, **kw: launches.append(cmd) or MagicMock(returncode=0)
+        )
+        result = CliRunner().invoke(_get_main(), ["wrap", "agy", "--", "--print", "hi"])
+        assert result.exit_code != 0
+        assert "upgrade agy" in result.output.lower()
+        assert launches == []
+        assert reg.get_server("my-tool") == user_spec
+
+    @pytest.mark.parametrize("owned", [True, False])
+    def test_no_mcp_removes_only_owned_persistent_retrieve(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owned: bool
+    ) -> None:
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.base import ServerSpec
+        from headroom.mcp_registry.ledger import record_install
+
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        reg = AgyRegistrar(home_dir=tmp_path)
+        spec = ServerSpec(name="headroom", command="/opt/retrieve", args=(), env={})
+        reg.register_server(spec)
+        if owned:
+            record_install("agy", spec)
+        result = CliRunner().invoke(_get_main(), ["wrap", "agy", "--no-mcp"])
+        assert result.exit_code == 0, result.output
+        assert reg.get_server("headroom") == (None if owned else spec)
+
+    def test_unsafe_print_rejects_unreadable_mcp_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import headroom.cli.wrap as wrap_mod
+        from headroom.mcp_registry.agy import AgyRegistrar
+
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        monkeypatch.setattr(wrap_mod, "_detect_agy_version", lambda _: None)
+        path = AgyRegistrar(home_dir=tmp_path).config_dir / "mcp_config.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{broken user config", encoding="utf-8")
+        launches = []
+        monkeypatch.setattr(
+            "subprocess.run", lambda cmd, **kw: launches.append(cmd) or MagicMock(returncode=0)
+        )
+        result = CliRunner().invoke(_get_main(), ["wrap", "agy", "--", "--print", "hi"])
+        assert result.exit_code != 0
+        assert launches == []
+        assert path.read_text(encoding="utf-8") == "{broken user config"
+
 
 # ---------------------------------------------------------------------------
 # WU s04.4: graceful failure modes
@@ -1201,6 +1276,50 @@ class TestAgyGracefulFailures:
 
     WU s04.4: watchdog, preflight, port-in-use, terminal restore.
     """
+
+    @pytest.mark.parametrize("failure", ["dispatch", "terminator", "retrieve"])
+    def test_partial_startup_stops_every_initialized_server(
+        self, monkeypatch: pytest.MonkeyPatch, failure: str
+    ) -> None:
+        # Load the retrieve subclass before replacing its dispatch base class.
+        import headroom.proxy.agy_retrieve  # noqa: F401
+        from headroom.cli.wrap import _start_agy_servers
+
+        active = set()
+        stopped = set()
+
+        class Server:
+            def __init__(self, name: str):
+                self.name = name
+                self.address = ("127.0.0.1", 54321)
+
+            async def start(self):
+                active.add(self.name)
+                if self.name == failure:
+                    raise RuntimeError(f"injected {failure} startup failure")
+
+            async def stop(self):
+                stopped.add(self.name)
+                active.discard(self.name)
+
+        monkeypatch.setattr(
+            "headroom.proxy.agy_dispatch.AgyDispatchServer", lambda **kw: Server("dispatch")
+        )
+        monkeypatch.setattr(
+            "headroom.proxy.agy_terminator.AgyCONNECTTerminator", lambda **kw: Server("terminator")
+        )
+        monkeypatch.setattr(
+            "headroom.proxy.agy_retrieve.AgyRetrieveServer", lambda **kw: Server("retrieve")
+        )
+        with pytest.raises(RuntimeError, match=f"injected {failure} startup failure"):
+            _start_agy_servers(None, None, start_retrieve=True)
+        assert active == set(), "partial startup must release listener and lifespan resources"
+        expected = {"dispatch"}
+        if failure != "dispatch":
+            expected.add("terminator")
+        if failure == "retrieve":
+            expected.add("retrieve")
+        assert expected <= stopped
 
     # ------------------------------------------------------------------
     # Shared CA stubs (avoid real cert generation in every test).

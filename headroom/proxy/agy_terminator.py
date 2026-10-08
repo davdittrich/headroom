@@ -60,6 +60,9 @@ _LEAF_KEY_BITS = 2048
 _LEAF_VALIDITY_HOURS = 72
 _BIND_HOST = "127.0.0.1"
 _CONNECT_TIMEOUT = 10.0
+_MAX_CONNECT_HEADERS = 100
+_MAX_CONNECT_HEADER_BYTES = 32 * 1024
+_MAX_CONNECT_LINE_BYTES = 8 * 1024
 _SPLICE_BUF = 65536
 
 DEFAULT_ALLOWLIST: frozenset[str] = frozenset(
@@ -231,8 +234,6 @@ async def _splice_half(
                 break
             writer.write(data)
             await writer.drain()
-    except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
-        pass
     finally:
         try:
             writer.write_eof()
@@ -246,16 +247,15 @@ async def _blind_splice(
     target_reader: asyncio.StreamReader,
     target_writer: asyncio.StreamWriter,
 ) -> None:
-    """Bidirectional byte-splice until either side closes.
-
-    Waits until the FIRST half-stream closes (one side EOF'd / connection
-    dropped), then cancels the other.  This avoids a hang when the target
-    closes after echoing but the client hasn't sent EOF yet.
-    """
+    """Drain both streams on normal EOF; cancel peers on error or shutdown."""
     t1 = asyncio.create_task(_splice_half(client_reader, target_writer))
     t2 = asyncio.create_task(_splice_half(target_reader, client_writer))
     try:
-        done, pending = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
+        # Normal EOF is a half-close, so drain the opposite direction. A
+        # connection error completes the wait early and cancels its peer.
+        done, pending = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_EXCEPTION)
+        for task in done:
+            task.result()
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
@@ -264,6 +264,9 @@ async def _blind_splice(
         t2.cancel()
         await asyncio.gather(t1, t2, return_exceptions=True)
     finally:
+        t1.cancel()
+        t2.cancel()
+        await asyncio.gather(t1, t2, return_exceptions=True)
         for w in (client_writer, target_writer):
             try:
                 w.close()
@@ -382,6 +385,13 @@ async def _handle_connect(
     that would loop back into this very listener.
     """
     peer = client_writer.get_extra_info("peername", ("?", 0))
+    deadline = asyncio.get_running_loop().time() + _CONNECT_TIMEOUT
+
+    async def reject_headers() -> None:
+        client_writer.write(b"HTTP/1.1 431 Request Header Fields Too Large\r\n\r\n")
+        await client_writer.drain()
+        client_writer.close()
+
     try:
         first_line_bytes = await asyncio.wait_for(
             client_reader.readline(), timeout=_CONNECT_TIMEOUT
@@ -389,6 +399,12 @@ async def _handle_connect(
     except asyncio.TimeoutError:
         logger.debug("event=connect_timeout peer=%s", peer)
         client_writer.close()
+        return
+    except ValueError:
+        await reject_headers()
+        return
+    if len(first_line_bytes) > _MAX_CONNECT_LINE_BYTES:
+        await reject_headers()
         return
 
     first_line = first_line_bytes.decode("latin-1")
@@ -403,15 +419,32 @@ async def _handle_connect(
 
     # Drain remaining CONNECT request headers.
     proxy_auth: str | None = None
+    header_count = 0
+    header_bytes = len(first_line_bytes)
     while True:
         try:
-            hdr_bytes = await asyncio.wait_for(client_reader.readline(), timeout=_CONNECT_TIMEOUT)
+            hdr_bytes = await asyncio.wait_for(
+                client_reader.readline(),
+                timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+            )
         except asyncio.TimeoutError:
             logger.debug("event=connect_header_timeout peer=%s", peer)
             client_writer.close()
             return
+        except ValueError:
+            await reject_headers()
+            return
         if hdr_bytes in (b"\r\n", b"\n", b""):
             break
+        header_count += 1
+        header_bytes += len(hdr_bytes)
+        if (
+            header_count > _MAX_CONNECT_HEADERS
+            or header_bytes > _MAX_CONNECT_HEADER_BYTES
+            or len(hdr_bytes) > _MAX_CONNECT_LINE_BYTES
+        ):
+            await reject_headers()
+            return
         hdr = hdr_bytes.decode("latin-1")
         if hdr.lower().startswith("proxy-authorization:"):
             proxy_auth = hdr.split(":", 1)[1].strip()

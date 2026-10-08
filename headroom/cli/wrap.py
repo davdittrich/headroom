@@ -3274,25 +3274,13 @@ _CBM_MCP_SERVER_NAME = "codebase-memory-mcp"
 
 
 def _purge_agy_mcp_entries(registrar: Any) -> None:
-    """Actively remove all agy MCP entries that could hang a print-mode run.
-
-    Used when the print-mode agy-version preflight fails (older or unknown
-    agy): merely skipping *new* registration is not enough, since a prior
-    interactive ``headroom wrap agy`` run may have already persisted entries
-    in mcp_config.json.  Every call here is idempotent -- a no-op when the
-    entry is already absent -- so this is safe to call unconditionally.
-    """
-    from headroom.mcp_registry.ledger import clear_install
-
+    """Retire Headroom MCP entries before the unsafe-print launch preflight."""
     _disable_tokensave_mcp(registrar)
     _disable_serena_mcp(registrar, reason="agy print-mode MCP preflight failed")
     registrar.unregister_server(_CBM_MCP_SERVER_NAME)
-    # headroom retrieve is now a ledger-recorded PERSISTENT entry; old agy hangs
-    # in print mode on ANY MCP entry, so purge it AND clear its ledger record so
-    # the persistent-skip on the next compatible-agy run does not treat the now
-    # absent entry as still-installed. Re-registration happens on that next wrap.
-    registrar.unregister_server("headroom")
-    clear_install(registrar.name, "headroom")
+    # Remove retrieve only when the ledger proves we installed it. User-owned
+    # entries survive; launch preflight rejects unsafe print mode if any remain.
+    _remove_headroom_installed_retrieve_mcp(registrar)
 
 
 # Memory MCP markers
@@ -9416,6 +9404,19 @@ def _start_agy_servers(
         stop_flag = asyncio.Event()
 
         async def _main() -> None:
+            initialized: list[Any] = []
+            try:
+                await _start_and_wait(initialized)
+            finally:
+                # Include servers whose start() failed partway through binding
+                # or lifespan initialization. Each stop is attempted even if
+                # another server's shutdown fails.
+                await asyncio.gather(
+                    *(server.stop() for server in reversed(initialized)),
+                    return_exceptions=True,
+                )
+
+        async def _start_and_wait(initialized: list[Any]) -> None:
             dispatch = AgyDispatchServer(
                 ca_key=ca_key,
                 ca_cert=ca_cert,
@@ -9424,6 +9425,7 @@ def _start_agy_servers(
                 allowlist=allowlist,
                 project=project,
             )
+            initialized.append(dispatch)
             await dispatch.start()
             _, dispatch_port = dispatch.address
 
@@ -9435,12 +9437,14 @@ def _start_agy_servers(
                 dispatch_port=dispatch_port,
                 allowlist=allowlist,
             )
+            initialized.append(terminator)
             await terminator.start()
 
             retrieve: AgyRetrieveServer | None = None
             retrieve_port: int | None = None
             if start_retrieve:
                 retrieve = AgyRetrieveServer(port=0)
+                initialized.append(retrieve)
                 await retrieve.start()
                 _, retrieve_port = retrieve.address
 
@@ -9458,12 +9462,6 @@ def _start_agy_servers(
 
             # Keep event loop alive until stop_flag is set.
             await stop_flag.wait()
-
-            # Graceful shutdown.
-            await terminator.stop()
-            await dispatch.stop()
-            if retrieve is not None:
-                await retrieve.stop()
 
         try:
             loop.run_until_complete(_main())
@@ -9830,6 +9828,10 @@ def agy(
                 # registration entirely. Compression markers then have no tool
                 # that can resolve them, so the handler must not ship any (the
                 # HEADROOM_AGY_RETRIEVE_WIRED gate below stays unset).
+                if _remove_headroom_installed_retrieve_mcp(AgyRegistrar()) == "failed":
+                    raise RuntimeError(
+                        "Could not remove Headroom-installed retrieve MCP (--no-mcp)"
+                    )
                 retrieve_registered = False
                 click.echo("  Skipping MCP retrieve tool (--no-mcp)")
             elif servers is not None and servers.retrieve_port is not None:
@@ -9858,7 +9860,13 @@ def agy(
             # are idempotent (no-op when the entry is already absent).  The
             # retrieve LISTENER started above still runs (harmless idle loopback)
             # -- only MCP *registration* is suppressed here.
-            _purge_agy_mcp_entries(AgyRegistrar())
+            registrar = AgyRegistrar()
+            _purge_agy_mcp_entries(registrar)
+            if registrar.has_configured_servers():
+                raise RuntimeError(
+                    "Print mode is unsafe with MCP entries on this agy version. "
+                    "Upgrade agy or use interactive mode; user MCP entries were preserved."
+                )
             _detected_version = _detect_agy_version(agy_bin)
             _detected_str = (
                 ".".join(str(part) for part in _detected_version)

@@ -95,6 +95,18 @@ class AgyRegistrar(MCPRegistrar):
             return None
         return _entry_to_spec(server_name, entry)
 
+    def has_configured_servers(self) -> bool:
+        """Inspect all entries before launching MCP-unsafe print-mode clients.
+
+        An unreadable configuration must fail preflight rather than be treated
+        as empty: this file is shared with the IDE and can hold user servers.
+        """
+        config = _read_json_for_write(self._config_file)
+        servers = config.get("mcpServers", {})
+        if not isinstance(servers, dict):
+            raise _MalformedConfigError(f"{self._config_file} has invalid mcpServers")
+        return bool(servers)
+
     def register_server(self, spec: ServerSpec, *, force: bool = False) -> RegisterResult:
         """Idempotently register an MCP server.
 
@@ -220,7 +232,7 @@ def _read_json_for_write(path: Path) -> dict[str, Any]:
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
 
