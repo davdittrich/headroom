@@ -264,7 +264,8 @@ signals extend that to the user's normal runtime.
 agy 1.0.10 added `url` support in `mcp_config.json`, allowing an MCP server to be addressed
 by HTTP URL instead of a stdio subprocess. The headroom retrieve server (`AgyRetrieveServer`,
 `headroom/proxy/agy_retrieve.py`) is `AgyDispatchServer(plain_http=True)`: the same hypercorn
-lifecycle serving the same FastAPI app, minus the SNI TLS context and the Host guard. It
+lifecycle serving the same FastAPI app without SNI TLS. A separate guard requires a loopback
+peer, exactly one loopback Host, and an allowed retrieval GET/POST route. It
 answers plain HTTP on loopback and does **not** implement the MCP-over-HTTP (streamable HTTP)
 transport. Registering it as a `url`-type entry
 would require adding an MCP-HTTP transport layer to the retrieve server for **zero added
@@ -359,8 +360,8 @@ other client. Live-verified: `wrap agy -p` wires Serena + retrieve
 (handshake-verified) and completes in ~10s. Because the fix is agy-side, `wrap agy` still
 runs a runtime `agy --version` preflight before wiring print-mode MCP (headroom-37g.37): an
 agy older than 1.0.16, or one whose version can't be detected, is treated as unsafe by
-default, so print-mode MCP registration is suppressed and any previously-persisted entries
-are purged for that run.
+default, so print-mode MCP registration is suppressed and only ledger-owned entries are removed. Remaining MCP entries or
+malformed config block the print run with upgrade/interactive guidance.
 
 ## functionResponse bulk compression (CCR) — where the savings actually come from
 

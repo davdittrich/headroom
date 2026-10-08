@@ -9,7 +9,10 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import Response
 
-from headroom.providers.cloudcode import normalize_cloudcode_passthrough_path
+from headroom.providers.cloudcode import (
+    AGY_DISPATCH_SCOPE_KEY,
+    normalize_cloudcode_passthrough_path,
+)
 from headroom.providers.codex.endpoints import codex_backend_url
 from headroom.providers.codex.headers import drop_header
 from headroom.providers.codex.live import (
@@ -550,7 +553,11 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
             raise HTTPException(status_code=400, detail="Rejected unsafe upstream base URL")
         return await proxy.handle_passthrough(
             request,
-            _select_passthrough_base_url(proxy, dict(request.headers)),
+            _select_passthrough_base_url(
+                proxy,
+                dict(request.headers),
+                allow_cloudcode_host=request.scope.get(AGY_DISPATCH_SCOPE_KEY) is True,
+            ),
         )
 
     _register_openai_image_routes(app, proxy)
@@ -583,7 +590,11 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
         if normalized_cloudcode_path is not None:
             normalize_request_path(request, normalized_cloudcode_path)
             host = request.headers.get("host", "")
-            cloudcode_base = _cloudcode_host_base(host) or _api_target(proxy, "cloudcode")
+            cloudcode_base = (
+                _cloudcode_host_base(host)
+                if request.scope.get(AGY_DISPATCH_SCOPE_KEY) is True
+                else None
+            ) or _api_target(proxy, "cloudcode")
 
             return await proxy.handle_passthrough(
                 request,
@@ -594,5 +605,10 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
             request,
             # The path matters here: this is where unrouted paths land, and
             # Copilot's inline completions are one of them (#3076).
-            _select_passthrough_base_url(proxy, dict(request.headers), request.url.path),
+            _select_passthrough_base_url(
+                proxy,
+                dict(request.headers),
+                request.url.path,
+                allow_cloudcode_host=request.scope.get(AGY_DISPATCH_SCOPE_KEY) is True,
+            ),
         )

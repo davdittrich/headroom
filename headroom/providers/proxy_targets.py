@@ -97,10 +97,14 @@ def openai_compatible_base_url(proxy: Any, headers: Mapping[str, str]) -> str:
 
 
 def select_passthrough_base_url(
-    proxy: Any, headers: Mapping[str, str], path: str | None = None
+    proxy: Any,
+    headers: Mapping[str, str],
+    path: str | None = None,
+    *,
+    allow_cloudcode_host: bool = False,
 ) -> str:
     """Resolve the upstream base URL for catch-all proxy passthrough requests."""
-    if base := cloudcode_host_base(headers.get("host", "")):
+    if allow_cloudcode_host and (base := cloudcode_host_base(headers.get("host", ""))):
         return base
     routing = resolve_codex_routing(headers)
     if routing.is_chatgpt_auth:

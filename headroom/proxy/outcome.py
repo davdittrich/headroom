@@ -653,37 +653,38 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
     billed_input_tokens = outcome.provider_input_tokens or outcome.optimized_tokens
 
     # 1. Prometheus / SavingsTracker.
-    await handler.metrics.record_request(
-        provider=outcome.provider,
-        model=outcome.model,
-        input_tokens=billed_input_tokens,
-        output_tokens=outcome.output_tokens,
-        tokens_saved=novel_tokens_saved,
-        latency_ms=outcome.total_latency_ms,
-        cached=outcome.cache_hit,
-        overhead_ms=outcome.overhead_ms,
-        ttfb_ms=outcome.ttfb_ms,
-        pipeline_timing=pipeline_timing,
-        waste_signals=outcome.waste_signals,
-        cache_read_tokens=outcome.cache_read_tokens,
-        cache_write_tokens=outcome.cache_write_tokens,
-        cache_write_5m_tokens=outcome.cache_write_5m_tokens,
-        cache_write_1h_tokens=outcome.cache_write_1h_tokens,
-        uncached_input_tokens=outcome.uncached_input_tokens,
-        attempted_input_tokens=outcome.attempted_input_tokens,
-        output_tokens_saved=output_tokens_saved_est,
-        project=project,
-        client=outcome.client,
-        tool_search_saved=tool_search_saved,
-        local_input_tokens=outcome.optimized_tokens,
-        savings_attribution=savings_breakdown,
+    metrics_kwargs: dict[str, Any] = {
+        "provider": outcome.provider,
+        "model": outcome.model,
+        "input_tokens": billed_input_tokens,
+        "output_tokens": outcome.output_tokens,
+        "tokens_saved": novel_tokens_saved,
+        "latency_ms": outcome.total_latency_ms,
+        "cached": outcome.cache_hit,
+        "overhead_ms": outcome.overhead_ms,
+        "ttfb_ms": outcome.ttfb_ms,
+        "pipeline_timing": pipeline_timing,
+        "waste_signals": outcome.waste_signals,
+        "cache_read_tokens": outcome.cache_read_tokens,
+        "cache_write_tokens": outcome.cache_write_tokens,
+        "cache_write_5m_tokens": outcome.cache_write_5m_tokens,
+        "cache_write_1h_tokens": outcome.cache_write_1h_tokens,
+        "uncached_input_tokens": outcome.uncached_input_tokens,
+        "attempted_input_tokens": outcome.attempted_input_tokens,
+        "output_tokens_saved": output_tokens_saved_est,
+        "project": project,
+        "client": outcome.client,
+        "tool_search_saved": tool_search_saved,
+        "local_input_tokens": outcome.optimized_tokens,
+        "savings_attribution": savings_breakdown,
         # Already handed to the cost tracker below; the metrics path needs it
         # too now that it prices savings cache-aware. An inferred write is the
         # same tokens as `uncached_input_tokens` and carries no write premium,
         # so counting it as a write would both double it and apply a premium
         # OpenAI never charges.
-        cache_inferred=outcome.cache_inferred,
-    )
+        "cache_inferred": outcome.cache_inferred,
+    }
+    await handler.metrics.record_request(**metrics_kwargs)
 
     # 1b. agy cross-process emit (best-effort, agy process only). When agy runs
     #     as a separate process from the shared proxy, this drops one inbox
@@ -695,25 +696,7 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
 
     if agy_savings_inbox.agy_emit_enabled():
         try:
-            agy_savings_inbox.emit_event(
-                provider=outcome.provider,
-                model=outcome.model,
-                input_tokens=outcome.optimized_tokens,
-                output_tokens=outcome.output_tokens,
-                tokens_saved=outcome.tokens_saved,
-                latency_ms=outcome.total_latency_ms,
-                cached=outcome.cache_hit,
-                overhead_ms=outcome.overhead_ms,
-                ttfb_ms=outcome.ttfb_ms,
-                cache_read_tokens=outcome.cache_read_tokens,
-                cache_write_tokens=outcome.cache_write_tokens,
-                cache_write_5m_tokens=outcome.cache_write_5m_tokens,
-                cache_write_1h_tokens=outcome.cache_write_1h_tokens,
-                uncached_input_tokens=outcome.uncached_input_tokens,
-                attempted_input_tokens=outcome.attempted_input_tokens,
-                project=project,
-                client=outcome.client,
-            )
+            agy_savings_inbox.emit_event(**metrics_kwargs)
         except Exception:  # noqa: BLE001 - best-effort, never break the response
             pass
 

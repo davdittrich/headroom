@@ -47,6 +47,9 @@ def _never_start_a_real_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
         return None, port
 
     monkeypatch.setattr(wrap_mod, "_ensure_proxy", _fake_ensure_proxy)
+    # These tests verify MCP configuration, not Serena's external indexer.
+    # A fake shutil.which("uvx") must not launch the real executable on PATH.
+    monkeypatch.setattr(wrap_mod, "_index_serena_project", lambda **kw: None)
 
 
 class TestWrapAgyBinaryMissing:
@@ -1190,19 +1193,44 @@ class TestPrintModePurgesStaleHeadroomEntry:
         survived = AgyRegistrar(home_dir=tmp_path).get_server("my-tool")
         assert survived is not None, "user-managed entries must not be removed by print-mode purge"
 
-    def test_unsafe_print_purge_preserves_user_owned_headroom(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("name", ["headroom", "codebase-memory-mcp"])
+    @pytest.mark.parametrize("owned", [False, True])
+    def test_unsafe_print_purge_honors_entry_ownership(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, owned: bool
     ) -> None:
         from headroom.cli.wrap import _purge_agy_mcp_entries
         from headroom.mcp_registry.agy import AgyRegistrar
         from headroom.mcp_registry.base import ServerSpec
+        from headroom.mcp_registry.ledger import record_install
 
         _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        monkeypatch.setenv("HEADROOM_WORKSPACE_DIR", str(tmp_path / "workspace"))
         reg = AgyRegistrar(home_dir=tmp_path)
-        user_spec = ServerSpec(name="headroom", command="/opt/user-mcp", args=(), env={})
+        user_spec = ServerSpec(name=name, command="/opt/user-mcp", args=(), env={})
         reg.register_server(user_spec)
+        if owned:
+            record_install("agy", user_spec)
         _purge_agy_mcp_entries(reg)
-        assert reg.get_server("headroom") == user_spec
+        assert reg.get_server(name) == (None if owned else user_spec)
+
+    @pytest.mark.parametrize("owned", [False, True])
+    def test_unwrap_preserves_unowned_legacy_code_graph(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owned: bool
+    ) -> None:
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.base import ServerSpec
+        from headroom.mcp_registry.ledger import record_install
+
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        monkeypatch.setenv("HEADROOM_WORKSPACE_DIR", str(tmp_path / "workspace"))
+        reg = AgyRegistrar(home_dir=tmp_path)
+        spec = ServerSpec(name="codebase-memory-mcp", command="/opt/user-mcp", args=(), env={})
+        reg.register_server(spec)
+        if owned:
+            record_install("agy", spec)
+        result = CliRunner().invoke(_get_main(), ["unwrap", "agy"])
+        assert result.exit_code == 0, result.output
+        assert reg.get_server(spec.name) == (None if owned else spec)
 
     @pytest.mark.parametrize("version", [(1, 0, 8), None])
     def test_unsafe_print_refuses_remaining_user_mcp(
@@ -1269,6 +1297,58 @@ class TestPrintModePurgesStaleHeadroomEntry:
 # ---------------------------------------------------------------------------
 # WU s04.4: graceful failure modes
 # ---------------------------------------------------------------------------
+
+
+class TestAgyProxyFallbackMarkers:
+    @pytest.mark.parametrize("name", ["headroom", "serena"])
+    def test_wrap_preserves_conflicting_user_mcp_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+    ) -> None:
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.base import ServerSpec
+
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        monkeypatch.setenv("HEADROOM_WORKSPACE_DIR", str(tmp_path / "workspace"))
+        registrar = AgyRegistrar(home_dir=tmp_path)
+        user_spec = ServerSpec(name=name, command="/opt/user-mcp", args=("--custom",), env={})
+        registrar.register_server(user_spec)
+        result = CliRunner().invoke(_get_main(), ["wrap", "agy"])
+        assert result.exit_code == 0, result.output
+        assert registrar.get_server(name) == user_spec
+
+    @pytest.mark.parametrize("exit_path", ["normal", "sigterm"])
+    def test_marker_follows_bound_port_and_cleanup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_path: str
+    ) -> None:
+        import signal
+
+        import headroom.cli.wrap as wrap_mod
+
+        _stub_agy_mitm_run(tmp_path, monkeypatch, with_uvx=True)
+        monkeypatch.setenv("HEADROOM_WORKSPACE_DIR", str(tmp_path / "workspace"))
+        requested, actual = 59123, 59124
+        monkeypatch.setattr(wrap_mod, "_ensure_proxy", lambda *a, **kw: (None, actual))
+        seen = []
+
+        def child(cmd, **kw):
+            seen.append(
+                (
+                    wrap_mod._client_marker_path(requested).exists(),
+                    wrap_mod._client_marker_path(actual).exists(),
+                )
+            )
+            if exit_path == "sigterm":
+                handler = signal.getsignal(signal.SIGTERM)
+                assert callable(handler)
+                handler(signal.SIGTERM, None)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr("subprocess.run", child)
+        result = CliRunner().invoke(_get_main(), ["wrap", "agy", "--port", str(requested)])
+        assert result.exit_code == (143 if exit_path == "sigterm" else 0), result.output
+        assert seen == [(False, True)], "only the bound proxy must see the live session marker"
+        assert not wrap_mod._client_marker_path(requested).exists()
+        assert not wrap_mod._client_marker_path(actual).exists()
 
 
 class TestAgyGracefulFailures:

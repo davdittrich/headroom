@@ -34,6 +34,7 @@ from typing import Any
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.x509 import Certificate
 
+from headroom.providers.cloudcode import AGY_DISPATCH_SCOPE_KEY
 from headroom.proxy.agy_ca import ensure_root_ca, load_cert_chain_in_memory
 from headroom.proxy.agy_terminator import DEFAULT_ALLOWLIST, _LeafCache, normalize_host
 
@@ -105,6 +106,7 @@ def make_host_guard(app: Any, allowlist: frozenset[str], project: str | None = N
                 logger.warning("event=host_refused host=%s", host_str)
                 await _send_421(send)
                 return
+            scope[AGY_DISPATCH_SCOPE_KEY] = True
             if project:
                 # Replace any client-forged x-headroom-project value; never
                 # duplicate. Only touch http/websocket scopes.
@@ -189,7 +191,7 @@ class AgyDispatchServer:
     from the headroom root CA).  Hypercorn handles h2/http1.1 + lifespan.
 
     With ``plain_http=True`` the same plumbing serves the app over PLAIN HTTP:
-    no SSL context, no CA touched, no Host allowlist guard.  That is the
+    no SSL context or CA setup; retrieval operations require loopback peer and Host checks.  That is the
     retrieve listener (:class:`headroom.proxy.agy_retrieve.AgyRetrieveServer`),
     which a stdio ``headroom mcp serve`` child must reach over loopback — it
     cannot speak the Cloud-Code-SNI TLS the dispatch listener requires.
@@ -263,10 +265,14 @@ class AgyDispatchServer:
         # Import and build the FastAPI app.
         from headroom.proxy.server import create_app
 
-        # Plain HTTP (retrieve listener): no Host allowlist guard — the client is
-        # a stdio child in the same trust boundary, addressing 127.0.0.1 directly.
+        # The plain-HTTP listener exposes only retrieval to loopback peers and
+        # authorities. Cloud Code routing state belongs only to TLS dispatch.
         app: Any = create_app()
-        if not self._plain_http:
+        if self._plain_http:
+            from headroom.proxy.agy_retrieve import make_retrieve_guard
+
+            app = make_retrieve_guard(app)
+        else:
             app = make_host_guard(app, self._allowlist, self._project)
 
         # wrap_app accepts the ASGI callable directly; ignore the narrow stub type.

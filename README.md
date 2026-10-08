@@ -495,7 +495,8 @@ server and `--no-serena` skips Serena, matching `wrap claude` and `wrap opencode
 MCP entries that Headroom did not install untouched.  `--code-graph` starts the proxy's live
 code-graph watcher, exactly as it does for every other wrapped agent. MCP registration in
 `--print`/`-p`/`--prompt` mode requires agy `>= 1.0.16`; older or undetectable agy versions
-skip registration and purge any stale entries — see
+skip registration and remove only ledger-owned entries. Remaining MCP entries or malformed
+config block the print run with upgrade/interactive guidance — see
 [docs/agy-parity-matrix.md](docs/agy-parity-matrix.md) for the full parity table.
 
 The following features available on other agents have no agy equivalent in v1:

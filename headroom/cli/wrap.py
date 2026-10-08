@@ -1375,10 +1375,15 @@ def _setup_headroom_retrieve_mcp_agy(registrar: Any, *, verbose: bool = False) -
     """
     from headroom.mcp_registry import build_headroom_spec
     from headroom.mcp_registry.base import RegisterStatus
-    from headroom.mcp_registry.ledger import clear_install, record_install
+    from headroom.mcp_registry.ledger import (
+        clear_install,
+        headroom_installed_matching,
+        record_install,
+    )
 
     spec = build_headroom_spec()
-    result = registrar.register_server(spec, force=True)
+    owned = headroom_installed_matching(registrar.name, registrar.get_server(spec.name))
+    result = registrar.register_server(spec, force=owned)
     if result.status not in (RegisterStatus.REGISTERED, RegisterStatus.ALREADY):
         click.echo(
             f"  MCP retrieve tool: could not register headroom MCP — skipping ({result.detail})."
@@ -3128,13 +3133,18 @@ def _remove_headroom_installed_retrieve_mcp(registrar: Any) -> str:
     persistent, ledger-recorded server, so cooperative uninstall is ledger-gated
     (never clobber a user's own "headroom" entry) and clears the ledger record.
     """
+    return _remove_headroom_installed_mcp(registrar, "headroom")
+
+
+def _remove_headroom_installed_mcp(registrar: Any, name: str) -> str:
+    """Retire a matching ledger-owned entry without claiming user configuration."""
     from headroom.mcp_registry.ledger import clear_install, headroom_installed_matching
 
-    current = registrar.get_server("headroom")
+    current = registrar.get_server(name)
     if not headroom_installed_matching(registrar.name, current):
         return "not_headroom_owned"
-    if registrar.unregister_server("headroom"):
-        clear_install(registrar.name, "headroom")
+    if registrar.unregister_server(name):
+        clear_install(registrar.name, name)
         return "removed"
     return "failed"
 
@@ -3277,7 +3287,7 @@ def _purge_agy_mcp_entries(registrar: Any) -> None:
     """Retire Headroom MCP entries before the unsafe-print launch preflight."""
     _disable_tokensave_mcp(registrar)
     _disable_serena_mcp(registrar, reason="agy print-mode MCP preflight failed")
-    registrar.unregister_server(_CBM_MCP_SERVER_NAME)
+    _remove_headroom_installed_mcp(registrar, _CBM_MCP_SERVER_NAME)
     # Remove retrieve only when the ledger proves we installed it. User-owned
     # entries survive; launch preflight rejects unsafe print mode if any remain.
     _remove_headroom_installed_retrieve_mcp(registrar)
@@ -9518,14 +9528,11 @@ def _stop_agy_servers(servers: _AgyServers | None) -> None:
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
-@click.option(
+@proxy_port_option(
     # NOTE: no "-p" short alias here (unlike sibling wrap subcommands): agy's
     # own CLI uses -p for --print, so a -p alias on --port would swallow the
     # user's prompt as the proxy port (headroom-r9k). Long --port only.
     "--port",
-    default=8787,
-    type=click.IntRange(1, 65535),
-    help="Proxy port (default: 8787)",
 )
 @click.option(
     "--no-intercept",
@@ -9688,7 +9695,8 @@ def agy(
     # block below also calls cleanup() — together they cover both the
     # signal-exit and normal-exit paths without clobbering agy's handler.
     proxy_holder: list[subprocess.Popen | None] = [None]
-    cleanup = _make_cleanup(proxy_holder, port)
+    port_holder = [port]
+    cleanup = _make_cleanup(proxy_holder, port_holder)
     _register_proxy_client(port)
 
     # Cross-process savings: redirect THIS process's in-proxy funnel writes to a
@@ -9710,14 +9718,15 @@ def agy(
         # client sharing the proxy. agy uses its own MITM env (build_agy_env
         # below) rather than a base-URL redirect, so unlike the other wrap
         # subcommands we do NOT call _push_runtime_env here.
-        # _ensure_proxy returns (proxy, actual_port); agy addresses the shared
-        # proxy by the requested `port` throughout (_make_cleanup /
-        # _register_proxy_client above), so the bound port is unused here — but
-        # proxy_holder[0] MUST be the Popen, not the tuple, for cleanup to reap
-        # an agy-started proxy.
+        # Keep the marker and its cleanup bound to the actual proxy port.
+        # Ensure the shared process starts before the private savings env is set.
         proxy_holder[0], _actual_port = _ensure_proxy(
             port, no_proxy, agent_type="agy", code_graph=code_graph
         )
+        if _actual_port != port:
+            _unregister_proxy_client(port)
+            port_holder[0] = _actual_port
+            _register_proxy_client(_actual_port)
 
         agy_savings_tmp = tempfile.mkdtemp(prefix="headroom-agy-savings-")
         os.environ["HEADROOM_SAVINGS_PATH"] = str(Path(agy_savings_tmp) / "proxy_savings.json")
@@ -9805,9 +9814,7 @@ def agy(
             # ------------------------------------------------------------------
             _disable_tokensave_mcp(AgyRegistrar(), verbose=False)
             if not no_serena:
-                _setup_serena_mcp(
-                    AgyRegistrar(), context="ide-assistant", verbose=False, force=True
-                )
+                _setup_serena_mcp(AgyRegistrar(), context="ide-assistant", verbose=False)
             else:
                 _disable_serena_mcp(
                     AgyRegistrar(),
@@ -10027,7 +10034,7 @@ def unwrap_agy() -> None:
     # 4. Remove any legacy codebase-memory-mcp entry an older build registered.
     #    agy no longer wires a code-graph MCP: --code-graph now drives the
     #    proxy-side watcher, matching `wrap claude` / `unwrap claude`.
-    if agy_reg.unregister_server(_CBM_MCP_SERVER_NAME):
+    if _remove_headroom_installed_mcp(agy_reg, _CBM_MCP_SERVER_NAME) == "removed":
         click.echo("  Removed legacy codebase-memory-mcp code graph server from agy.")
 
     # 5. Remove the tokensave code-graph MCP only if the ledger proves Headroom

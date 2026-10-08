@@ -348,7 +348,11 @@ def test_agy_control_plane_passthrough_routes_to_cloudcode_host(monkeypatch):
 
     monkeypatch.setattr(HeadroomProxy, "handle_passthrough", fake_passthrough)
 
-    with TestClient(create_app(ProxyConfig(optimize=False))) as client:
+    from headroom.proxy.agy_dispatch import make_host_guard
+    from headroom.proxy.agy_terminator import DEFAULT_ALLOWLIST
+
+    app = make_host_guard(create_app(ProxyConfig(optimize=False)), DEFAULT_ALLOWLIST)
+    with TestClient(app) as client:
         response = client.post(
             "/v1internal:loadCodeAssist",
             headers={

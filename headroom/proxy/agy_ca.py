@@ -24,7 +24,10 @@ import ssl
 import stat
 import sys
 import tempfile
-from collections.abc import Sequence
+import threading
+import time
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 from cryptography import x509
@@ -72,6 +75,7 @@ _CORP_CA_ENV_VARS: tuple[str, ...] = ("SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS")
 # File names under the CA directory.
 _CA_KEY_NAME = "ca.key"
 _CA_CERT_NAME = "ca.crt"
+_CA_THREAD_LOCK = threading.Lock()
 _BUNDLE_NAME = "combined-ca-bundle.pem"
 
 
@@ -346,6 +350,41 @@ def _collect_corporate_ca_pems(env_vars: Sequence[str] = _CORP_CA_ENV_VARS) -> l
 # ---------------------------------------------------------------------------
 
 
+@contextmanager
+def _root_ca_file_lock(path: Path) -> Iterator[None]:
+    """Serialize complete key/cert transactions across wrap processes."""
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.chmod(path, 0o600)
+        if sys.platform == "win32":
+            import msvcrt
+
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"0")
+            os.lseek(fd, 0, os.SEEK_SET)
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def ensure_root_ca(
     base_dir: Path | None = None,
 ) -> tuple[RSAPrivateKey, Certificate, Path, Path]:
@@ -371,6 +410,13 @@ def ensure_root_ca(
     _secure_dir(ca_dir)
     _not_in_os_trust(ca_dir)
 
+    with _CA_THREAD_LOCK, _root_ca_file_lock(ca_dir / "ca.lock"):
+        return _ensure_root_ca_locked(base_dir, ca_dir)
+
+
+def _ensure_root_ca_locked(
+    base_dir: Path, ca_dir: Path
+) -> tuple[RSAPrivateKey, Certificate, Path, Path]:
     key_path = ca_dir / _CA_KEY_NAME
     cert_path = ca_dir / _CA_CERT_NAME
 
@@ -388,8 +434,18 @@ def ensure_root_ca(
             try:
                 key_bytes = key_path.read_bytes()
                 existing_key = serialization.load_pem_private_key(key_bytes, password=None)
+                if not isinstance(existing_key, RSAPrivateKey):
+                    raise ValueError("Root CA private key must be RSA")
+                key_public = existing_key.public_key().public_bytes(
+                    serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+                )
+                cert_public = existing_cert.public_key().public_bytes(
+                    serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+                )
+                if key_public != cert_public:
+                    raise ValueError("Root CA key and certificate do not match")
                 logger.info("event=ca_reused path=%s", cert_path)
-                return existing_key, existing_cert, key_path, cert_path  # type: ignore[return-value]
+                return existing_key, existing_cert, key_path, cert_path
             except Exception as exc:
                 logger.warning("event=ca_key_load_failed reason=%s; regenerating", exc)
 

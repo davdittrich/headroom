@@ -21,12 +21,61 @@ carries upstream credentials (it only reads the in-memory marker cache).
 The hypercorn plumbing (lifespan, TCPServer, socket options, lifecycle) is
 :class:`headroom.proxy.agy_dispatch.AgyDispatchServer`'s — this listener is
 that same server in its ``plain_http`` mode: no SSL context, no CA touched,
-no Host allowlist guard.
+A separate outer guard requires a loopback peer and Host and exposes only
+retrieval GET/POST routes.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from headroom.proxy.agy_dispatch import AgyDispatchServer
+from headroom.proxy.loopback_guard import is_loopback_host, is_loopback_host_header
+
+
+def make_retrieve_guard(app: Any) -> Any:
+    """Expose only retrieval operations to loopback peers and authorities."""
+
+    async def guarded(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        if scope.get("type") == "http":
+            client = scope.get("client")
+            peer = client[0] if isinstance(client, (tuple, list)) and client else None
+            hosts = [value for name, value in scope.get("headers", ()) if name.lower() == b"host"]
+            local = (
+                is_loopback_host(peer)
+                and len(hosts) == 1
+                and is_loopback_host_header(hosts[0].decode("latin-1"))
+            )
+            path = scope.get("path", "")
+            method = scope.get("method", "")
+            suffix = path.removeprefix("/v1/retrieve/")
+            retrieve_get = (
+                method == "GET"
+                and path.startswith("/v1/retrieve/")
+                and bool(suffix)
+                and "/" not in suffix
+            )
+            retrieve_post = method == "POST" and path in {"/v1/retrieve", "/v1/retrieve/tool_call"}
+            if not local or not (retrieve_get or retrieve_post):
+                body = b"Not Found"
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 404,
+                        "headers": [
+                            (b"content-type", b"text/plain"),
+                            (b"content-length", str(len(body)).encode()),
+                        ],
+                    }
+                )
+                await send({"type": "http.response.body", "body": body})
+                return
+        await app(scope, receive, send)
+
+    return guarded
 
 
 class AgyRetrieveServer(AgyDispatchServer):

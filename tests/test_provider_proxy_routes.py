@@ -485,7 +485,9 @@ def test_cloudcode_host_base_allowlists_exact_hosts_only() -> None:
 
     allowlisted = next(iter(proxy_targets.DEFAULT_ALLOWLIST))
     assert (
-        proxy_targets.select_passthrough_base_url(_Proxy(), {"host": allowlisted})
+        proxy_targets.select_passthrough_base_url(
+            _Proxy(), {"host": allowlisted}, allow_cloudcode_host=True
+        )
         == f"https://{allowlisted}"
     )
 
@@ -512,7 +514,7 @@ def test_select_passthrough_rejects_forged_cloudcode_host() -> None:
     # Positive: an allowlisted host is forwarded back to itself via the same path.
     assert (
         proxy_routes._select_passthrough_base_url(
-            proxy, {"host": "daily-cloudcode-pa.googleapis.com"}
+            proxy, {"host": "daily-cloudcode-pa.googleapis.com"}, allow_cloudcode_host=True
         )
         == "https://daily-cloudcode-pa.googleapis.com"
     )
@@ -520,7 +522,9 @@ def test_select_passthrough_rejects_forged_cloudcode_host() -> None:
     # SSRF fallthrough: a forged suffix-collision host is NOT echoed back; it
     # falls through to the configured default selection instead.
     forged = "evilcloudcode-pa.googleapis.com"
-    base = proxy_routes._select_passthrough_base_url(proxy, {"host": forged})
+    base = proxy_routes._select_passthrough_base_url(
+        proxy, {"host": forged}, allow_cloudcode_host=True
+    )
     assert base != f"https://{forged}"
     assert base == "https://legacy.anthropic.test"
 

@@ -28,6 +28,71 @@ from headroom.proxy import agy_dispatch
 from headroom.proxy.agy_retrieve import AgyRetrieveServer
 
 
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/stats"),
+        ("GET", "/health"),
+        ("GET", "/openapi.json"),
+        ("GET", "/debug/metrics"),
+        ("POST", "/v1/chat/completions"),
+        ("POST", "/v1/retrieve/stats"),
+        ("OPTIONS", "/v1/retrieve"),
+    ],
+)
+async def test_retrieve_listener_cannot_serve_other_proxy_api(monkeypatch, method, path):
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    visits = []
+
+    @app.api_route("/{path:path}", methods=["GET", "POST", "OPTIONS"])
+    async def any_endpoint(path: str):
+        visits.append(path)
+        return {"visited": path}
+
+    monkeypatch.setattr("headroom.proxy.server.create_app", lambda: app)
+    async with AgyRetrieveServer() as srv:
+        host, port = srv.address
+        async with httpx.AsyncClient() as client:
+            control = await client.get(f"http://{host}:{port}/v1/retrieve/stats")
+            assert control.status_code == 200
+            denied = await client.request(method, f"http://{host}:{port}{path}")
+            assert denied.status_code == 404
+        assert visits == ["v1/retrieve/stats"], "forbidden requests must never reach the proxy app"
+
+
+@pytest.mark.parametrize(
+    "host_header",
+    [
+        "attacker.invalid",
+        "localhost.attacker.invalid",
+        "127.0.0.1.attacker.invalid",
+        "cloudcode-pa.googleapis.com",
+    ],
+)
+async def test_retrieve_listener_rejects_non_loopback_host(monkeypatch, host_header):
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    visits = []
+
+    @app.get("/v1/retrieve/stats")
+    async def stats():
+        visits.append(True)
+        return {"stats": True}
+
+    monkeypatch.setattr("headroom.proxy.server.create_app", lambda: app)
+    async with AgyRetrieveServer() as srv:
+        host, port = srv.address
+        async with httpx.AsyncClient() as client:
+            denied = await client.get(
+                f"http://{host}:{port}/v1/retrieve/stats", headers={"host": host_header}
+            )
+            assert denied.status_code == 404
+        assert visits == []
+
+
 @pytest.fixture(autouse=True)
 def _clean_compression_store():
     """Isolate the process-global compression store around each test."""
