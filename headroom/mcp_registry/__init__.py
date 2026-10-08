@@ -14,6 +14,7 @@ without changing the calling code.
 from __future__ import annotations
 
 from .agy import AgyRegistrar
+from .antigravity import AntigravityRegistrar
 from .base import MCPRegistrar, RegisterResult, RegisterStatus, ServerSpec
 from .claude import ClaudeConfigMutationError, ClaudeRegistrar
 from .codex import CodexRegistrar
@@ -34,6 +35,7 @@ __all__ = [
     "DEFAULT_PROXY_URL",
     "AgyRegistrar",
     "CLAUDE_SERENA_CONTEXT",
+    "AntigravityRegistrar",
     "ClaudeConfigMutationError",
     "ClaudeRegistrar",
     "CodexRegistrar",

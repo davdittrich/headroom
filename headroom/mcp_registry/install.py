@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from headroom.install.runtime import resolve_headroom_command
 
 from .agy import AgyRegistrar
+from .antigravity import AntigravityRegistrar
 from .base import MCPRegistrar, RegisterResult, RegisterStatus, ServerSpec
 from .claude import ClaudeRegistrar
 from .codex import CodexRegistrar
@@ -24,6 +25,7 @@ def get_all_registrars() -> list[MCPRegistrar]:
     The list grows as we add adapters for Cursor, Continue, Cline, etc.
     """
     return [
+        AntigravityRegistrar(),
         ClaudeRegistrar(),
         CodexRegistrar(),
         AgyRegistrar(),
