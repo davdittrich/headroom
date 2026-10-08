@@ -44,10 +44,19 @@ def make_retrieve_guard(app: Any) -> Any:
             client = scope.get("client")
             peer = client[0] if isinstance(client, (tuple, list)) and client else None
             hosts = [value for name, value in scope.get("headers", ()) if name.lower() == b"host"]
+            browser_cross_origin = any(
+                name.lower() == b"origin"
+                or (
+                    name.lower() == b"sec-fetch-site"
+                    and value.lower() not in {b"none", b"same-origin"}
+                )
+                for name, value in scope.get("headers", ())
+            )
             local = (
                 is_loopback_host(peer)
                 and len(hosts) == 1
                 and is_loopback_host_header(hosts[0].decode("latin-1"))
+                and not browser_cross_origin
             )
             path = scope.get("path", "")
             method = scope.get("method", "")

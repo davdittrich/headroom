@@ -101,6 +101,19 @@ def _clean_compression_store():
     reset_compression_store()
 
 
+@pytest.mark.parametrize(
+    "headers",
+    [{"origin": "https://attacker.invalid"}, {"origin": "null"}, {"sec-fetch-site": "cross-site"}],
+)
+async def test_retrieve_listener_rejects_browser_cross_origin(headers):
+    async with AgyRetrieveServer() as srv:
+        host, port = srv.address
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"http://{host}:{port}/v1/retrieve/stats", headers=headers)
+        assert response.status_code == 404
+        assert "access-control-allow-origin" not in response.headers
+
+
 async def test_retrieve_server_starts_on_loopback_plain_http() -> None:
     """Server binds loopback and answers plain HTTP (no TLS handshake)."""
     srv = AgyRetrieveServer(port=0)

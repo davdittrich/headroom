@@ -1300,6 +1300,42 @@ class TestPrintModePurgesStaleHeadroomEntry:
 
 
 class TestAgyProxyFallbackMarkers:
+    def test_owned_retrieve_entry_migrates(self, tmp_path, monkeypatch):
+        import headroom.cli.wrap as wrap_mod
+        from headroom.mcp_registry import build_headroom_spec
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.base import ServerSpec
+        from headroom.mcp_registry.ledger import headroom_installed_matching, record_install
+
+        monkeypatch.setenv("HEADROOM_WORKSPACE_DIR", str(tmp_path / "workspace"))
+        registrar = AgyRegistrar(home_dir=tmp_path)
+        old = ServerSpec(name="headroom", command="old-headroom", args=("serve",))
+        registrar.register_server(old)
+        record_install("agy", old)
+        monkeypatch.setattr(wrap_mod, "_smoke_verify_mcp_handshake", lambda *args: True)
+        monkeypatch.setattr(wrap_mod, "_prime_agy_retrieve_tool_cache", lambda *args: None)
+        assert wrap_mod._setup_headroom_retrieve_mcp_agy(registrar)
+        assert registrar.get_server("headroom") == build_headroom_spec()
+        assert headroom_installed_matching("agy", registrar.get_server("headroom"))
+
+    @pytest.mark.parametrize("handshake_ok", [True, False])
+    def test_matching_user_retrieve_entry_is_not_claimed(self, tmp_path, monkeypatch, handshake_ok):
+        import headroom.cli.wrap as wrap_mod
+        from headroom.mcp_registry import build_headroom_spec
+        from headroom.mcp_registry.agy import AgyRegistrar
+        from headroom.mcp_registry.ledger import headroom_installed_matching
+
+        monkeypatch.setenv("HEADROOM_WORKSPACE_DIR", str(tmp_path / "workspace"))
+        registrar = AgyRegistrar(home_dir=tmp_path)
+        spec = build_headroom_spec()
+        registrar.register_server(spec)
+        monkeypatch.setattr(wrap_mod, "_smoke_verify_mcp_handshake", lambda *args: handshake_ok)
+        monkeypatch.setattr(wrap_mod, "_prime_agy_retrieve_tool_cache", lambda *args: None)
+        assert wrap_mod._setup_headroom_retrieve_mcp_agy(registrar) is handshake_ok
+        assert not headroom_installed_matching("agy", registrar.get_server("headroom"))
+        assert wrap_mod._remove_headroom_installed_retrieve_mcp(registrar) == "not_headroom_owned"
+        assert registrar.get_server("headroom") == spec
+
     @pytest.mark.parametrize("name", ["headroom", "serena"])
     def test_wrap_preserves_conflicting_user_mcp_entry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str

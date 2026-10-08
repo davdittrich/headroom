@@ -14,6 +14,8 @@ invoking the command callback, so no proxy is started.
 
 from __future__ import annotations
 
+import pytest
+
 from headroom.cli.wrap import _agy_print_mode, agy
 
 
@@ -22,6 +24,15 @@ def _port_option():
 
 
 class TestAgyPortAliasNoShadow:
+    @pytest.mark.parametrize("args", [["--no-intercept"], ["--no-intercept", "--port", "9000"]])
+    def test_passthrough_skips_proxy_discovery(self, monkeypatch, args):
+        def forbidden(*args, **kwargs):
+            raise AssertionError("passthrough must not discover or prompt for a proxy")
+
+        monkeypatch.setattr("headroom.cli.port_discovery.reconcile_default_port", forbidden)
+        ctx = agy.make_context("agy", args)
+        assert ctx.params["no_intercept"]
+
     def test_dash_p_routes_to_agy_print_not_port(self) -> None:
         ctx = agy.make_context("agy", ["-p", "hello"])
         assert ctx.params["port"] == 8787  # -p did NOT set the proxy port

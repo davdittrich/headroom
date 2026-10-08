@@ -3,7 +3,7 @@
 The retrieve MCP is registered with agy PERSISTENTLY and recorded in the install
 ledger (mirroring codebase-memory-mcp / Serena) so agy caches and exposes the
 tool across sessions. These tests pin: a stable port-independent spec, ledger
-recording on REGISTERED and ALREADY, ledger-cleared handshake failure, and a
+recording on REGISTERED and ledger-owned ALREADY, ledger-cleared handshake failure, and a
 ledger-gated cooperative uninstall.
 """
 
@@ -68,17 +68,16 @@ class TestPersistentRegistration:
         assert _setup_headroom_retrieve_mcp_agy(reg) is True
         assert _ledgered(reg) is True
 
-    def test_reclaims_ledger_after_loss(
+    def test_matching_unowned_entry_is_not_claimed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr("headroom.cli.wrap._smoke_verify_mcp_handshake", lambda *a, **k: True)
         reg = _reg(tmp_path)
-        # Pre-existing matching entry with NO ledger record (e.g. after the
-        # old-agy print-mode purge cleared it) — ALREADY must re-record.
+        # A matching spec alone cannot prove ownership after ledger loss.
         reg.register_server(build_headroom_spec(), force=True)
         assert _ledgered(reg) is False
         assert _setup_headroom_retrieve_mcp_agy(reg) is True
-        assert _ledgered(reg) is True
+        assert _ledgered(reg) is False
 
     def test_handshake_failure_removes_entry_and_clears_ledger(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

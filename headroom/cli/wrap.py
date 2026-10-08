@@ -1391,11 +1391,9 @@ def _setup_headroom_retrieve_mcp_agy(registrar: Any, *, verbose: bool = False) -
         return False
 
     if _smoke_verify_mcp_handshake(spec.command, list(spec.args), dict(spec.env)):
-        # Record on BOTH REGISTERED and ALREADY: a matching on-disk entry whose
-        # ledger record was lost (e.g. cleared by the old-agy print-mode purge)
-        # must be re-claimed as Headroom-owned so ledger-gated uninstall works.
-        # record_install upserts on spec.name, so this never double-counts.
-        record_install(registrar.name, spec)
+        # An identical user-installed spec can be used without claiming ownership.
+        if result.status == RegisterStatus.REGISTERED or owned:
+            record_install(registrar.name, spec)
         _prime_agy_retrieve_tool_cache(registrar)
         if verbose:
             click.echo(
@@ -1406,12 +1404,15 @@ def _setup_headroom_retrieve_mcp_agy(registrar: Any, *, verbose: bool = False) -
             click.echo("  MCP retrieve tool: headroom MCP wired (persistent, handshake verified).")
         return True
 
-    # Handshake failed: remove the entry AND clear any ledger record so a broken
-    # pointer can never persist or masquerade as Headroom-owned.
-    registrar.unregister_server("headroom")
-    clear_install(registrar.name, "headroom")
+    # A failed handshake never grants permission to remove user configuration.
+    removable = result.status == RegisterStatus.REGISTERED or owned
+    if removable:
+        registrar.unregister_server("headroom")
+        clear_install(registrar.name, "headroom")
     click.echo(
-        "  MCP retrieve tool: headroom MCP failed handshake — entry removed (agy left transport-only)."
+        "  MCP retrieve tool: headroom MCP failed handshake — "
+        + ("entry removed" if removable else "user entry preserved")
+        + " (agy left transport-only)."
     )
     return False
 
@@ -9537,6 +9538,7 @@ def _stop_agy_servers(servers: _AgyServers | None) -> None:
 @click.option(
     "--no-intercept",
     is_flag=True,
+    is_eager=True,
     help=(
         "Passthrough / escape hatch: launch agy unchanged, with no TLS interception. "
         "agy traffic is NOT compressed or inspected by Headroom.  Use this to verify "
