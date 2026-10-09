@@ -2,7 +2,9 @@
 
 # CRITICAL: Must be set before ANY imports that could trigger sentence_transformers
 # The Rust tokenizers use parallelism that deadlocks with pytest-asyncio
+import logging
 import os
+import sys
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -15,6 +17,29 @@ from unittest.mock import Mock
 import pytest
 
 from tests._skip_helpers import external_model_skip_reason
+
+
+@pytest.fixture(autouse=True)
+def _undo_process_trust_injection():
+    """Undo ``truststore.inject_into_ssl()`` after any test that triggered it.
+
+    Invoking the CLI (``CliRunner`` on ``main``) or starting the proxy calls
+    ``ensure_process_trust()``, which swaps ``ssl.SSLContext`` process-wide.
+    Left in place it leaks into later tests (server-side test contexts, OpenSSL
+    store stats), so restore the stdlib class after each test.
+    """
+    yield
+    try:
+        from headroom.proxy import ssl_context
+    except Exception:
+        return
+    os.environ.pop(ssl_context.PROCESS_TRUST_ENV, None)
+    ssl_context._system_ctx_cache.clear()
+    if ssl_context._process_trust_injected:
+        import truststore
+
+        truststore.extract_from_ssl()
+        ssl_context._process_trust_injected = False
 
 
 # A live `headroom` dev session exports HEADROOM_* into the shell (and the
@@ -39,11 +64,20 @@ def _skip_proxy_dependency_gate_unless_exercised(
 
 
 @pytest.fixture(autouse=True)
-def _scrub_developer_headroom_env(monkeypatch):
+def _scrub_developer_headroom_env(monkeypatch, tmp_path):
     for key in list(os.environ):
         if key.startswith("HEADROOM_"):
             monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS", raising=False)
+    # Clearing HEADROOM_* alone leaves file-backed settings active. Give every
+    # test its own store so proxy/CLI startup cannot load developer settings and
+    # saves cannot rewrite them. Tests of path precedence can override this.
+    monkeypatch.setenv("HEADROOM_SETTINGS_PATH", str(tmp_path / "headroom-settings.json"))
+    # The scrub also deletes the HEADROOM_HARD_WATCHDOG_SECS=0 opt-out CI sets
+    # (#3845), so every test that enters the proxy lifespan armed the 90s
+    # production watchdog inside pytest; it hard-exits the process with code 1
+    # and no summary. Tests of the watchdog set the variable themselves.
+    monkeypatch.setenv("HEADROOM_HARD_WATCHDOG_SECS", "0")
 
 
 # The scrub above deletes every HEADROOM_* var — which includes HEADROOM_BEACON,
@@ -59,6 +93,17 @@ def _scrub_developer_headroom_env(monkeypatch):
 @pytest.fixture(autouse=True)
 def _disable_telemetry_beacon(monkeypatch, _scrub_developer_headroom_env):
     monkeypatch.setenv("HEADROOM_BEACON", "off")
+
+
+# `wrap`/`init`/`doctor` probe loopback ports (and read deployment manifests)
+# to find a live Headroom proxy when --port is left at its default. A
+# developer's running proxy would make CLI tests non-deterministic, so
+# discovery is off unless a test turns it back on. A developer's CODEX_HOME
+# would likewise redirect every Codex path helper away from the test's tmp home.
+@pytest.fixture(autouse=True)
+def _disable_live_proxy_discovery(monkeypatch, _scrub_developer_headroom_env):
+    monkeypatch.setenv("HEADROOM_PORT_DISCOVERY", "0")
+    monkeypatch.delenv("CODEX_HOME", raising=False)
 
 
 # The MCP install ledger defaults to ``~/.headroom/mcp_installs.json``, so any
@@ -83,6 +128,53 @@ def _isolate_mcp_ledger(monkeypatch, tmp_path_factory):
 
     ledger_file = tmp_path_factory.mktemp("mcp-ledger") / "mcp_installs.json"
     monkeypatch.setattr(ledger, "ledger_path", lambda: ledger_file)
+
+
+# Any test that builds the proxy app (`create_app()`) runs its lifespan startup,
+# which calls `registry.start_all()` and starts the subscription tracker. That
+# tracker polls `https://api.anthropic.com/api/oauth/usage` for real — observed
+# on every local run of tests/test_agy_dispatch.py as
+# `httpx - INFO - HTTP Request: GET https://api.anthropic.com/api/oauth/usage`.
+# Same class of bug as the beacon and MCP-ledger fixtures above: a unit test
+# reaching a live external service.
+#
+# There is no env knob that reaches this from a test: `ProxyConfig.
+# subscription_tracking_enabled` defaults to True and HEADROOM_NO_SUBSCRIPTION_
+# TRACKING is wired only through the `headroom proxy` CLI, so `create_app()`
+# always starts the poller. Force `enabled=False` at the tracker factory
+# instead, which is the single seam every caller funnels through.
+#
+# Beyond hygiene this is a determinism fix: the poll made first-request latency
+# depend on live network egress, which timed out the 10s guard in
+# test_dispatch_server_tls_and_route on the Windows CI lane (no offline env
+# there, unlike the Linux shards' HF_HUB_OFFLINE) while passing on Linux.
+@pytest.fixture(autouse=True)
+def _disable_subscription_polling(monkeypatch):
+    # Same guard as the sibling fixtures: the macos/windows-native-wrapper CI
+    # jobs install only pytest and drive the installer shell scripts via
+    # subprocess, so headroom isn't importable and there is no tracker to
+    # disable.
+    try:
+        from headroom.subscription import tracker as _tracker
+    except ModuleNotFoundError:
+        return
+
+    real_configure = _tracker.configure_subscription_tracker
+
+    def _configure_disabled(*args, **kwargs):
+        kwargs["enabled"] = False
+        return real_configure(*args, **kwargs)
+
+    monkeypatch.setattr(_tracker, "configure_subscription_tracker", _configure_disabled)
+    # server.py imports the symbol directly (`from ... import
+    # configure_subscription_tracker`), so patching only the defining module
+    # would leave that already-bound reference pointing at the real one.
+    try:
+        from headroom.proxy import server as _server
+    except ModuleNotFoundError:
+        return
+    if hasattr(_server, "configure_subscription_tracker"):
+        monkeypatch.setattr(_server, "configure_subscription_tracker", _configure_disabled)
 
 
 # The Copilot "routed to Copilot" flag is a module-global ContextVar that
@@ -155,16 +247,61 @@ def pytest_runtest_call(item):
 
 
 @pytest.fixture(autouse=True)
+def _null_binary_pins():
+    """Null the tools.json SHA-256 pins during tests.
+
+    Installer tests fetch small mock archives, whose digests can't match the
+    real published pins. Nulling the pins lets those download/extract mechanics
+    tests run; the tests that specifically exercise verification set their own
+    pin explicitly. Production keeps the real pins (this fixture is test-only)
+    and the tools-hash-refresh CI gate guarantees they stay correct.
+
+    Nulling a pin used to mean "fall back to HTTPS trust". It now means
+    "refuse", so the escape hatch has to be set alongside it or every test that
+    reaches a real download fails closed -- which is what happened to
+    test_bundled_tools_savings.py on a cold CI cache, while passing locally
+    against an already-populated one. Setting both together keeps this fixture
+    saying one thing: "verification is not what these tests are about."
+    Verification tests delenv it in their own fixture.
+    """
+    try:
+        from headroom import binaries
+    except Exception:
+        # Lean CI environments (e.g. the native-installer jobs) omit heavy deps
+        # such as opentelemetry that importing `binaries` pulls in. There are no
+        # tool pins to null there, so skip cleanly rather than erroring at setup.
+        yield
+        return
+
+    saved = [
+        (asset, asset.get("sha256"))
+        for tool in binaries._registry().get("tools", {}).values()
+        for asset in tool.get("assets", {}).values()
+    ]
+    for asset, _original in saved:
+        asset["sha256"] = None
+    previous = os.environ.get("HEADROOM_BINARIES_ALLOW_UNVERIFIED")
+    os.environ["HEADROOM_BINARIES_ALLOW_UNVERIFIED"] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("HEADROOM_BINARIES_ALLOW_UNVERIFIED", None)
+        else:
+            os.environ["HEADROOM_BINARIES_ALLOW_UNVERIFIED"] = previous
+        for asset, original in saved:
+            asset["sha256"] = original
+
+
+@pytest.fixture(autouse=True)
 def _reset_headroom_logger_propagation():
     """Keep `headroom.*` log records flowing to pytest's caplog handler.
 
-    Two sources disable propagation on the headroom logger tree and never
-    restore it, which then makes later `caplog`-based assertions flaky in
+    A benchmark helper disables propagation on the headroom logger tree and
+    never restores it, which then makes later `caplog`-based assertions flaky in
     full-suite runs (caplog attaches to root, so a `propagate=False` anywhere
     on the chain silently drops the records):
 
-    - ``headroom.proxy.helpers._setup_file_logging`` sets
-      ``getLogger("headroom").propagate = False`` on proxy startup.
     - ``benchmarks.claude_session_mode_benchmark._disable_headroom_benchmark_logging``
       (exercised by ``test_claude_session_mode_benchmark``) sets
       ``propagate = False`` + ``CRITICAL`` on ``headroom``, ``headroom.proxy``,
@@ -390,3 +527,84 @@ def sample_request_metrics():
         turns_dropped=0,
         messages_hash="def456",
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_kompress_model_cache():
+    """Keep one test's loaded Kompress model out of every later test's ``/readyz``.
+
+    ``KompressCompressor.preload()`` stores the loaded handle in a MODULE-LEVEL
+    dict keyed by model id (``kompress_compressor._kompress_cache``). Tests that
+    exercise preload patch the *loader* to return a fake model, but the fake is
+    still written to that real dict under the real ``HF_MODEL_ID`` -- and
+    nothing ever removed it.
+
+    The proxy health endpoint then found it. ``_reconcile_kompress_health``
+    asks each pipeline's ContentRouter for an already-instantiated compressor
+    and calls ``is_ready()`` / ``ready_backend()``, both of which are reads of
+    that same module dict, so a *brand-new* proxy in a later test reported
+    ``kompress: {ready: true, backend: "onnx", status: "healthy"}`` when nothing
+    had been loaded. Four ``tests/test_proxy_health.py`` cases failed in a full
+    run and passed in isolation, which is the signature of exactly this.
+
+    Snapshot/restore rather than an unconditional clear: a test that installs
+    its own cache (several ``monkeypatch.setattr(kc, "_kompress_cache", ...)``
+    do) must keep it for its own duration.
+
+    Costs nothing for the ~13k tests that never touch ML: the module is only
+    consulted through ``sys.modules``, so this never imports it.
+    """
+    module_name = "headroom.transforms.kompress_compressor"
+    before = sys.modules.get(module_name)
+    # None when the module has not been imported yet, so anything found at
+    # teardown was put there by this test.
+    snapshot = dict(getattr(before, "_kompress_cache", {})) if before is not None else None
+
+    yield
+
+    after = sys.modules.get(module_name)
+    if after is None:
+        return
+    cache = getattr(after, "_kompress_cache", None)
+    if cache is None:
+        return
+    cache.clear()
+    if snapshot:
+        cache.update(snapshot)
+
+
+@pytest.fixture(autouse=True)
+def _detach_leaked_proxy_log_handler():
+    """Stop one test's proxy file logger from following the whole session around.
+
+    ``_setup_file_logging`` attaches a named handler to the ``headroom`` logger
+    and nothing detaches it, so any test that builds a proxy app leaves it in
+    place for every later test. That broke
+    ``test_runtime_log_refuses_a_symlinked_path``, which asserts no such handler
+    is attached after a refused setup: the handler it found was a LEFTOVER from
+    ``tests/gateway/test_compress_turn_seam.py``, not one the refused call
+    created, so the test reported a security regression that had not happened.
+
+    The leaked handler also pointed at ``~/.headroom/logs/proxy-8787.log`` --
+    the developer's real home directory, not a tmp_path -- so the leak was
+    writing outside the test sandbox as well. That part is worth fixing at the
+    source; this only stops it leaking forward.
+
+    Detach rather than close-and-keep: a handler attached during a test belongs
+    to that test's app, and its file may live in a ``tmp_path`` that is about to
+    disappear underneath it.
+    """
+    yield
+
+    helpers = sys.modules.get("headroom.proxy.helpers")
+    handler_name = getattr(helpers, "_PROXY_LOG_HANDLER_NAME", None)
+    if handler_name is None:
+        return
+    logger = logging.getLogger("headroom")
+    for handler in list(logger.handlers):
+        if getattr(handler, "name", None) == handler_name:
+            logger.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:  # pragma: no cover - a closed/rotated file is fine
+                pass

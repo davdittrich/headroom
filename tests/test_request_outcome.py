@@ -16,6 +16,7 @@ import contextlib
 import logging
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -188,6 +189,40 @@ def test_classify_client_returns_none_for_unknown_traffic() -> None:
 # ── Funnel contract (_record_request_outcome) ──────────────────────────
 
 
+@pytest.mark.asyncio
+async def test_agy_replay_matches_novel_and_billed_local_accounting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from headroom.proxy import agy_savings_inbox
+    from headroom.proxy.conversation_savings import ConversationSavings
+
+    monkeypatch.setenv("HEADROOM_WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setenv("HEADROOM_AGY_INBOX_EMIT", "1")
+    savings = ConversationSavings()
+    monkeypatch.setattr("headroom.proxy.outcome.get_conversation_savings", lambda: savings)
+    h = _FunnelHarness()
+    outcome = _outcome(
+        provider_input_tokens=900,
+        conversation_key="agy-replay-conversation",
+        conversation_tokens_saved=700,
+        cache_read_tokens=600,
+        project="agy-replay-project",
+        pipeline_timing={"route": 1.5},
+        waste_signals={"repeated": 2},
+    )
+    await h._record_request_outcome(outcome)
+    await h._record_request_outcome(outcome)
+    local = [call.kwargs for call in h.metrics.record_request.await_args_list]
+    assert [kw["tokens_saved"] for kw in local] == [700, 0]
+    assert [kw["input_tokens"] for kw in local] == [900, 900]
+    assert [kw["local_input_tokens"] for kw in local] == [300, 300]
+    replay = MagicMock()
+    replay.record_request = AsyncMock()
+    assert await agy_savings_inbox.drain_inbox(replay) == 2
+    assert [call.kwargs for call in replay.record_request.await_args_list] == local
+    assert await agy_savings_inbox.drain_inbox(replay) == 0
+
+
 class _CollectingLogger:
     """Minimal stand-in for ``RequestLogger``."""
 
@@ -302,6 +337,14 @@ async def test_funnel_passes_canonical_record_tokens_shape() -> None:
         # as uncached_tokens, so counting it in the billed prompt total would
         # double it. Defaults False for providers with disjoint buckets.
         "cache_inferred": False,
+        # Tool-schema deferral, disjoint from the positional ``tokens_saved``.
+        # The funnel already computed it for metrics.record_request; forwarding
+        # it here is what lets the dashboard's per-model table count the layer
+        # its own headline counts. Zero for this outcome (no deferral tags).
+        "tool_schema_saved": 0,
+        # Whether the positional tokens_sent is the provider's billed count.
+        # This outcome carries no provider_input_tokens, so it is an estimate.
+        "provider_reported": False,
     }
 
 
@@ -412,8 +455,8 @@ async def test_funnel_emits_perf_log_with_canonical_shape(
     tok_after, tok_saved, cache_read, cache_write, cache_hit_pct,
     opt_ms, transforms — in that order, space-separated."""
     h = _FunnelHarness()
-    # Direct handler attach: caplog otherwise drops propagation-disabled
-    # records (the proxy disables ``headroom.*`` propagation once started).
+    # Direct handler attach keeps capture isolated from unrelated propagation
+    # mutations elsewhere in the suite.
     target = logging.getLogger("headroom.proxy")
     captured: list[logging.LogRecord] = []
 

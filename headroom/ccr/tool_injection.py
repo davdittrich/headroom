@@ -22,6 +22,21 @@ from typing import Any, Protocol, runtime_checkable
 CCR_TOOL_NAME = "headroom_retrieve"
 
 
+def is_headroom_retrieve_name(name: object) -> bool:
+    """True if a tool name is the headroom_retrieve tool.
+
+    Matches the bare name or an MCP-namespaced ``*__headroom_retrieve``
+    suffix (e.g. ``mcp__headroom__headroom_retrieve``). A single trailing
+    ``retrieve`` fragment without the ``__`` boundary (e.g.
+    ``xheadroom_retrieve``) does NOT match -- only an exact bare name or a
+    proper namespaced suffix does.
+
+    ``name`` may come from untrusted request JSON; a non-str value (e.g.
+    int) would raise on ``.endswith``, so this guards with ``isinstance``.
+    """
+    return isinstance(name, str) and (name == CCR_TOOL_NAME or name.endswith(f"__{CCR_TOOL_NAME}"))
+
+
 @runtime_checkable
 class _HashOwnershipStore(Protocol):
     """Structural type for verify_ownership()'s store dependency.
@@ -91,6 +106,35 @@ def create_ccr_tool_definition(
                     "hash": {
                         "type": "string",
                         "description": "Hash key from the compression marker (e.g., 'abc123' from hash=abc123)",
+                    },
+                },
+                "required": ["hash"],
+            },
+        }
+
+    elif provider == "openai_responses":
+        # Responses API: the same function, declared flat. `name` and
+        # `parameters` sit directly on the tool rather than nested under
+        # "function" as chat completions wants, and the nested shape is
+        # rejected -- so falling through to `openai_definition` here would
+        # inject a tool the provider refuses, on exactly the turns where
+        # compression markers made the tool necessary.
+        return {
+            "type": "function",
+            "name": CCR_TOOL_NAME,
+            "description": (
+                "Retrieve original uncompressed content that was compressed to save tokens. "
+                "Use this when you need more data than what's shown in compressed tool results. "
+                "The hash is provided in compression markers like [N items compressed... hash=abc123]."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hash": {
+                        "type": "string",
+                        "description": (
+                            "Hash key from the compression marker (e.g., 'abc123' from hash=abc123)"
+                        ),
                     },
                 },
                 "required": ["hash"],
@@ -206,7 +250,9 @@ class CCRToolInjector:
             #
             # Standard format: [N <type> compressed to M. Retrieve more: hash=xxx]
             # Matches items, lines, matches, or any other type
-            re.compile(r"\[(\d+) \w+ compressed to (\d+)\. Retrieve more: hash=([a-f0-9]{24})\]"),
+            re.compile(
+                r"\[(\d+) \w+ compressed to (\d+)(?: \([^)]+\))?\.(?: Original content preserved\.)? Retrieve more: hash=([a-f0-9]{24})\]"
+            ),
             # Legacy format without "to M" or "Retrieve more:" (old TextCompressor)
             re.compile(r"\[(\d+) \w+ compressed\. hash=([a-f0-9]{24})\]"),
             # Generic fallback: any bracket compression marker with hash (exactly 24 chars)
@@ -224,6 +270,15 @@ class CCRToolInjector:
             # redeem (silent data loss, #1006). Match the load-bearing
             # "Retrieve original: hash=" phrase directly.
             re.compile(r"Retrieve original: hash=([a-f0-9]{12,24})"),
+            # CodeCompressor (and any marker that appends "Expires in Nm.]" or
+            # uses "N tokens compressed." rather than "compressed to M"):
+            # `[128 tokens compressed. ... Retrieve more: hash=xxx. Expires in
+            # 30m.]`. The bracket patterns above anchor the hash on a trailing
+            # `]`, so the hash=...`. Expires` suffix (and the missing "to M")
+            # makes them all miss it -- the same silent-data-loss failure as
+            # #1006. Match the load-bearing "Retrieve more: hash=" phrase
+            # directly, matching how parser.py / session_probes detect it.
+            re.compile(r"Retrieve more: hash=([a-f0-9]{12,24})"),
         ]
     )
 

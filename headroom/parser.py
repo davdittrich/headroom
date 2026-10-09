@@ -24,10 +24,12 @@ JSON_BLOCK_PATTERN = re.compile(r"\{[\s\S]{500,}\}")
 # exit codes) and are not evidence of a re-read.
 REREAD_MIN_TOKENS = 50
 
-# Canonical CCR retrieval-marker shapes. Mirrors the alternation in
-# transforms/compression_units._CCR_MARKER_RE; kept local because the parser
-# is a base module and importing from transforms would create a cycle.
-CCR_RETRIEVAL_MARKER_RE = re.compile(r"Retrieve more: hash=|Retrieve original: hash=|<<ccr:[^>]+>>")
+# Canonical CCR retrieval-marker shapes. parser is a base module (content_router.py
+# already imports from it), so this alternation is defined here and re-exported
+# for transforms/compression_units.py and evals/session_probes.py to import,
+# rather than kept as byte-identical local copies.
+CCR_MARKER_ALTERNATION = r"Retrieve more: hash=|Retrieve original: hash=|<<ccr:[^>]+>>"
+CCR_RETRIEVAL_MARKER_RE = re.compile(CCR_MARKER_ALTERNATION)
 
 # Repeats this close (in message positions) to the previous serve are
 # polling, not re-reads. Consecutive tool turns sit 2 apart (the
@@ -163,8 +165,10 @@ def detect_waste_signals(text: str, tokenizer: Tokenizer) -> WasteSignals:
     if not text:
         return signals
 
-    # HTML tags and comments
-    html_matches = HTML_TAG_PATTERN.findall(text) + HTML_COMMENT_PATTERN.findall(text)
+    # HTML tags and comments. Comments are removed before tag matching so a
+    # comment is counted once (and tags inside comments are not counted).
+    comment_matches = HTML_COMMENT_PATTERN.findall(text)
+    html_matches = HTML_TAG_PATTERN.findall(HTML_COMMENT_PATTERN.sub("", text)) + comment_matches
     if html_matches:
         html_text = "".join(html_matches)
         signals.html_noise_tokens = tokenizer.count_text(html_text)
@@ -180,7 +184,9 @@ def detect_waste_signals(text: str, tokenizer: Tokenizer) -> WasteSignals:
     if ws_matches:
         # Count tokens that could be saved by normalizing whitespace to single spaces
         ws_text = "".join(ws_matches)
-        normalized_text = " ".join(ws_matches)
+        # Each matched run (4+ spaces/tabs or 3+ newlines) collapses to a
+        # single space, so the normalized form is one space per run.
+        normalized_text = " " * len(ws_matches)
         signals.whitespace_tokens = max(
             0, tokenizer.count_text(ws_text) - tokenizer.count_text(normalized_text)
         )
