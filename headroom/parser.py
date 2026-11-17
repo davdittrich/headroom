@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import warnings
 from typing import TYPE_CHECKING, Any
 
 from .config import Block, WasteSignals
@@ -24,10 +25,12 @@ JSON_BLOCK_PATTERN = re.compile(r"\{[\s\S]{500,}\}")
 # exit codes) and are not evidence of a re-read.
 REREAD_MIN_TOKENS = 50
 
-# Canonical CCR retrieval-marker shapes. Mirrors the alternation in
-# transforms/compression_units._CCR_MARKER_RE; kept local because the parser
-# is a base module and importing from transforms would create a cycle.
-CCR_RETRIEVAL_MARKER_RE = re.compile(r"Retrieve more: hash=|Retrieve original: hash=|<<ccr:[^>]+>>")
+# Canonical CCR retrieval-marker shapes. parser is a base module (content_router.py
+# already imports from it), so this alternation is defined here and re-exported
+# for transforms/compression_units.py and evals/session_probes.py to import,
+# rather than kept as byte-identical local copies.
+CCR_MARKER_ALTERNATION = r"Retrieve more: hash=|Retrieve original: hash=|<<ccr:[^>]+>>"
+CCR_RETRIEVAL_MARKER_RE = re.compile(CCR_MARKER_ALTERNATION)
 
 # Repeats this close (in message positions) to the previous serve are
 # polling, not re-reads. Consecutive tool turns sit 2 apart (the
@@ -163,8 +166,10 @@ def detect_waste_signals(text: str, tokenizer: Tokenizer) -> WasteSignals:
     if not text:
         return signals
 
-    # HTML tags and comments
-    html_matches = HTML_TAG_PATTERN.findall(text) + HTML_COMMENT_PATTERN.findall(text)
+    # HTML tags and comments. Comments are removed before tag matching so a
+    # comment is counted once (and tags inside comments are not counted).
+    comment_matches = HTML_COMMENT_PATTERN.findall(text)
+    html_matches = HTML_TAG_PATTERN.findall(HTML_COMMENT_PATTERN.sub("", text)) + comment_matches
     if html_matches:
         html_text = "".join(html_matches)
         signals.html_noise_tokens = tokenizer.count_text(html_text)
@@ -180,7 +185,9 @@ def detect_waste_signals(text: str, tokenizer: Tokenizer) -> WasteSignals:
     if ws_matches:
         # Count tokens that could be saved by normalizing whitespace to single spaces
         ws_text = "".join(ws_matches)
-        normalized_text = " ".join(ws_matches)
+        # Each matched run (4+ spaces/tabs or 3+ newlines) collapses to a
+        # single space, so the normalized form is one space per run.
+        normalized_text = " " * len(ws_matches)
         signals.whitespace_tokens = max(
             0, tokenizer.count_text(ws_text) - tokenizer.count_text(normalized_text)
         )
@@ -535,7 +542,16 @@ def find_tool_units(messages: list[dict[str, Any]]) -> list[tuple[int, list[int]
 
     Returns:
         List of (assistant_index, [tool_response_indices]) tuples.
+
+    .. deprecated::
+        Nothing in Headroom uses it since the rolling-window stage was
+        retired. It has no replacement.
     """
+    warnings.warn(
+        "find_tool_units is deprecated and will be removed in a future release; it has no replacement.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     units: list[tuple[int, list[int]]] = []
 
     # Build map of tool_call_id -> message index for tool responses
@@ -604,7 +620,16 @@ def find_tool_units(messages: list[dict[str, Any]]) -> list[tuple[int, list[int]
 
 
 def get_message_content_text(message: dict[str, Any]) -> str:
-    """Extract text content from a message."""
+    """Extract text content from a message.
+
+    .. deprecated::
+        Nothing in Headroom uses it. It has no replacement.
+    """
+    warnings.warn(
+        "get_message_content_text is deprecated and will be removed in a future release; it has no replacement.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     content = message.get("content")
     if content is None:
         return ""
